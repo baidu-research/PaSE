@@ -56,6 +56,26 @@ def AssignCostsToEdges(G, edge, n_procs):
     edge_attr['costs'] = costs
 
 
+def EliminatePaths(G):
+    # Get nodes with one in and out edges
+    single_degree_nodes = []
+    for in_deg, out_deg in zip(G.in_degree(), G.out_degree()):
+        assert(in_deg[0] == out_deg[0])
+        if in_deg[1] <= 1 and out_deg[1] <= 1:
+            single_degree_nodes.append(in_deg[0])
+
+    # Include predecessor and successor of single degree nodes to the list
+    neighbors = []
+    for node in single_degree_nodes:
+        neighbors += list(G.predecessors(node))
+        neighbors += list(G.successors(node))
+
+    single_degree_nodes += neighbors
+    path_graph = G.subgraph(single_degree_nodes)
+    print(G.edges())
+        
+
+
 def main():
     batch_size = 1024
     hidden_dim_size = 512
@@ -68,14 +88,19 @@ def main():
     G.add_edge(1, 2)
     G.add_edge(2, 3)
 
+    # Assign configs and costs for each node
     for _, attr in G.nodes(data=True):
         AssignCostsToNode(attr, n_procs)
-        print(attr['costs'])
+        #print(attr['costs'])
 
+    # Assign configs and costs for each edge
     for e in G.edges(data=True):
         AssignCostsToEdges(G, e, n_procs)
-        for i,j in zip(e[2]['configs'], e[2]['costs']):
-            print((i,j))
+        #for i,j in zip(e[2]['configs'], e[2]['costs']):
+        #    print((i,j))
+
+    # Eliminate straight-line paths
+    EliminatePaths(G)
 
 
 if __name__ == "__main__":

@@ -38,16 +38,26 @@ def GetAreaNeeded(reqd, intersection):
 def FwdCommCost(layer1, layer2, config1, config2):
     cost = float(0);
 
-    # Cost of replicating the inputs when no. of procs for layer1 is less than
-    # no. of procs for layer2
-    area = RoundUp(layer2.m, config2.m) * RoundUp(layer2.k, config2.k)
-    cost += area
+    # TODO: Add costs when no. of procs in layer1 and layer2 are different
+    #layer1_procs = reduce(operator.mul, layer1.sz, 1)
+    #layer2_procs = reduce(operator.mul, layer2.sz, 1)
 
-    # Cost of distributing inputs
+    #procs = []
+    #if layer1_procs == layer2_procs:
+    #    procs = layer2.sz
+    #else:
+    #    procs
+
+    # Cost of shuffling inputs among 'layer1' procs
     area_needed = GetAreaNeeded([RoundUp(layer2.m, config2.m), RoundUp(layer2.k,
         config2.k)], [RoundUp(layer1.m, config1.m), RoundUp(layer1.k, config1.k)])
     if area_needed > 0:
         cost += area_needed;
+
+    ## Cost of splitting and distributing the shuffled inputs when no. of procs
+    ## for layer1 is less than no. of procs for layer2
+    #area = RoundUp(layer2.m, config2.m) * RoundUp(layer2.k, config2.k)
+    #cost += area
 
     # Cost for reducing the output
     if config2.k > 1:
@@ -62,6 +72,8 @@ def FwdCommCost(layer1, layer2, config1, config2):
 
 def BwdCommCost(layer1, layer2, config1, config2):
     cost = float(0);
+
+    # TODO: Add costs when no. of procs in layer1 and layer2 are different
 
     # Cost for propagating input gradients to previous layer
     area_needed = GetAreaNeeded([RoundUp(layer2.m, config2.m), RoundUp(layer2.k,
