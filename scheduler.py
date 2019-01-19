@@ -3,77 +3,54 @@ import numpy as np
 from functools import partial
 import operator
 
-import cost as cst
+import cost_np as cst
 import config as cfg
 
 
-class Domain():
-    def __init__(self, dim):
-        self.sz = dim;
-        self.m = dim[0];
-        self.n = dim[1];
-        self.k = dim[2];
+def AssignCostsToNodes(G, n_procs):
+    for -, attr in G.nodes(data=True):
+        dom = attr['dom']
+        configs = np.array(cfg.GetNodeConfigs(dom, n_procs))
+        costs = cst.GetCompCosts(np.array(dom), configs)
+        attr['configs'] = configs
+        attr['costs'] = costs
 
 
-def AssignCostsToNode(node_attr, n_procs):
-    node_dom = node_attr['dom']
-
-    configs = cfg.GetConfigs([len(node_dom.sz)], n_procs)
-    node_attr['configs'] = configs
-
-    costs = []
-    for set_config in configs:
-        set_cost = []
-        for config in set_config:
-            set_cost.append(cst.CompCost(node_dom.sz, config))
-        costs.append(max(set_cost))
-
-    assert(len(configs) == len(costs))
-    node_attr['costs'] = costs
-
-
-def AssignCostsToEdges(G, edge, n_procs):
+def AssignCostsToEdges(G, n_procs):
     nodes = G.nodes(data=True)
-    src_attr = nodes[edge[0]]
-    tgt_attr = nodes[edge[1]]
-    edge_attr = edge[2]
 
-    src_dom = src_attr['dom']
-    tgt_dom = tgt_attr['dom']
+    for src, tgt, edge_attr in G.edges(data=True):
+        src_attr = nodes[src]
+        tgt_attr = nodes[tgt]
 
-    src_configs = src_attr['configs']
-    tgt_configs = tgt_attr['configs']
+        src_dom = src_attr['dom']
+        tgt_dom = tgt_attr['dom']
 
-    configs = []
-    costs = []
-    for i in src_configs:
-        for j in tgt_configs:
-            configs.append((i, j))
-            cost = cst.CommCost(src_dom, tgt_dom, Domain(i[0]), Domain(j[0]))
-            costs.append(cost)
+        src_configs = src_attr['configs']
+        tgt_configs = tgt_attr['configs']
 
-    edge_attr['configs'] = configs
-    edge_attr['costs'] = costs
+        # Repeat configs to get a cross-product of src and tgt configs
+        orig_src_rows = src_configs.shape[0]
+        orig_tgt_rows = tgt_configs.shape[0]
+        src_configs = np.repeat(src_configs, repeats=orig_tgt_rows, axis=0)
+        tgt_configs = np.tile(tgt_configs, (orig_src_rows, 1))
+
+        costs = cst.CommCost(src_dom, tgt_dom, src_configs, tgt_configs)
+
+        edge_attr['src_configs'] = src_configs
+        edge_attr['tgt_configs'] = tgt_configs
+        edge_attr['costs'] = costs
 
 
-def EliminatePaths(G):
-    # Get nodes with one in and out edges
-    single_degree_nodes = []
-    for in_deg, out_deg in zip(G.in_degree(), G.out_degree()):
-        assert(in_deg[0] == out_deg[0])
-        if in_deg[1] <= 1 and out_deg[1] <= 1:
-            single_degree_nodes.append(in_deg[0])
+def CreateGraph(batch_size, hidden_dim_size):
+    G = nx.DiGraph()
+    G.add_node(1, dom=[batch_size, hidden_dim_size, hidden_dim_size])
+    G.add_node(2, dom=[batch_size, hidden_dim_size, hidden_dim_size])
+    G.add_node(3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
+    G.add_edge(1, 2)
+    G.add_edge(2, 3)
 
-    # Include predecessor and successor of single degree nodes to the list
-    neighbors = []
-    for node in single_degree_nodes:
-        neighbors += list(G.predecessors(node))
-        neighbors += list(G.successors(node))
-
-    single_degree_nodes += neighbors
-    path_graph = G.subgraph(single_degree_nodes)
-    print(G.edges())
-        
+    return G
 
 
 def main():
@@ -81,26 +58,14 @@ def main():
     hidden_dim_size = 512
     n_procs = 8
 
-    G = nx.DiGraph()
-    G.add_node(1, dom=Domain([batch_size, hidden_dim_size, hidden_dim_size]))
-    G.add_node(2, dom=Domain([batch_size, hidden_dim_size, hidden_dim_size]))
-    G.add_node(3, dom=Domain([batch_size, hidden_dim_size, hidden_dim_size]))
-    G.add_edge(1, 2)
-    G.add_edge(2, 3)
+    # Create input graph
+    G = CreateGraph(batch_size, hidden_dim_size)
 
-    # Assign configs and costs for each node
-    for _, attr in G.nodes(data=True):
-        AssignCostsToNode(attr, n_procs)
-        #print(attr['costs'])
+    # Assign config list to nodes in 'G', and their costs
+    AssignCostsToNodes(G, n_procs)
 
     # Assign configs and costs for each edge
-    for e in G.edges(data=True):
-        AssignCostsToEdges(G, e, n_procs)
-        #for i,j in zip(e[2]['configs'], e[2]['costs']):
-        #    print((i,j))
-
-    # Eliminate straight-line paths
-    EliminatePaths(G)
+    AssignCostsToEdges(G, n_procs)
 
 
 if __name__ == "__main__":

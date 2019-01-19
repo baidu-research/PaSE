@@ -1,8 +1,7 @@
 import math
 import itertools
 from functools import reduce
-import operator
-import numpy as np
+import operator as op
 
 def GetNextPartition(lst):
     if len(lst) == 1:
@@ -34,6 +33,20 @@ def GetConfigs(node_dim_lst, n_procs):
 
         if used_procs <= n_procs:
             configs.append(config)
+
+    return configs
+
+
+def GetNodeConfigs(node_dom, n_procs):
+    dim = len(node_dom)
+    log_n_procs = int(math.log2(n_procs))
+    procs = [1 << i for i in range(log_n_procs + 1)]
+
+    configs = []
+    for c in itertools.product(procs, dim):
+        used_procs = reduce(op.mul, c, 1)
+        if used_procs <= n_procs:
+            configs.append(c)
 
     return configs
 
