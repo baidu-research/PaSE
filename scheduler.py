@@ -8,10 +8,11 @@ import config as cfg
 
 
 def AssignCostsToNodes(G, n_procs):
-    for -, attr in G.nodes(data=True):
+    for _, attr in G.nodes(data=True):
         dom = attr['dom']
         configs = np.array(cfg.GetNodeConfigs(dom, n_procs))
         costs = cst.GetCompCosts(np.array(dom), configs)
+        print(configs.shape)
         attr['configs'] = configs
         attr['costs'] = costs
 
@@ -23,8 +24,8 @@ def AssignCostsToEdges(G, n_procs):
         src_attr = nodes[src]
         tgt_attr = nodes[tgt]
 
-        src_dom = src_attr['dom']
-        tgt_dom = tgt_attr['dom']
+        src_dom = np.array(src_attr['dom'])
+        tgt_dom = np.array(tgt_attr['dom'])
 
         src_configs = src_attr['configs']
         tgt_configs = tgt_attr['configs']
@@ -34,8 +35,10 @@ def AssignCostsToEdges(G, n_procs):
         orig_tgt_rows = tgt_configs.shape[0]
         src_configs = np.repeat(src_configs, repeats=orig_tgt_rows, axis=0)
         tgt_configs = np.tile(tgt_configs, (orig_src_rows, 1))
+        assert(src_configs.shape == tgt_configs.shape)
 
-        costs = cst.CommCost(src_dom, tgt_dom, src_configs, tgt_configs)
+        costs = cst.GetCommCosts(src_dom, tgt_dom, src_configs, tgt_configs)
+        print(costs.shape)
 
         edge_attr['src_configs'] = src_configs
         edge_attr['tgt_configs'] = tgt_configs

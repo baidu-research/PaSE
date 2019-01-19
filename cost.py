@@ -92,7 +92,7 @@ def BwdCommCost(layer1, layer2, config1, config2):
     return cost;
 
 
-def CommCost(layer1, layer2, config1, config2):
+def GetCommCosts(layer1, layer2, config1, config2):
     return (FwdCommCost(layer1, layer2, config1, config2) + BwdCommCost(layer1,
         layer2, config1, config2));
 

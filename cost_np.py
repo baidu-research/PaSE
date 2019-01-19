@@ -1,7 +1,7 @@
 import numpy as np
 
 def GetCompCosts(node_dom, configs):
-    dom_per_proc = node_dom / configs
+    dom_per_proc = np.ceil(node_dom / configs)
     costs = 3.0 * np.multiply.reduce(dom_per_proc, axis=1)
     return costs
 
@@ -17,15 +17,15 @@ def GetAreaNeeded(tgt_area, src_area):
 def GetCommCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
     m_dim, n_dim, k_dim = 0, 1, 2
 
-    src_dom_per_proc = np.ceil(src_dom, src_cfgs)
-    tgt_dom_per_proc = np.ceil(tgt_dom, tgt_cfgs)
+    src_dom_per_proc = np.ceil(src_dom / src_cfgs)
+    tgt_dom_per_proc = np.ceil(tgt_dom / tgt_cfgs)
 
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
     tgt_area = tgt_dom_per_proc[:, [m_dim,k_dim]]
     src_area = src_dom_per_proc[:, [m_dim,n_dim]]
     area_needed = GetAreaNeeded(tgt_area, src_area)
-    costs = 2.0 * np.where(array_needed < 0, 0, array_needed) # Factor 2 is to
+    costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
                                                              # account for fwd
                                                              # and bwd phases
 
