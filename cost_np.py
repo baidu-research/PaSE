@@ -26,8 +26,8 @@ def GetCommCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
     src_area = src_dom_per_proc[:, [m_dim,n_dim]]
     area_needed = GetAreaNeeded(tgt_area, src_area)
     costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
-                                                             # account for fwd
-                                                             # and bwd phases
+                                                            # account for fwd
+                                                            # and bwd phases
 
     # TODO: Add costs when no. of procs in layer1 and layer2 are different
 
