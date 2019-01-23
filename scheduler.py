@@ -70,7 +70,7 @@ def GetMinConfig(G, node, neighbors, node_costs, costs):
     min_cost = np.sum(consolidated_costs[:, -1])
 
     # Add 'min_cost' with different configs of 'node'
-    min_cost += node_costs
+    min_cost += node_costs[:,-1]
 
     # Iterate over predecessors of 'node' and add communication cost
     neigh_cost = dict(zip(neighbors, costs))
@@ -81,6 +81,12 @@ def GetMinConfig(G, node, neighbors, node_costs, costs):
 
         cost = edge_cost[np.equal(edge_cost[:,:pred_cost.shape[0]-1],
             pred_cost[:-1]).all(axis=1).nonzero()]
+        cost = cost[:,pred_cost.shape[0]-1:]
+
+        assert(cost.shape[0] == min_cost.shape[0])
+        assert(np.equal(cost[:,:-1], node_costs[:,:-1]).all() == True)
+
+        cost = cost[:,-1] + min_cost
         print(cost)
 
     # Iterate over each configuration of 'node'
