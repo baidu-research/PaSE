@@ -56,6 +56,12 @@ def CreateGraph(batch_size, hidden_dim_size):
     return G
 
 
+# Returns the config that provides minimum cost for its neighboring
+# configurations  'costs'
+# neighbors: List of neighbors of 'node'
+# node_costs: 2D array, with each row having a configuration and its cost
+# costs: List of configuration and cost. Each item in the list corresponds to
+#        a single config and its cost for the corresponding item in 'neighbors'
 def GetMinConfig(G, node, neighbors, node_costs, costs):
     # TODO: Handle this case
     if len(neighbors) == 0:
@@ -67,38 +73,59 @@ def GetMinConfig(G, node, neighbors, node_costs, costs):
     assert(consolidated_costs.ndim == 2)
 
     # Get the sum of computation costs of neighboring nodes
+    # 'min_cost' is scalar
     min_cost = np.sum(consolidated_costs[:, -1])
 
-    # Add 'min_cost' with different configs of 'node'
-    min_cost += node_costs[:,-1]
+    # Add 'min_cost' with costs for different configs of 'node'
+    # min_cost is a 2D array, each row is a node config and corresponding total
+    # comp cost
+    cost = node_costs
+    cost[:,-1] += min_cost
+    min_cost = cost
+
+    neigh_cost = dict(zip(neighbors, costs))
 
     # Iterate over predecessors of 'node' and add communication cost
-    neigh_cost = dict(zip(neighbors, costs))
     for pred, _, edge_cost in G.in_edges(node, data='costs'):
         assert(pred in neigh_cost)
+
+        # Get the config-cost array of the source vertex of the edge
         pred_cost = neigh_cost[pred]
         assert(pred_cost.ndim == 1)
 
-        cost = edge_cost[np.equal(edge_cost[:,:pred_cost.shape[0]-1],
+        # Extract the rows in 'edge_cost' whose source vertex config matches the
+        # config in 'pred_cost'
+        idx = pred_cost.shape[0]-1
+        cost = edge_cost[np.equal(edge_cost[:,:idx],
             pred_cost[:-1]).all(axis=1).nonzero()]
-        cost = cost[:,pred_cost.shape[0]-1:]
 
         assert(cost.shape[0] == min_cost.shape[0])
-        assert(np.equal(cost[:,:-1], node_costs[:,:-1]).all() == True)
+        assert(np.equal(cost[:, idx:-1], node_costs[:, :-1]).all() == True)
+        assert(np.equal(cost[:, idx:-1], min_cost[:, :-1]).all() == True)
 
-        cost = cost[:,-1] + min_cost
-        print(cost)
+        # Add the comm cost 'cost' with comp cost 'min_cost'
+        min_cost[:,-1] += cost[:,-1]
 
-    # Iterate over each configuration of 'node'
-    #for n, tbl in zip(neighbors, costs):
-    #    curr_cost += tbl[-1]
-        #config = tbl[0]
-        #idx = 0
-        #if G.has_edge(node, n):
-        #    idx = 1
-        #else:
-        #    assert(G.has_edge(n, node))
-            
+    # Iterate over successors of 'node' and add communication cost
+    for _, succ, edge_cost in G.out_edges(node, data='costs'):
+        assert(succ in neigh_cost)
+
+        # Get the config-cost array of the source vertex of the edge
+        succ_cost = neigh_cost[succ]
+        assert(succ_cost.ndim == 1)
+
+        # Extract the rows in 'edge_cost' whose source vertex config matches the
+        # config in 'succ_cost'
+        idx = node_costs.shape[1] - 1
+        cost = edge_cost[np.equal(edge_cost[:, idx:-1],
+            succ_cost[:-1]).all(axis=1).nonzero()]
+
+        assert(cost.shape[0] == min_cost.shape[0])
+        assert(np.equal(cost[:, :idx], node_costs[:, :-1]).all() == True)
+        assert(np.equal(cost[:, :idx], min_cost[:, :-1]).all() == True)
+
+        # Add the comm cost 'cost' with 'min_cost'
+        min_cost[:,-1] += cost[:,-1]
 
 
 def Process(G, node, neighbors, processed_nodes):
