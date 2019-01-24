@@ -60,21 +60,21 @@ def CreateGraph(batch_size, hidden_dim_size):
 # configurations  'costs'
 # neighbors: List of neighbors of 'node'
 # node_costs: 2D array, with each row having a configuration and its cost
-# costs: List of configuration and cost. Each item in the list corresponds to
-#        a single config and its cost for the corresponding item in 'neighbors'
-def GetMinConfig(G, node, neighbors, node_costs, costs):
+# neigh_costs: List of configuration and cost. Each item in the list corresponds to
+#              a single config and its cost for the corresponding item in 'neighbors'
+def GetMinConfig(G, node, neighbors, node_costs, neigh_costs):
     # TODO: Handle this case
     if len(neighbors) == 0:
         return
 
-    assert(len(neighbors) == len(costs))
+    assert(len(neighbors) == len(neigh_costs))
 
-    consolidated_costs = np.array(costs)
-    assert(consolidated_costs.ndim == 2)
+    neigh_costs_array = np.array(neigh_costs)
+    assert(neigh_costs_array.ndim == 2)
 
     # Get the sum of computation costs of neighboring nodes
     # 'min_cost' is scalar
-    min_cost = np.sum(consolidated_costs[:, -1])
+    min_cost = np.sum(neigh_costs_array[:, -1])
 
     # Add 'min_cost' with costs for different configs of 'node'
     # min_cost is a 2D array, each row is a node config and corresponding total
@@ -83,7 +83,7 @@ def GetMinConfig(G, node, neighbors, node_costs, costs):
     cost[:,-1] += min_cost
     min_cost = cost
 
-    neigh_cost = dict(zip(neighbors, costs))
+    neigh_cost = dict(zip(neighbors, neigh_costs))
 
     # Iterate over predecessors of 'node' and add communication cost
     for pred, _, edge_cost in G.in_edges(node, data='costs'):
@@ -95,9 +95,9 @@ def GetMinConfig(G, node, neighbors, node_costs, costs):
 
         # Extract the rows in 'edge_cost' whose source vertex config matches the
         # config in 'pred_cost'
-        idx = pred_cost.shape[0]-1
+        idx = pred_cost.shape[0] - 1
         cost = edge_cost[np.equal(edge_cost[:,:idx],
-            pred_cost[:-1]).all(axis=1).nonzero()]
+            pred_cost[:-1]).all(axis=1)]
 
         assert(cost.shape[0] == min_cost.shape[0])
         assert(np.equal(cost[:, idx:-1], node_costs[:, :-1]).all() == True)
@@ -127,17 +127,53 @@ def GetMinConfig(G, node, neighbors, node_costs, costs):
         # Add the comm cost 'cost' with 'min_cost'
         min_cost[:,-1] += cost[:,-1]
 
+    # Get the config and cost corresponding to minimum cost
+    min_idx_val = min_cost[min_cost[:,-1].argmin(axis=0)]
+    min_config = min_idx_val[:-1]
+
+    # TODO: Set DP attribute to node with neighbor configs and min_config
+
+    ## Reset edge configs to contain only min_config rows
+    #for pred, _, attr in G.in_edges(node, data=True):
+    #    tbl = attr['costs']
+
+    #    pred_config = neigh_cost[pred][:-1]
+    #    idx = pred_config.shape[0]
+
+    #    # Only include rows whose source configs are different from
+    #    # 'pred_config', or target config is same as 'min_config'
+    #    cond1 = np.not_equal(tbl[:,:idx], pred_config).all(axis=1)
+    #    cond2 = np.equal(tbl[:,idx:-1], min_config).all(axis=1)
+    #    cond = np.logical_or(cond1, cond2)
+    #    attr['costs'] = tbl[cond]
+
+    #for _, succ, attr in G.out_edges(node, data=True):
+    #    tbl = attr['costs']
+
+    #    succ_config = neigh_cost[succ][:-1]
+    #    idx = succ_config.shape[0]
+
+    #    # Only include rows whose source configs are different from
+    #    # 'succ_config', or target config is same as 'min_config'
+    #    cond1 = np.not_equal(tbl[:,idx:-1], succ_config).all(axis=1)
+    #    cond2 = np.equal(tbl[:,:idx], min_config).all(axis=1)
+    #    cond = np.logical_or(cond1, cond2)
+    #    attr['costs'] = tbl[cond]
+
 
 def Process(G, node, neighbors, processed_nodes):
-    node_costs = G.nodes(data='costs')
+    node_attrs = G.nodes(data=True)
+
+    unprocessed_neighbors = [i for i in neighbors if i not in processed_nodes]
+    node_attrs[node]['unprocessed_neigh'] = unprocessed_neighbors
 
     # Get the 'costs' array of each neighbor node
     iterators = []
     for n in neighbors:
-        iterators.append(node_costs[n])
+        iterators.append(node_attrs[n]['costs'])
 
     # Iterate over all combinations of costs
-    node_cost = node_costs[node]
+    node_cost = node_attrs[node]['costs']
     for vals in itertools.product(*iterators):
         GetMinConfig(G, node, neighbors, node_cost, vals)
 
