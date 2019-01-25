@@ -13,7 +13,7 @@ def AssignCostsToNodes(G, n_procs):
     for _, attr in G.nodes(data=True):
         dom = attr['dom']
         configs = np.array(cfg.GetNodeConfigs(dom, n_procs))
-        costs = cst.GetCompCosts(np.array(dom), configs)
+        costs = cst.GetVertexCosts(np.array(dom), configs)
         attr['configs'] = configs
         attr['costs'] = np.column_stack((configs, costs))
 
@@ -38,7 +38,7 @@ def AssignCostsToEdges(G, n_procs):
         tgt_configs = np.tile(tgt_configs, (orig_src_rows, 1))
         assert(src_configs.shape == tgt_configs.shape)
 
-        costs = cst.GetCommCosts(src_dom, tgt_dom, src_configs, tgt_configs)
+        costs = cst.GetEdgeCosts(src_dom, tgt_dom, src_configs, tgt_configs)
 
         edge_attr['src_configs'] = src_configs
         edge_attr['tgt_configs'] = tgt_configs

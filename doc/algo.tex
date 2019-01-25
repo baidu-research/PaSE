@@ -1,0 +1,75 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm,algpseudocode}
+
+\algnewcommand{\LeftComment}[1]{\State \(\triangleright\) #1}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\newcommand{\true}{\textsf{True}}
+\newcommand{\false}{\textsf{False}}
+
+\begin{document}
+
+\begin{algorithm}
+\caption{\label{alg:dp}Algorithm to determine optimal parallelization
+strategy for an operator DAG}
+
+\begin{algorithmic}[1]
+	\Procedure{FindOptStrategy}{$G=(V,E)$, $nprocs$}
+
+	\ForAll{$v \in V$}
+		\State $v.neighbors \leftarrow  \{u: (u,v) \in E \lor (v,u) \in E\}$
+		\State $v.processed \leftarrow \false$
+	\EndFor
+
+	\\
+
+	\State $tbl \leftarrow \emptyset$
+	\While{$\exists x \in V: x.processed = \false$}
+		\State $S \leftarrow \{v: v\in V \land v.processed = \false\}$ \Comment{Set
+		of unprocessed nodes}
+		\\
+		\LeftComment{Choose a vertex with least no. of unprocessed neighbors from
+		$S$}
+		\ForAll{$v \in S$} 
+			\State $v.unprocessed\_neighbors \leftarrow \{u: u, v\in S \land u\in v.neighbors\}$
+			\State $v.processed\_neighbors \leftarrow v.neighbors \setminus
+			v.unprocessed\_neighbors$
+		\EndFor
+		\State $v_{min} \leftarrow \argmin_{v\in S} |v.unprocessed\_neighbors|$
+		\\
+
+		\LeftComment{Each element in $C$ is a set of pairs
+		$\{(u_1,cfg_1), \dots, (u_n, cfg_n)\}$, where $u_i$ is an
+		unprocessed neighbor of $v_{min}$ and $cfg_i$ is a valid configuration of
+		$u_i$}
+		\State $C \leftarrow \prod_{u\in v_{min}.unprocessed\_neighbors} \{(u,
+		cfg): cfg \in u.configs\}$
+		\\
+
+		\LeftComment{For each combination of configuration of unprocessed neighbors
+		of $v_{min}$, find a config of $v_{min}$ that minimizes the cost}
+		\ForAll{$c \in C$}
+			\State $c_{min} \leftarrow \argmin_{c_v \in v_{min}.configs}
+			(\Call{Cost}{v_{min}, c_v, c, v_{min}.processed\_neighbors})$
+			\State $tbl \leftarrow tbl \cup \{(v_{min}, c, c_{min})\}$
+		\EndFor
+		\\
+
+
+		\State $v.processed \leftarrow \true$
+	\EndWhile
+	\\
+	\\
+	\Return{\Call{OptConfig}{tbl}}
+
+	\EndProcedure
+\end{algorithmic}
+
+\end{algorithm}
+
+
+\end{document}

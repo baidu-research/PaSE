@@ -1,8 +1,27 @@
 import numpy as np
 
-def GetCompCosts(node_dom, configs):
+def GetVertexCosts(node_dom, configs):
+    m_dim, n_dim, k_dim = 0, 1, 2
+
     dom_per_proc = np.ceil(node_dom / configs)
     costs = 3.0 * np.multiply.reduce(dom_per_proc, axis=1)
+
+    # Cost for reducing the output during fwd phase
+    # All-reduce cost = 2*((m*n)/P)*(P-1)
+    words = np.multiply.reduce(dom_per_proc[:, [m_dim,n_dim]], axis=1)
+    procs = configs[:,k_dim]
+    words /= procs
+    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
+    costs += (words * steps)
+
+    # Cost for gradient update during bwd phase
+    # All-reduce cost = 2*((n*k)/P)*(P-1)
+    words = np.multiply.reduce(dom_per_proc[:, [n_dim,k_dim]], axis=1)
+    procs = configs[:,m_dim]
+    words /= procs
+    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
+    costs += (words * steps)
+
     return costs
 
 
@@ -14,7 +33,7 @@ def GetAreaNeeded(tgt_area, src_area):
     return (area_reqd - area_intersection)
 
 
-def GetCommCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
+def GetEdgeCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
     m_dim, n_dim, k_dim = 0, 1, 2
 
     src_dom_per_proc = np.ceil(src_dom / src_cfgs)
@@ -30,22 +49,5 @@ def GetCommCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
                                                             # and bwd phases
 
     # TODO: Add costs when no. of procs in layer1 and layer2 are different
-
-
-    # Cost for reducing the output during fwd phase
-    # All-reduce cost = 2*((m*n)/P)*(P-1)
-    words = np.multiply.reduce(tgt_dom_per_proc[:, [m_dim,n_dim]], axis=1)
-    procs = tgt_cfgs[:,k_dim]
-    words /= procs
-    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-    costs += (words * steps)
-
-    # Cost for gradient update during bwd phase
-    # All-reduce cost = 2*((n*k)/P)*(P-1)
-    words = np.multiply.reduce(tgt_dom_per_proc[:, [n_dim,k_dim]], axis=1)
-    procs = tgt_cfgs[:,m_dim]
-    words /= procs
-    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-    costs += (words * steps)
 
     return costs
