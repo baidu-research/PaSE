@@ -3,6 +3,7 @@
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{algorithm,algpseudocode}
+\usepackage[margin=1in]{geometry}
 
 \algnewcommand{\LeftComment}[1]{\State \(\triangleright\) #1}
 \DeclareMathOperator*{\argmax}{arg\,max}
@@ -14,7 +15,7 @@
 \begin{document}
 
 \begin{algorithm}
-\caption{\label{alg:dp}Algorithm to determine optimal parallelization
+\caption{\label{alg:findoptstrategy}Algorithm to determine optimal parallelization
 strategy for an operator DAG}
 
 \begin{algorithmic}[1]
@@ -23,21 +24,24 @@ strategy for an operator DAG}
 	\ForAll{$v \in V$}
 		\State $v.neighbors \leftarrow  \{u: (u,v) \in E \lor (v,u) \in E\}$
 		\State $v.processed \leftarrow \false$
+
+		\\
+		\LeftComment{$v.dim$: Itertion domain dimension of the operation in $v$}
+		\State $v.configs \leftarrow \{(c_1, c_2,\dots,c_{v.dim}):
+		\forall_{i\in[1,v.dim]}c_i\in \mathbb{Z^*}\land \prod_{i\in [1,v.dim]} c_i \le
+		nprocs\}$
 	\EndFor
 
 	\\
 
 	\State $tbl \leftarrow \emptyset$
-	\While{$\exists x \in V: x.processed = \false$}
-		\State $S \leftarrow \{v: v\in V \land v.processed = \false\}$ \Comment{Set
-		of unprocessed nodes}
-		\\
+	\State $S \leftarrow \{v: v\in V \land v.processed = \false\}$ \Comment{Set
+	of unprocessed vertices}
+	\While{$S \not = \emptyset$}
 		\LeftComment{Choose a vertex with least no. of unprocessed neighbors from
 		$S$}
 		\ForAll{$v \in S$} 
 			\State $v.unprocessed\_neighbors \leftarrow \{u: u, v\in S \land u\in v.neighbors\}$
-			\State $v.processed\_neighbors \leftarrow v.neighbors \setminus
-			v.unprocessed\_neighbors$
 		\EndFor
 		\State $v_{min} \leftarrow \argmin_{v\in S} |v.unprocessed\_neighbors|$
 		\\
@@ -54,21 +58,48 @@ strategy for an operator DAG}
 		of $v_{min}$, find a config of $v_{min}$ that minimizes the cost}
 		\ForAll{$c \in C$}
 			\State $c_{min} \leftarrow \argmin_{c_v \in v_{min}.configs}
-			(\Call{Cost}{v_{min}, c_v, c, v_{min}.processed\_neighbors})$
+			(\Call{Cost}{v_{min}, c_v, c})$ \Comment{Refer Alg.~\ref{alg:cost}}
 			\State $tbl \leftarrow tbl \cup \{(v_{min}, c, c_{min})\}$
 		\EndFor
 		\\
 
 
-		\State $v.processed \leftarrow \true$
+		\State $v_{min}.processed \leftarrow \true$
+		\State $S \leftarrow S\setminus \{v_{min}\}$
 	\EndWhile
 	\\
 	\\
-	\Return{\Call{OptConfig}{tbl}}
+	\Return{$\Call{OptConfig}{G, tbl}$} \Comment{Refer Alg.~\ref{alg:optconfig}}
 
 	\EndProcedure
 \end{algorithmic}
 
+\end{algorithm}
+
+\begin{algorithm}
+	\caption{\label{alg:cost}Algorithm that returns the cost when configuration
+	$c$ is assigned to a vertex $v$, and its unprocessed neighbors have
+	configurations $U_c$}
+
+	\begin{algorithmic}
+		\Procedure{Cost}{$v, c, U_c$}
+
+		\EndProcedure
+
+	\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}
+	\caption{\label{alg:optconfig}Algorithm that extracts an optimal configuration
+	from the dynamic programming table generated in Alg.~\ref{alg:findoptstrategy}}
+
+	\begin{algorithmic}
+		\Procedure{OptConfig}{$G, tbl$}
+
+		\EndProcedure
+
+	\end{algorithmic}
 \end{algorithm}
 
 
