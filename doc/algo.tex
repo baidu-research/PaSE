@@ -65,15 +65,15 @@ strategy for an operator DAG}
 		\Statex
 
 		\LeftComment{Partition $v_{min}.tbl$ such that in each set of the partition,
-		all the common node configurations are the same. Refer
+		all the neighbor configurations are the same. Refer
 		Alg.~\ref{alg:is-compatible} for the function
 		\Call{IsCompatible}{}}
 		\State $\mathcal{P} \leftarrow \{S_1,S_2,\dots~|~$
-		\parbox[t]{.7\textwidth}{
+		\parbox[t]{.75\textwidth}{
 				$\cup_{S_i} = v_{min}.tbl \land i \not = j \implies S_i \cap S_j = \emptyset
-				\land~\\\Call{IsCompatible}{v_{min}, S_i, S_i} = \top)
-				\land~\\i \not = j \implies \Call{IsCompatible}{v_{min}, S_i, S_j} =
-			\bot)
+				\land~\\(\forall s_x \in S_i)(\forall s_y \in S_i)[\Call{IsCompatible}{s_x, s_y, v_{min}.neighbors} = \top]
+				\land~\\i \not = j \implies (\forall s_x \in S_i)(\forall s_y \in
+				S_j)[\Call{IsCompatible}{s_x, s_y, v_{min}.neighbors} = \bot]
 		\}$}
 		\Statex
 		\LeftComment{Iterate over each set $S \in \mathcal{P}$ and update
@@ -87,16 +87,19 @@ strategy for an operator DAG}
 		\EndFor
 		\Statex
 
-
-		\LeftComment{Restrict the tables of the neighbors based on the best
-		sub-strategies found for $v_{min}$ in Line~\ref{ln:opt-strategy}}
 		\ForAll{$v \in v_{min}.neighbors$}
+			\LeftComment{Restrict the tables of the neighbors based on the best
+			sub-strategies found for $v_{min}$ in Line~\ref{ln:opt-strategy}}
+			\State $common = (v_{min}.neighbors \cap v.neighbors) \cup
+			\set{v_{min}, v}$
+			\State $v.tbl \leftarrow \set{entry_1\in v.tbl ~|~ (\exists
+			entry_2 \in v_{min}.tbl)[\Call{IsCompatible}{entry_1, entry_2, common) =
+			\top]}}$
+
+			\Statex
+
 			\State $v.unprocessed\_neighbors \leftarrow
 			v.unprocessed\_neighbors\setminus \set{v_{min}}$
-			\State $n\_common = |(v_{min}.neighbors \cap v.neighbors) \cup
-			\set{v_{min}, v}|$
-			\State $v.tbl \leftarrow \set{entry_1\in v.tbl ~|~ (\exists
-			entry_2 \in v_{min}.tbl)[|entry_1 \cap entry_2| = n\_common]}$
 		\EndFor
 
 		\Statex
@@ -124,22 +127,18 @@ strategy for an operator DAG}
 
 \begin{algorithm}
 	\caption{\label{alg:is-compatible}Returns $\top$ if the two
-	sets of sub-strategies of a vertex have same configurations for the
-	neighboring vertices.}
+	sub-strategies $S_1$ and $S_2$ have same configurations for the
+	vertices in $V$.}
 
 	\begin{algorithmic}[1]
-		\Procedure{IsCompatible}{$v, S_1, S_2$}
-			\ForAll{$s_1 \in S_1$}
-				\ForAll{$s_2 \in S_2$}
-					\State $N_1 \leftarrow \set{(n,c)\in S_1~|~n \not= v}$
-					\State $N_2 \leftarrow \set{(n,c)\in S_2~|~n \not= v}$
-					\Statex
+		\Procedure{IsCompatible}{$S_1, S_2, V$}
+			\State $N_1 \leftarrow \set{(n,c)\in S_1~|~n \in V}$
+			\State $N_2 \leftarrow \set{(n,c)\in S_2~|~n \in V}$
+			\Statex
 
-					\If{$N_1 \not= N_2$}
-						\State \Return{$\bot$}
-					\EndIf
-				\EndFor
-			\EndFor
+			\If{$N_1 \not= N_2$}
+				\State \Return{$\bot$}
+			\EndIf
 			\Statex
 			\State \Return{$\top$}
 		\EndProcedure
@@ -165,9 +164,11 @@ strategy for an operator DAG}
 			\State $\strategy' \leftarrow \emptyset$
 			\ForAll{$S \in \strategy$}
 				\ForAll{$T \in v.tbl$}
-					\If{$\Call{IsCompatible}{S, T} = \top$}
-						\State $S' \leftarrow S \cup T$
-						\State $\strategy' \leftarrow \strategy' \cup \set{S'}$
+					\State $U_1 \leftarrow \set{u~|~(u,c)\in S}$
+					\State $U_2 \leftarrow \set{u~|~(u,c)\in v.tbl}$
+					\Statex
+					\If{$\Call{IsCompatible}{S, T, U_1\cap U_2} = \top$}
+						\State $\strategy' \leftarrow \strategy' \cup \set{S\cup T}$
 					\EndIf
 				\EndFor
 			\EndFor
