@@ -29,17 +29,18 @@ strategy for an operator DAG}
 	$v$.\\
 	$nprocs:$ Number of processors.}
 	\Outputs{\strategy: Optimal parallelization starategy for $G$ }
-	\\
+	\Statex
 
 	\ForAll{$v \in V$}
 		\State $v.neighbors \leftarrow  \set{u ~|~ (u,v) \in E \lor (v,u) \in E}$
+		\State $v.unprocessed\_neighbors \leftarrow v.neighbors$
 		\State $v.processed \leftarrow \bot$
 		\State $v.configs \leftarrow \set{(c_1, c_2,\dots,c_{v.dim}) ~|~
 		(\forall{i\in[1,v.dim]})[c_i\in \mathbb{Z^+}]\land \prod_{i=1}^{v.dim} c_i \le
 		nprocs}$
 	\EndFor
 
-	\\
+	\Statex
 
 	\LeftComment{Populate $v.tbl$ with all possible combinations of neighboring
 	configurations. Each entry in $v.tbl$ is a sub-strategy for the nodes $\set{v}
@@ -49,31 +50,32 @@ strategy for an operator DAG}
 		~|~cfg \in u.configs}$
 	\EndFor
 
-	\\
+	\Statex
 
-	\State $U \leftarrow \set{v \in V ~|~v.processed = \bot}$ \Comment{Set
-	of unprocessed vertices}
+	%\State $U \leftarrow \set{v \in V ~|~v.processed = \bot}$ 
+	\State $U \leftarrow V$
+	\Comment{Set of unprocessed vertices}
 	\While{$U \not = \emptyset$}
 		\LeftComment{Choose a vertex with least no. of unprocessed neighbors from
 		$U$}
-		\ForAll{$v \in U$} 
-			\State $v.unprocessed\_neighbors \leftarrow \set{u ~|~ u, v\in U \land u\in v.neighbors}$
-		\EndFor
+		%\ForAll{$v \in U$} 
+		%	\State $v.unprocessed\_neighbors \leftarrow \set{u ~|~ u, v\in U \land u\in v.neighbors}$
+		%\EndFor
 		\State $v_{min} \leftarrow \argmin_{v\in U} |v.unprocessed\_neighbors|$
-		\\
+		\Statex
 
 		\LeftComment{Partition $v_{min}.tbl$ such that in each set of the partition,
-		all the neighboring configurations are the same. Refer
-		Alg.~\ref{alg:has-same-neigh-config} for the function
-		\Call{HasSameNeighConfig}{}}
+		all the common node configurations are the same. Refer
+		Alg.~\ref{alg:is-compatible} for the function
+		\Call{IsCompatible}{}}
 		\State $\mathcal{P} \leftarrow \{S_1,S_2,\dots~|~$
 		\parbox[t]{.7\textwidth}{
 				$\cup_{S_i} = v_{min}.tbl \land i \not = j \implies S_i \cap S_j = \emptyset
-				\land~\\\Call{HasSameNeighConfigs}{v_{min}, S_i, S_i} = \top)
-				\land~\\i \not = j \implies \Call{HasSameNeighConfigs}{v_{min}, S_i, S_j} =
+				\land~\\\Call{IsCompatible}{v_{min}, S_i, S_i} = \top)
+				\land~\\i \not = j \implies \Call{IsCompatible}{v_{min}, S_i, S_j} =
 			\bot)
 		\}$}
-		\\
+		\Statex
 		\LeftComment{Iterate over each set $S \in \mathcal{P}$ and update
 		$v_{min}.tbl$ so that it only contains the sub-strategy in $S$ that has the
 		least cost.}
@@ -83,30 +85,36 @@ strategy for an operator DAG}
 			\Call{Cost}{G, s}$
 			\State $v_{min}.tbl \leftarrow v_{min}.tbl \cup \set{best}$
 		\EndFor
-		\\
+		\Statex
 
 
 		\LeftComment{Restrict the tables of the neighbors based on the best
 		sub-strategies found for $v_{min}$ in Line~\ref{ln:opt-strategy}}
 		\ForAll{$v \in v_{min}.neighbors$}
+			\State $v.unprocessed\_neighbors \leftarrow
+			v.unprocessed\_neighbors\setminus \set{v_{min}}$
 			\State $n\_common = |(v_{min}.neighbors \cap v.neighbors) \cup
 			\set{v_{min}, v}|$
 			\State $v.tbl \leftarrow \set{entry_1\in v.tbl ~|~ (\exists
 			entry_2 \in v_{min}.tbl)[|entry_1 \cap entry_2| = n\_common]}$
 		\EndFor
 
-		\\
+		\Statex
 		\State $v_{min}.processed \leftarrow \top$
 		\State $U \leftarrow U\setminus \set{v_{min}}$
 	\EndWhile
-	\\
+	\Statex
 
-	\LeftComment{Once all the vertices are processed, $v.tbl$ of all the vertices
-	should contain just a single entry.}
-	\State $\strategy \leftarrow \emptyset$
-	\ForAll{$v \in V$}
-		\State $\strategy \leftarrow \strategy \cup v.tbl$
-	\EndFor
+	%\LeftComment{Once all the vertices are processed, $v.tbl$ of all the vertices
+	%should contain just a single entry.}
+	\LeftComment{Collect all valid strategies for $G$ from $v.tbl$, and pick the
+	one that minimizes the cost.}
+	\State $\strategy' \leftarrow \Call{ValidStrategies}{G}$ \Comment{Refer
+	Alg.~\ref{alg:valid-strategies}}
+	\State $\strategy \leftarrow \argmin_{S\in \strategy'} \Call{Cost}{G, S}$
+	%\ForAll{$v \in V$}
+	%	\State $\strategy \leftarrow \strategy \cup sub\_strategy \in v.tbl$
+	%\EndFor
 	\State \Return{\strategy}
 
 	\EndProcedure
@@ -115,26 +123,62 @@ strategy for an operator DAG}
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{\label{alg:has-same-neigh-config}Returns $\top$ if the two
+	\caption{\label{alg:is-compatible}Returns $\top$ if the two
 	sets of sub-strategies of a vertex have same configurations for the
 	neighboring vertices.}
 
 	\begin{algorithmic}[1]
-		\Procedure{HasSameNeighConfigs}{$v, S_1, S_2$}
+		\Procedure{IsCompatible}{$v, S_1, S_2$}
 			\ForAll{$s_1 \in S_1$}
 				\ForAll{$s_2 \in S_2$}
 					\State $N_1 \leftarrow \set{(n,c)\in S_1~|~n \not= v}$
 					\State $N_2 \leftarrow \set{(n,c)\in S_2~|~n \not= v}$
-					\\
+					\Statex
 
 					\If{$N_1 \not= N_2$}
 						\State \Return{$\bot$}
 					\EndIf
 				\EndFor
 			\EndFor
-			\\
+			\Statex
 			\State \Return{$\top$}
 		\EndProcedure
+	\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}
+	\caption{\label{alg:valid-strategies} Returns a set of valid strategies}
+
+	\begin{algorithmic}[1]
+		\Procedure{ValidStrategies}{$G=(V,E)$}
+
+		\State $\strategy \leftarrow \emptyset$
+		\ForAll{$v \in V$}
+			\If{$\strategy = \emptyset$}
+				\State $\strategy \leftarrow v.tbl$
+				\State \Call{Continue}{}
+			\EndIf
+
+			\Statex
+
+			\State $\strategy' \leftarrow \emptyset$
+			\ForAll{$S \in \strategy$}
+				\ForAll{$T \in v.tbl$}
+					\If{$\Call{IsCompatible}{S, T} = \top$}
+						\State $S' \leftarrow S \cup T$
+						\State $\strategy' \leftarrow \strategy' \cup \set{S'}$
+					\EndIf
+				\EndFor
+			\EndFor
+			\State $\strategy \leftarrow \strategy'$
+		\EndFor
+
+		\Statex
+		\State\Return{$\strategy$}
+
+		\EndProcedure
+
 	\end{algorithmic}
 \end{algorithm}
 
