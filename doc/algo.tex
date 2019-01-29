@@ -66,8 +66,6 @@ strategy for an operator DAG}
 		all the neighboring configurations are the same. Refer
 		Alg.~\ref{alg:has-same-neigh-config} for the function
 		\Call{HasSameNeighConfig}{}}
-		%\State $\mathcal{P} \leftarrow \Call{PartitionSubStrategies}{G, v_{min}}$
-		%\Comment{Refer Alg.~\ref{alg:partition}}
 		\State $\mathcal{P} \leftarrow \{S_1,S_2,\dots~|~$
 		\parbox[t]{.7\textwidth}{
 				$\cup_{S_i} = v_{min}.tbl \land i \not = j \implies S_i \cap S_j = \emptyset
@@ -102,8 +100,13 @@ strategy for an operator DAG}
 		\State $U \leftarrow U\setminus \set{v_{min}}$
 	\EndWhile
 	\\
-	\State $\strategy \leftarrow \Call{OptConfig}{G, tbl}$ \Comment{Refer
-	Alg.~\ref{alg:optconfig}}
+
+	\LeftComment{Once all the vertices are processed, $v.tbl$ of all the vertices
+	should contain just a single entry.}
+	\State $\strategy \leftarrow \emptyset$
+	\ForAll{$v \in V$}
+		\State $\strategy \leftarrow \strategy \cup v.tbl$
+	\EndFor
 	\State \Return{\strategy}
 
 	\EndProcedure
@@ -112,7 +115,7 @@ strategy for an operator DAG}
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{\label{alg:has-same-neigh-config}Returns true if the two
+	\caption{\label{alg:has-same-neigh-config}Returns $\top$ if the two
 	sets of sub-strategies of a vertex have same configurations for the
 	neighboring vertices.}
 
@@ -132,18 +135,6 @@ strategy for an operator DAG}
 			\\
 			\State \Return{$\top$}
 		\EndProcedure
-	\end{algorithmic}
-\end{algorithm}
-
-\begin{algorithm}
-	\caption{\label{alg:optconfig}Algorithm that extracts an optimal configuration
-	from the dynamic programming table generated in Alg.~\ref{alg:findoptstrategy}}
-
-	\begin{algorithmic}
-		\Procedure{OptConfig}{$G, tbl$}
-
-		\EndProcedure
-
 	\end{algorithmic}
 \end{algorithm}
 
