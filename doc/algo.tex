@@ -6,11 +6,15 @@
 \usepackage[margin=1in]{geometry}
 
 \algnewcommand{\LeftComment}[1]{\State \(\triangleright\) #1}
+\algnewcommand{\LongComment}[2]{\Comment{\parbox[t]{#1}{#2}}}
+
+\newcommand{\Inputs}[1]{\State \textbf{Input(s): }\parbox[t]{.8\textwidth}{#1}}
+\newcommand{\Outputs}[1]{\State \textbf{Output(s): }\parbox[t]{.8\textwidth}{#1}}
+\newcommand{\strategy}{\ensuremath{\mathcal{S}}}
+
 \DeclareMathOperator*{\argmax}{arg\,max}
 \DeclareMathOperator*{\argmin}{arg\,min}
-
-\newcommand{\true}{\textsf{True}}
-\newcommand{\false}{\textsf{False}}
+\newcommand{\set}[1]{\{#1\}}
 
 \begin{document}
 
@@ -20,56 +24,87 @@ strategy for an operator DAG}
 
 \begin{algorithmic}[1]
 	\Procedure{FindOptStrategy}{$G=(V,E)$, $nprocs$}
+	\Inputs{$G=(V,E):$ Operator DAG.\\
+	$(\forall{v\in V})[v.dim]:$ Dimension of the iteration domain of the operation of
+	$v$.\\
+	$nprocs:$ Number of processors.}
+	\Outputs{\strategy: Optimal parallelization starategy for $G$ }
+	\\
 
 	\ForAll{$v \in V$}
-		\State $v.neighbors \leftarrow  \{u: (u,v) \in E \lor (v,u) \in E\}$
-		\State $v.processed \leftarrow \false$
-
-		\\
-		\LeftComment{$v.dim$: Itertion domain dimension of the operation in $v$}
-		\State $v.configs \leftarrow \{(c_1, c_2,\dots,c_{v.dim}):
-		\forall_{i\in[1,v.dim]}c_i\in \mathbb{Z^*}\land \prod_{i\in [1,v.dim]} c_i \le
-		nprocs\}$
+		\State $v.neighbors \leftarrow  \set{u ~|~ (u,v) \in E \lor (v,u) \in E}$
+		\State $v.processed \leftarrow \bot$
+		\State $v.configs \leftarrow \set{(c_1, c_2,\dots,c_{v.dim}) ~|~
+		(\forall{i\in[1,v.dim]})[c_i\in \mathbb{Z^+}]\land \prod_{i=1}^{v.dim} c_i \le
+		nprocs}$
 	\EndFor
 
 	\\
 
-	\State $tbl \leftarrow \emptyset$
-	\State $S \leftarrow \{v: v\in V \land v.processed = \false\}$ \Comment{Set
+	\LeftComment{Populate $v.tbl$ with all possible combinations of neighboring
+	configurations. Each entry in $v.tbl$ is a sub-strategy for the nodes $\set{v}
+	\cup v.neighbors$}
+	\ForAll{$v \in V$}
+		\State $v.tbl \leftarrow \prod_{u\in \set{v}\cup v.neighbors} \set{(u, cfg)
+		~|~cfg \in u.configs}$
+	\EndFor
+
+	\\
+
+	\State $U \leftarrow \set{v \in V ~|~v.processed = \bot}$ \Comment{Set
 	of unprocessed vertices}
-	\While{$S \not = \emptyset$}
+	\While{$U \not = \emptyset$}
 		\LeftComment{Choose a vertex with least no. of unprocessed neighbors from
-		$S$}
-		\ForAll{$v \in S$} 
-			\State $v.unprocessed\_neighbors \leftarrow \{u: u, v\in S \land u\in v.neighbors\}$
+		$U$}
+		\ForAll{$v \in U$} 
+			\State $v.unprocessed\_neighbors \leftarrow \set{u ~|~ u, v\in U \land u\in v.neighbors}$
 		\EndFor
-		\State $v_{min} \leftarrow \argmin_{v\in S} |v.unprocessed\_neighbors|$
+		\State $v_{min} \leftarrow \argmin_{v\in U} |v.unprocessed\_neighbors|$
 		\\
 
-		\LeftComment{Each element in $C$ is a set of pairs
-		$\{(u_1,cfg_1), \dots, (u_n, cfg_n)\}$, where $u_i$ is an
-		unprocessed neighbor of $v_{min}$ and $cfg_i$ is a valid configuration of
-		$u_i$}
-		\State $C \leftarrow \prod_{u\in v_{min}.unprocessed\_neighbors} \{(u,
-		cfg): cfg \in u.configs\}$
+		\LeftComment{Partition $v_{min}.tbl$ such that in each set of the partition,
+		all the neighboring configurations are the same. Refer
+		Alg.~\ref{alg:has-same-neigh-config} for the function
+		\Call{HasSameNeighConfig}{}}
+		%\State $\mathcal{P} \leftarrow \Call{PartitionSubStrategies}{G, v_{min}}$
+		%\Comment{Refer Alg.~\ref{alg:partition}}
+		\State $\mathcal{P} \leftarrow \{S_1,S_2,\dots~|~$
+		\parbox[t]{.7\textwidth}{
+				$\cup_{S_i} = v_{min}.tbl \land i \not = j \implies S_i \cap S_j = \emptyset
+				\land~\\\Call{HasSameNeighConfigs}{v_{min}, S_i, S_i} = \top)
+				\land~\\i \not = j \implies \Call{HasSameNeighConfigs}{v_{min}, S_i, S_j} =
+			\bot)
+		\}$}
 		\\
-
-		\LeftComment{For each combination of configuration of unprocessed neighbors
-		of $v_{min}$, find a config of $v_{min}$ that minimizes the cost}
-		\ForAll{$c \in C$}
-			\State $c_{min} \leftarrow \argmin_{c_v \in v_{min}.configs}
-			(\Call{Cost}{v_{min}, c_v, c})$ \Comment{Refer Alg.~\ref{alg:cost}}
-			\State $tbl \leftarrow tbl \cup \{(v_{min}, c, c_{min})\}$
+		\LeftComment{Iterate over each set $S \in \mathcal{P}$ and update
+		$v_{min}.tbl$ so that it only contains the sub-strategy in $S$ that has the
+		least cost.}
+		\State $v_{min}.tbl \leftarrow \emptyset$
+		\ForAll{$S \in \mathcal{P}$}
+			\State \label{ln:opt-strategy} $best \leftarrow \argmin_{s\in S}
+			\Call{Cost}{G, s}$
+			\State $v_{min}.tbl \leftarrow v_{min}.tbl \cup \set{best}$
 		\EndFor
 		\\
 
 
-		\State $v_{min}.processed \leftarrow \true$
-		\State $S \leftarrow S\setminus \{v_{min}\}$
+		\LeftComment{Restrict the tables of the neighbors based on the best
+		sub-strategies found for $v_{min}$ in Line~\ref{ln:opt-strategy}}
+		\ForAll{$v \in v_{min}.neighbors$}
+			\State $n\_common = |(v_{min}.neighbors \cap v.neighbors) \cup
+			\set{v_{min}, v}|$
+			\State $v.tbl \leftarrow \set{entry_1\in v.tbl ~|~ (\exists
+			entry_2 \in v_{min}.tbl)[|entry_1 \cap entry_2| = n\_common]}$
+		\EndFor
+
+		\\
+		\State $v_{min}.processed \leftarrow \top$
+		\State $U \leftarrow U\setminus \set{v_{min}}$
 	\EndWhile
 	\\
-	\\
-	\Return{$\Call{OptConfig}{G, tbl}$} \Comment{Refer Alg.~\ref{alg:optconfig}}
+	\State $\strategy \leftarrow \Call{OptConfig}{G, tbl}$ \Comment{Refer
+	Alg.~\ref{alg:optconfig}}
+	\State \Return{\strategy}
 
 	\EndProcedure
 \end{algorithmic}
@@ -77,18 +112,28 @@ strategy for an operator DAG}
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{\label{alg:cost}Algorithm that returns the cost when configuration
-	$c$ is assigned to a vertex $v$, and its unprocessed neighbors have
-	configurations $U_c$}
+	\caption{\label{alg:has-same-neigh-config}Returns true if the two
+	sets of sub-strategies of a vertex have same configurations for the
+	neighboring vertices.}
 
-	\begin{algorithmic}
-		\Procedure{Cost}{$v, c, U_c$}
+	\begin{algorithmic}[1]
+		\Procedure{HasSameNeighConfigs}{$v, S_1, S_2$}
+			\ForAll{$s_1 \in S_1$}
+				\ForAll{$s_2 \in S_2$}
+					\State $N_1 \leftarrow \set{(n,c)\in S_1~|~n \not= v}$
+					\State $N_2 \leftarrow \set{(n,c)\in S_2~|~n \not= v}$
+					\\
 
+					\If{$N_1 \not= N_2$}
+						\State \Return{$\bot$}
+					\EndIf
+				\EndFor
+			\EndFor
+			\\
+			\State \Return{$\top$}
 		\EndProcedure
-
 	\end{algorithmic}
 \end{algorithm}
-
 
 \begin{algorithm}
 	\caption{\label{alg:optconfig}Algorithm that extracts an optimal configuration
