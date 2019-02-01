@@ -2,15 +2,28 @@
 
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{amsthm}
 \usepackage{algorithm,algpseudocode}
 \usepackage[margin=1in]{geometry}
 
-\algnewcommand{\LeftComment}[1]{\State \(\triangleright\) #1}
 \algnewcommand{\LongComment}[2]{\Comment{\parbox[t]{#1}{#2}}}
+\algnewcommand{\LeftComment}[1]{\State \(\triangleright\) #1}
 
+\newcommand{\rom}[1]{\uppercase\expandafter{\romannumeral #1\relax}}
 \newcommand{\Inputs}[1]{\State \textbf{Input(s): }\parbox[t]{.8\textwidth}{#1}}
 \newcommand{\Outputs}[1]{\State \textbf{Output(s): }\parbox[t]{.8\textwidth}{#1}}
-\newcommand{\strategy}{\ensuremath{\mathcal{S}}}
+\newcommand{\strategy}{\mathcal{S}}
+\newcommand{\optstrategy}{\widehat{\mathcal{S}}}
+\newcommand{\optcost}{\widehat{T}}
+\newcommand{\minv}{v_{min}}
+\newcommand{\vertcost}[1]{t_V(#1)}
+\newcommand{\edgecost}[1]{t_E(#1)}
+\newcommand{\neighbors}{n}
+\newcommand{\uneigh}{un}
+%\newcommand{\processed}{p}
+\newcommand{\configs}{cfg}
+
+\newtheorem{theorem}{Theorem}
 
 \DeclareMathOperator*{\argmax}{arg\,max}
 \DeclareMathOperator*{\argmin}{arg\,min}
@@ -28,84 +41,87 @@ strategy for an operator DAG}
 	$(\forall{v\in V})[v.dim]:$ Dimension of the iteration domain of the operation of
 	$v$.\\
 	$nprocs:$ Number of processors.}
-	\Outputs{\strategy: Optimal parallelization starategy for $G$ }
+	\Outputs{$\strategy$: Optimal parallelization starategy for $G$ }
 	\Statex
 
+	\LeftComment{Initialize vertex properties}
 	\ForAll{$v \in V$}
-		\State $v.neighbors \leftarrow  \set{u ~|~ (u,v) \in E \lor (v,u) \in E}$
-		\State $v.unprocessed\_neighbors \leftarrow v.neighbors$
-		\State $v.processed \leftarrow \bot$
-		\State $v.configs \leftarrow \set{(c_1, c_2,\dots,c_{v.dim}) ~|~
+		\State $v.\neighbors \leftarrow  \set{u ~|~ (u,v) \in E \lor (v,u) \in E}$
+		\Comment{Neighbors}
+		\State $v.\uneigh \leftarrow v.\neighbors$ \Comment{Unprocessed neighbors}
+		%\State $v.\processed \leftarrow \bot$
+		\State $v.\configs \leftarrow \set{(c_1, c_2,\dots,c_{v.dim}) ~|~
 		(\forall{i\in[1,v.dim]})[c_i\in \mathbb{Z^+}]\land \prod_{i=1}^{v.dim} c_i \le
-		nprocs}$
+		nprocs}$ \\ \Comment{Set of all possible configurations}
 	\EndFor
 
 	\Statex
 
 	\LeftComment{Populate $v.tbl$ with all possible combinations of neighboring
 	configurations. Each entry in $v.tbl$ is a sub-strategy for the nodes $\set{v}
-	\cup v.neighbors$}
+	\cup v.\neighbors$}
 	\ForAll{$v \in V$}
-		\State $v.tbl \leftarrow \prod_{u\in \set{v}\cup v.neighbors} \set{(u, cfg)
-		~|~cfg \in u.configs}$
-	\EndFor
+		\State \label{ln:all-configs}$v.tbl \leftarrow \prod_{u\in \set{v}\cup v.\neighbors} \set{(u, cfg)
+		~|~cfg \in u.\configs}$
+	\EndFor \label{ln:end-all-configs}
 
 	\Statex
 
 	%\State $U \leftarrow \set{v \in V ~|~v.processed = \bot}$ 
 	\State $U \leftarrow V$
 	\Comment{Set of unprocessed vertices}
-	\While{$U \not = \emptyset$}
+	\While{\label{ln:loop-begin}$U \not = \emptyset$}
 		\LeftComment{Choose a vertex with least no. of unprocessed neighbors from
 		$U$}
 		%\ForAll{$v \in U$} 
 		%	\State $v.unprocessed\_neighbors \leftarrow \set{u ~|~ u, v\in U \land u\in v.neighbors}$
 		%\EndFor
-		\State $v_{min} \leftarrow \argmin_{v\in U} |v.unprocessed\_neighbors|$
+		\State $\minv \leftarrow \argmin_{v\in U} |v.\uneigh|$
 		\Statex
 
-		\LeftComment{Partition $v_{min}.tbl$ such that in each set of the partition,
-		all the neighbor configurations are the same. Refer
-		Alg.~\ref{alg:is-compatible} for the function
-		\Call{IsCompatible}{}}
-		\State $\mathcal{P} \leftarrow \{S_1,S_2,\dots~|~$
+		\LeftComment{Partition $\minv.tbl$ such that in each set, all the neighbor
+		configurations are the same. Refer Alg.~\ref{alg:is-compatible} for the
+		function \Call{IsCompatible}{}}
+		\State \label{ln:partition} $\mathcal{P} \leftarrow \{S_1,S_2,\dots~|~$
 		\parbox[t]{.75\textwidth}{
-				$\cup_{S_i} = v_{min}.tbl \land i \not = j \implies S_i \cap S_j = \emptyset
-				\land~\\(\forall s_x \in S_i)(\forall s_y \in S_i)[\Call{IsCompatible}{s_x, s_y, v_{min}.neighbors} = \top]
+				$\cup_{S_i} = \minv.tbl \land i \not = j \implies S_i \cap S_j = \emptyset
+				\land~\\(\forall s_x \in S_i)(\forall s_y \in
+				S_i)[\Call{IsCompatible}{s_x, s_y, \minv.\neighbors} = \top]
 				\land~\\i \not = j \implies (\forall s_x \in S_i)(\forall s_y \in
-				S_j)[\Call{IsCompatible}{s_x, s_y, v_{min}.neighbors} = \bot]
+				S_j)[\Call{IsCompatible}{s_x, s_y, \minv.\neighbors} = \bot]
 		\}$}
 		\Statex
 		\LeftComment{Iterate over each set $S \in \mathcal{P}$ and update
-		$v_{min}.tbl$ so that it only contains the sub-strategy in $S$ that has the
+		$\minv.tbl$ so that it only contains the sub-strategy in $S$ that has the
 		least cost.}
-		\State $v_{min}.tbl \leftarrow \emptyset$
 		\ForAll{$S \in \mathcal{P}$}
 			\State \label{ln:opt-strategy} $best \leftarrow \argmin_{s\in S}
 			\Call{Cost}{G, s}$
-			\State $v_{min}.tbl \leftarrow v_{min}.tbl \cup \set{best}$
-		\EndFor
+			\State $rem \leftarrow S \setminus \set{best}$
+			\State \label{ln:pick-opt}$\minv.tbl \leftarrow \minv.tbl \setminus
+			rem$
+		\EndFor\label{ln:end-pick-opt}
 		\Statex
 
-		\ForAll{$v \in v_{min}.neighbors$}
+		\ForAll{$v \in \minv.\neighbors$}
 			\LeftComment{Restrict the tables of the neighbors based on the best
-			sub-strategies found for $v_{min}$ in Line~\ref{ln:opt-strategy}}
-			\State $common = (v_{min}.neighbors \cap v.neighbors) \cup
-			\set{v_{min}, v}$
-			\State $v.tbl \leftarrow \set{entry_1\in v.tbl ~|~ (\exists
-			entry_2 \in v_{min}.tbl)[\Call{IsCompatible}{entry_1, entry_2, common) =
+			sub-strategies found for $\minv$ in Line~\ref{ln:opt-strategy}}
+			\State $common = (\minv.\neighbors \cap v.\neighbors) \cup
+			\set{\minv, v}$
+			\State \label{ln:restrict-neigh} $v.tbl \leftarrow \set{t_1\in v.tbl ~|~ (\exists
+			t_2 \in \minv.tbl)[\Call{IsCompatible}{t_1, t_2, common) =
 			\top]}}$
 
 			\Statex
 
-			\State $v.unprocessed\_neighbors \leftarrow
-			v.unprocessed\_neighbors\setminus \set{v_{min}}$
+			\State $v.\uneigh \leftarrow
+			v.\uneigh\setminus \set{\minv}$
 		\EndFor
 
 		\Statex
-		\State $v_{min}.processed \leftarrow \top$
-		\State $U \leftarrow U\setminus \set{v_{min}}$
-	\EndWhile
+		%\State $\minv.\processed \leftarrow \top$
+		\State $U \leftarrow U\setminus \set{\minv}$
+	\EndWhile\label{ln:loop-end}
 	\Statex
 
 	%\LeftComment{Once all the vertices are processed, $v.tbl$ of all the vertices
@@ -118,7 +134,7 @@ strategy for an operator DAG}
 	%\ForAll{$v \in V$}
 	%	\State $\strategy \leftarrow \strategy \cup sub\_strategy \in v.tbl$
 	%\EndFor
-	\State \Return{\strategy}
+	\State \Return{$\strategy$}
 
 	\EndProcedure
 \end{algorithmic}
@@ -182,6 +198,104 @@ strategy for an operator DAG}
 
 	\end{algorithmic}
 \end{algorithm}
+
+\clearpage
+
+\section{Proof of optimality}
+\paragraph{Notation}
+Given a strategy $\strategy$ of a graph $G=(V,E)$ and $V'\subseteq V$,
+$\strategy_{|V'}$ denotes the sub-strategy restricted to the subgraph of $G$
+induced by $V'$, and $\strategy(v)$ denotes the configuration for the vertex $v$
+in $\strategy$.  
+Let $\optstrategy$ be an optimal strategy for an operator DAG
+$G=(V,E)$, and $\optcost = \Call{Cost}{G, \optstrategy}$
+%\sum_{v\in V} \vertcost{v, \optstrategy(v)} +
+%\sum_{(u,v)\in E} \edgecost{(u,v), \optstrategy(u), \optstrategy(v)}$ 
+be the optimal parallelization cost for $\optstrategy$.
+
+Alg.~\ref{alg:valid-strategies} takes a DAG $G$ as input, whose vertices
+have an associated property $tbl$ that contains a set of sub-strategies, and
+returns a set of all possible valid strategies for $G$.
+Line~\ref{ln:all-configs} of Alg.~\ref{alg:findoptstrategy} assigns all possible
+sub-strategies to each vertex in $G$. It can be seen that just before
+entering the loop at line~\ref{ln:loop-begin} in Alg.~\ref{alg:findoptstrategy},
+we have $\optstrategy \in \Call{ValidStrategies}{G}$.
+
+We will show that the invariant $(\exists\strategy \in
+\Call{ValidStrategies}{G})[\Call{Cost}{G, \strategy} \le \optcost]$ is
+maintained everywhere after line~\ref{ln:end-all-configs} in
+Alg.~\ref{alg:findoptstrategy}.
+
+\begin{theorem}
+	Given an operation DAG $G=(V,E)$ and an optimal parallelization strategy
+	$\optstrategy$ for $G$,  the invariant $(\exists\strategy \in
+	\Call{ValidStrategies}{G})[\Call{Cost}{G, \strategy} \le \optcost]$ is
+	maintained in any iteration of the loop $L$ in
+	lines~\ref{ln:loop-begin}--\ref{ln:loop-end} of
+	Alg.~\ref{alg:findoptstrategy}.
+
+	\proof
+	As a contradiction, consider that there exists an iteration $l$ of loop $L$
+	where the invariant is violated for the first time. 
+	Lines~\ref{ln:pick-opt} and \ref{ln:restrict-neigh} are the only places in
+	loop $L$ where some of the valid sub-strategies are removed from $v.tbl$. We
+	will consider both the cases below.
+
+	\paragraph{Case \rom{1}}
+	Consider line~\ref{ln:pick-opt} of Alg.~\ref{alg:findoptstrategy}.  Let
+	$\phi_{l}$ be the set of valid strategies returned by
+	$\Call{ValidStrategies}{G}$ at the beginning of an iteration $l$, and
+	$\phi_{l+1}$ be the set of valid strategies returned at the end of iteration
+	$l$.
+	Let $V' = V \setminus \set{\minv}$, and $E' = E \cap (V'\times V')$.
+	Note that line~\ref{ln:pick-opt} only removes some of the configurations of
+	the vertex $\minv$, i.e., ${\phi_l}_{|V'}$ does not change after execution of
+	line~\ref{ln:pick-opt}. 
+
+	Let $B$ denote the set of all $best$ sub-strategies picked in
+	line~\ref{ln:pick-opt} in iteration $l$. For some $\strategy \in B$,
+	let $B(\strategy_{|v.n})$ denote the configuration $c$ for $v$ s.t.
+	$\set{(v,c)} \cup \strategy_{|v.n} = \strategy$.
+	%$(\exists b \in B)[\strategy_{|v.n} \cup \set{(v,c)} = b]$. 
+	It can be seen that $B(\strategy_{|v.n})$ is unique from the construction of
+	$\mathcal{P}$ in line~\ref{ln:partition}. 
+	
+	We have,
+
+	\begin{align}
+		\optcost & = & \min_{\strategy \in \phi_l} \{\sum_{v \in V} \vertcost{v, \strategy(v)} +
+			\sum_{(u,v)\in E} \edgecost{(u,v), \strategy(u), \strategy(v)}\}\nonumber\\
+		& = & \min_{\strategy \in \phi_l}\{ \vertcost{\minv, \strategy(\minv)} +
+			\sum_{(u, \minv) \in E} \edgecost{(u, \minv), \strategy(u),
+			\strategy(\minv)}~+  \nonumber \\
+			& & \sum_{(\minv, v) \in E} \edgecost{(\minv, v), \strategy(\minv),
+			\strategy(v)} +
+			\sum_{v\in V'} \vertcost{v, \strategy(v)} + \sum_{(u,v) \in E'}
+			\edgecost{(u,v), \strategy(u), \strategy(v)} \} \nonumber\\
+		& \ge & \min_{\strategy \in \phi_l} \{\vertcost{\minv,
+		B(\strategy_{|\minv.n})} +
+			\sum_{(u, \minv) \in E} \edgecost{(u, \minv), \strategy(u),
+			B(\strategy_{|\minv.n})} ~+  \nonumber \\
+			& & \sum_{(\minv, v) \in E} \edgecost{(\minv, v), B(\strategy_{|\minv.n}),
+			\strategy(v)} +
+			\sum_{v\in V'} \vertcost{v, \strategy(v)} +
+			\sum_{(u,v) \in E'} \edgecost{(u,v), \strategy(u), \strategy(v)}
+			\}\label{eq:best}
+	\end{align}
+	contradicting our assumption, as there exists a strategy $\strategy \in
+	\phi_l$ and $\set{(\minv, B(\strategy_{|\minv.n})) \cup \strategy_{|V'}} \in
+	\phi_{l+1}$ whose cost is equal to $\optcost$.
+
+	Eq.~\ref{eq:best} above follows from the fact that
+	\[
+		best = \argmin_{\strategy_{|V''}} \sum_{v \in \set{\minv}\cup
+		\minv.\neighbors} \vertcost{v, \strategy_{|V''}(v)} + \sum_{(u,v) \in
+		E\setminus E'} \edgecost{(u,v), \strategy_{|V''}(u), \strategy_{|V''}(v)}
+	\] 
+
+
+\qed
+\end{theorem}
 
 
 \end{document}
