@@ -80,15 +80,15 @@ strategy for an operator DAG}
 		\Statex
 
 		\LeftComment{Partition $\minv.tbl$ such that in each set, all the neighbor
-		configurations are the same. Refer Alg.~\ref{alg:is-compatible} for the
-		function \Call{IsCompatible}{}}
+		configurations are the same. Refer Alg.~\ref{alg:is-valid} for the
+		function \Call{IsValid}{}}
 		\State \label{ln:partition} $\mathcal{P} \leftarrow \{S_1,S_2,\dots~|~$
 		\parbox[t]{.75\textwidth}{
 				$\cup_{S_i} = \minv.tbl \land i \not = j \implies S_i \cap S_j = \emptyset
 				\land~\\(\forall s_x \in S_i)(\forall s_y \in
-				S_i)[\Call{IsCompatible}{s_x, s_y, \minv.\neighbors} = \top]
+				S_i)[\Call{IsValid}{s_x, s_y, \minv.\neighbors} = \top]
 				\land~\\i \not = j \implies (\forall s_x \in S_i)(\forall s_y \in
-				S_j)[\Call{IsCompatible}{s_x, s_y, \minv.\neighbors} = \bot]
+				S_j)[\Call{IsValid}{s_x, s_y, \minv.\neighbors} = \bot]
 		\}$}
 		\Statex
 		\LeftComment{Iterate over each set $S \in \mathcal{P}$ and update
@@ -109,7 +109,7 @@ strategy for an operator DAG}
 			\State $common = (\minv.\neighbors \cap v.\neighbors) \cup
 			\set{\minv, v}$
 			\State \label{ln:restrict-neigh} $v.tbl \leftarrow \set{t_1\in v.tbl ~|~ (\exists
-			t_2 \in \minv.tbl)[\Call{IsCompatible}{t_1, t_2, common) =
+			t_2 \in \minv.tbl)[\Call{IsValid}{t_1, t_2, common) =
 			\top]}}$
 
 			\Statex
@@ -142,12 +142,12 @@ strategy for an operator DAG}
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{\label{alg:is-compatible}Returns $\top$ if the two
+	\caption{\label{alg:is-valid}Returns $\top$ if the two
 	sub-strategies $S_1$ and $S_2$ have same configurations for the
 	vertices in $V$.}
 
 	\begin{algorithmic}[1]
-		\Procedure{IsCompatible}{$S_1, S_2, V$}
+		\Procedure{IsValid}{$S_1, S_2, V$}
 			\State $N_1 \leftarrow \set{(n,c)\in S_1~|~n \in V}$
 			\State $N_2 \leftarrow \set{(n,c)\in S_2~|~n \in V}$
 			\Statex
@@ -183,7 +183,7 @@ strategy for an operator DAG}
 					\State $U_1 \leftarrow \set{u~|~(u,c)\in S}$
 					\State $U_2 \leftarrow \set{u~|~(u,c)\in v.tbl}$
 					\Statex
-					\If{$\Call{IsCompatible}{S, T, U_1\cap U_2} = \top$}
+					\If{$\Call{IsValid}{S, T, U_1\cap U_2} = \top$}
 						\State $\strategy' \leftarrow \strategy' \cup \set{S\cup T}$
 					\EndIf
 				\EndFor
@@ -241,12 +241,13 @@ Alg.~\ref{alg:findoptstrategy}.
 	loop $L$ where some of the valid sub-strategies are removed from $v.tbl$. We
 	will consider both the cases below.
 
-	\paragraph{Case \rom{1}}
-	Consider line~\ref{ln:pick-opt} of Alg.~\ref{alg:findoptstrategy}.  Let
-	$\phi_{l}$ be the set of valid strategies returned by
+	Let $\phi_{l}$ be the set of valid strategies returned by
 	$\Call{ValidStrategies}{G}$ at the beginning of an iteration $l$, and
 	$\phi_{l+1}$ be the set of valid strategies returned at the end of iteration
 	$l$.
+
+	\paragraph{Case \rom{1}}
+	Consider line~\ref{ln:pick-opt} of Alg.~\ref{alg:findoptstrategy}.
 	Let $V' = V \setminus \set{\minv}$, and $E' = E \cap (V'\times V')$.
 	Note that line~\ref{ln:pick-opt} only removes some of the configurations of
 	the vertex $\minv$, i.e., ${\phi_l}_{|V'}$ does not change after execution of
@@ -293,6 +294,11 @@ Alg.~\ref{alg:findoptstrategy}.
 		E\setminus E'} \edgecost{(u,v), \strategy_{|V''}(u), \strategy_{|V''}(v)}
 	\] 
 
+	\paragraph{Case \rom{2}}
+	Consider line~\ref{ln:restrict-neigh} in Alg.~\ref{alg:findoptstrategy}. As
+	the computation in line~\ref{ln:restrict-neigh} removes a
+	sub-strategy $S$ from $tbl$ only if there doesn't exist any valid strategy
+	that comprises of $S$, no optimal strategy is eliminated in this step.
 
 \qed
 \end{theorem}
