@@ -31,13 +31,88 @@
 
 \begin{document}
 
+\section{Terminologies}
+A \emph{computation graph} is a DAG $G=(V,E)$, whose vertices are the operations
+performed by different layers in a model in a single timestep, and edges are the
+tensors that are transferred between different operations. 
+Each operation $v\in V$ has an iteration domain whose size is represented by an
+ordered set.
+%, and the dimensionality of the iteration domain of an operation $v \in
+%V$ is represented as $v.dim$. 
+For e.g., a matrix-matrix multiplication operation (GEMM) that multiplies a matrix of
+size $m\times k$ with another matrix of size $k\times n$ has a three-dimensional
+iteration domain of size $(m,n,k)$.
+
+A \emph{parallelization configuration} for an operation is an ordered set of
+positive integers that describes how the iteration domain of the operation is
+distributed among $p$ processors. For instance, a configuration $(2,2,1)$ for
+GEMM operation denotes that the iteration domain is split into $2$ along $m$ and
+$n$ dimensions, and distributed among $4$ processors.
+
+A \emph{parallelization strategy} for a graph $G=(V,E)$ is a map $\strategy: V \rightarrow
+\mathbb{(Z^+)}^{d}$, where $d=\max_{v\in V} v.dim$, that
+assigns a valid configuration to each vertex in $G$. For e.g., the strategy
+$\set{(v_1, (2,1,1)), (v_2, (1,2,1))}$ denotes that the vertex $v_1$ is divided
+among two processors along its first iteration domain dimension, and the vertex
+$v_2$ is divided among two processors along its second dimension. An optimal
+parallelization strategy is the one that minimizes the total execution time of
+the graph.
+
+Given a strategy $\strategy$, total execution time of $G$ under $\strategy$ is
+given by $t_G(G, \strategy) = \sum_{v\in V} \vertcost{v, \strategy(v)} +
+\sum_{(u,v)\in E} \edgecost{(u,v), \strategy(u), \strategy(v)}$, where
+$\vertcost{v,c_v}$ provides the time to execute the operation of $v$ (i.e.,
+perform computation and communication such as gradient synchronization, etc.,)
+under the configuration $c_v$, and $\edgecost{(u,v), c_u, c_v}$ provides the
+time to communicate the tensors between operations (e.g., time for all-to-all
+communication to transpose the matrices).
+
+\section{Finding an optimal strategy for a computation graph}
+A brute-force method to find an optimal strategy is to enumerate all possible
+strategies, and pick the one that minimizes the total time. However, as this
+algorithm is exponential in complexity, it is not practical to analyze all
+possible strategies. Given a strategy $\strategy$ for $G$, it can be seen that
+if we change a configuration $c=\strategy(v)$ for a vertex $v$, it only affects
+the execution time of $v$ and the communication time with its neighbors. We make
+use of this insight to efficiently compute an optimal strategy in
+Alg.~\ref{alg:findoptstrategy}. Particularly, given a vertex $v$ and a
+strategy $\strategy$ for $G$, we can determine what would be the change in total
+execution time of the graph if we change the configuration for $v$ from, say,
+$c_1$ to $c_2$, by just looking at the configurations of the neighbors of $v$ in
+$\strategy$. Hence, if we have a set of possible configurations $\set{c_1, \dots
+c_n}$ for $v$, if changing from $c_i$ to $c_j$ provides a positive difference
+in execution time, then $c_i$ is sub-optimal under $\strategy$. This allows us
+to reduce the search space by removing $c_i$ from consideration for $\strategy$.
+A formal proof of optimality is provided in Thm.~\ref{thm:optimality}.
+
+Alg.~\ref{alg:findoptstrategy} takes a computation graph $G$ and the number of
+available processors as input, and returns an optimal strategy for $G$.
+Line~\ref{ln:all-configs} enumerates all possible configurations for a vertex.
+In lines~\ref{ln:start-all-sub-strategies}--\ref{ln:end-all-sub-strategies}
+enumerate all possible sub-strategies for a vertex $v$ and its neighbors from
+their configurations. These sub-strategies provide sufficient information needed
+to compute the change in the total execution time when we change a configuration
+for $v$.
+
+In lines~\ref{ln:loop-begin}--\ref{ln:loop-end}, in each iteration of the loop,
+we consider a vertex $v$ in the graph, and we determine what is the best
+configuration for $v$ (line~\ref{ln:pick-opt}) for each combination of its
+neighboring configurations. Any sub-optimal configurations are eliminated, thus
+reducing the search space of the strategies to be validated for optimality.
+
+Once all the vertices have been processed, we collect all remaining valid
+strategies from the configurations stored in the vertices (after the sub-optimal
+ones have been eliminated), we choose the one that provides the minimum cost in
+line~\ref{ln:opt-strategy}. In Thm.~\ref{thm:optimality} we show that the final
+strategy returned by Alg.~\ref{alg:findoptstrategy} is an optimal one.
+
 \begin{algorithm}
 \caption{\label{alg:findoptstrategy}Algorithm to determine optimal parallelization
-strategy for an operator DAG}
+strategy for a computation DAG}
 
 \begin{algorithmic}[1]
 	\Procedure{FindOptStrategy}{$G=(V,E)$, $nprocs$}
-	\Inputs{$G=(V,E):$ Operator DAG.\\
+	\Inputs{$G=(V,E):$ Computation DAG.\\
 	$(\forall{v\in V})[v.dim]:$ Dimension of the iteration domain of the operation of
 	$v$.\\
 	$nprocs:$ Number of processors.}
@@ -50,7 +125,7 @@ strategy for an operator DAG}
 		\Comment{Neighbors}
 		\State $v.\uneigh \leftarrow v.\neighbors$ \Comment{Unprocessed neighbors}
 		%\State $v.\processed \leftarrow \bot$
-		\State $v.\configs \leftarrow \set{(c_1, c_2,\dots,c_{v.dim}) ~|~
+		\State \label{ln:all-configs} $v.\configs \leftarrow \set{(c_1, c_2,\dots,c_{v.dim}) ~|~
 		(\forall{i\in[1,v.dim]})[c_i\in \mathbb{Z^+}]\land \prod_{i=1}^{v.dim} c_i \le
 		nprocs}$ \\ \Comment{Set of all possible configurations}
 	\EndFor
@@ -60,10 +135,10 @@ strategy for an operator DAG}
 	\LeftComment{Populate $v.tbl$ with all possible combinations of neighboring
 	configurations. Each entry in $v.tbl$ is a sub-strategy for the nodes $\set{v}
 	\cup v.\neighbors$}
-	\ForAll{$v \in V$}
-		\State \label{ln:all-configs}$v.tbl \leftarrow \prod_{u\in \set{v}\cup v.\neighbors} \set{(u, cfg)
+	\ForAll{$v \in V$}\label{ln:start-all-sub-strategies}
+		\State \label{ln:all-sub-strategies}$v.tbl \leftarrow \prod_{u\in \set{v}\cup v.\neighbors} \set{(u, cfg)
 		~|~cfg \in u.\configs}$
-	\EndFor \label{ln:end-all-configs}
+	\EndFor \label{ln:end-all-sub-strategies}
 
 	\Statex
 
@@ -130,7 +205,7 @@ strategy for an operator DAG}
 	one that minimizes the cost.}
 	\State $\strategy' \leftarrow \Call{ValidStrategies}{G}$ \Comment{Refer
 	Alg.~\ref{alg:valid-strategies}}
-	\State $\strategy \leftarrow \argmin_{S\in \strategy'} \Call{Cost}{G, S}$
+	\State \label{ln:opt-strategy}$\strategy \leftarrow \argmin_{S\in \strategy'} \Call{Cost}{G, S}$
 	%\ForAll{$v \in V$}
 	%	\State $\strategy \leftarrow \strategy \cup sub\_strategy \in v.tbl$
 	%\EndFor
@@ -207,7 +282,7 @@ Given a strategy $\strategy$ of a graph $G=(V,E)$ and $V'\subseteq V$,
 $\strategy_{|V'}$ denotes the sub-strategy restricted to the subgraph of $G$
 induced by $V'$, and $\strategy(v)$ denotes the configuration for the vertex $v$
 in $\strategy$.  
-Let $\optstrategy$ be an optimal strategy for an operator DAG
+Let $\optstrategy$ be an optimal strategy for a computation DAG
 $G=(V,E)$, and $\optcost = \Call{Cost}{G, \optstrategy}$
 %\sum_{v\in V} \vertcost{v, \optstrategy(v)} +
 %\sum_{(u,v)\in E} \edgecost{(u,v), \optstrategy(u), \optstrategy(v)}$ 
@@ -216,17 +291,17 @@ be the optimal parallelization cost for $\optstrategy$.
 Alg.~\ref{alg:valid-strategies} takes a DAG $G$ as input, whose vertices
 have an associated property $tbl$ that contains a set of sub-strategies, and
 returns a set of all possible valid strategies for $G$.
-Line~\ref{ln:all-configs} of Alg.~\ref{alg:findoptstrategy} assigns all possible
+Line~\ref{ln:all-sub-strategies} of Alg.~\ref{alg:findoptstrategy} assigns all possible
 sub-strategies to each vertex in $G$. It can be seen that just before
 entering the loop at line~\ref{ln:loop-begin} in Alg.~\ref{alg:findoptstrategy},
 we have $\optstrategy \in \Call{ValidStrategies}{G}$.
 
 We will show that the invariant $(\exists\strategy \in
 \Call{ValidStrategies}{G})[\Call{Cost}{G, \strategy} \le \optcost]$ is
-maintained everywhere after line~\ref{ln:end-all-configs} in
+maintained everywhere after line~\ref{ln:end-all-sub-strategies} in
 Alg.~\ref{alg:findoptstrategy}.
 
-\begin{theorem}
+\begin{theorem}\label{thm:optimality}
 	Given an operation DAG $G=(V,E)$ and an optimal parallelization strategy
 	$\optstrategy$ for $G$,  the invariant $(\exists\strategy \in
 	\Call{ValidStrategies}{G})[\Call{Cost}{G, \strategy} \le \optcost]$ is
