@@ -42,12 +42,8 @@ def GetNodeConfigs(node_dom, n_procs):
     log_n_procs = int(math.log2(n_procs))
     procs = [1 << i for i in range(log_n_procs + 1)]
 
-    configs = []
-    for c in itertools.product(procs, repeat=dim):
-        used_procs = reduce(op.mul, c, 1)
-        if used_procs <= n_procs:
-            configs.append(c)
-
+    configs = [c for c in itertools.product(procs, repeat=dim) if reduce(op.mul,
+        c, 1) <= n_procs]
     return configs
 
 

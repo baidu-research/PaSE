@@ -1,21 +1,30 @@
 import networkx as nx
 import numpy as np
-from functools import partial
+import pandas as pd
+
 import operator
+from functools import partial
 from sortedcontainers import SortedList
 import itertools
+import copy as cp
 
 import cost_np as cst
 import config as cfg
+import utils
 
 
 def AssignCostsToNodes(G, n_procs):
-    for _, attr in G.nodes(data=True):
+    for v, attr in G.nodes(data=True):
         dom = attr['dom']
-        configs = np.array(cfg.GetNodeConfigs(dom, n_procs))
+
+        config_tuples = cfg.GetNodeConfigs(dom, n_procs)
+        configs = np.array(config_tuples)
         costs = cst.GetVertexCosts(np.array(dom), configs)
+        idx = pd.Index(configs, dtype=tuple)
+
+        attr['config_tuples'] = config_tuples
         attr['configs'] = configs
-        attr['costs'] = np.column_stack((configs, costs))
+        attr['costs'] = pd.Series(costs, index=idx)
 
 
 def AssignCostsToEdges(G, n_procs):
@@ -27,189 +36,138 @@ def AssignCostsToEdges(G, n_procs):
 
         src_dom = np.array(src_attr['dom'])
         tgt_dom = np.array(tgt_attr['dom'])
-
+        src_config_tuples = src_attr['config_tuples']
+        tgt_config_tuples = tgt_attr['config_tuples']
         src_configs = src_attr['configs']
         tgt_configs = tgt_attr['configs']
-
-        # Repeat configs to get a cross-product of src and tgt configs
-        orig_src_rows = src_configs.shape[0]
-        orig_tgt_rows = tgt_configs.shape[0]
-        src_configs = np.repeat(src_configs, repeats=orig_tgt_rows, axis=0)
-        tgt_configs = np.tile(tgt_configs, (orig_src_rows, 1))
-        assert(src_configs.shape == tgt_configs.shape)
+        src_costs = src_attr['costs']
+        tgt_costs = tgt_attr['costs']
 
         costs = cst.GetEdgeCosts(src_dom, tgt_dom, src_configs, tgt_configs)
-
-        edge_attr['src_configs'] = src_configs
-        edge_attr['tgt_configs'] = tgt_configs
-        edge_attr['costs'] = np.column_stack((src_configs, tgt_configs, costs))
+        idx = pd.MultiIndex.from_product([src_config_tuples, tgt_config_tuples])
+        edge_attr['costs'] = pd.Series(costs, index=idx)
 
 
 def CreateGraph(batch_size, hidden_dim_size):
     G = nx.DiGraph()
-    G.add_node(1, dom=[batch_size, hidden_dim_size, hidden_dim_size])
-    G.add_node(2, dom=[batch_size, hidden_dim_size, hidden_dim_size])
-    G.add_node(3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
+    G.add_node(1, dim=3,dom=[batch_size, hidden_dim_size, hidden_dim_size])
+    G.add_node(2, dim=3,dom=[batch_size, hidden_dim_size, hidden_dim_size])
+    G.add_node(3, dim=3,dom=[batch_size, hidden_dim_size, hidden_dim_size])
     G.add_edge(1, 2)
     G.add_edge(2, 3)
 
     return G
 
 
-# Returns the config that provides minimum cost for its neighboring
-# configurations  'costs'
-# neighbors: List of neighbors of 'node'
-# node_costs: 2D array, with each row having a configuration and its cost
-# neigh_costs: List of configuration and cost. Each item in the list corresponds to
-#              a single config and its cost for the corresponding item in 'neighbors'
-def GetMinConfig(G, node, neighbors, node_costs, neigh_costs):
-    # TODO: Handle this case
-    if len(neighbors) == 0:
-        return
-
-    assert(len(neighbors) == len(neigh_costs))
-
-    neigh_costs_array = np.array(neigh_costs)
-    assert(neigh_costs_array.ndim == 2)
-
-    # Get the sum of computation costs of neighboring nodes
-    # 'min_cost' is scalar
-    min_cost = np.sum(neigh_costs_array[:, -1])
-
-    # Add 'min_cost' with costs for different configs of 'node'
-    # min_cost is a 2D array, each row is a node config and corresponding total
-    # comp cost
-    cost = node_costs
-    cost[:,-1] += min_cost
-    min_cost = cost
-
-    neigh_cost = dict(zip(neighbors, neigh_costs))
-
-    # Iterate over predecessors of 'node' and add communication cost
-    for pred, _, edge_cost in G.in_edges(node, data='costs'):
-        assert(pred in neigh_cost)
-
-        # Get the config-cost array of the source vertex of the edge
-        pred_cost = neigh_cost[pred]
-        assert(pred_cost.ndim == 1)
-
-        # Extract the rows in 'edge_cost' whose source vertex config matches the
-        # config in 'pred_cost'
-        idx = pred_cost.shape[0] - 1
-        cost = edge_cost[np.equal(edge_cost[:,:idx],
-            pred_cost[:-1]).all(axis=1)]
-
-        assert(cost.shape[0] == min_cost.shape[0])
-        assert(np.equal(cost[:, idx:-1], node_costs[:, :-1]).all() == True)
-        assert(np.equal(cost[:, idx:-1], min_cost[:, :-1]).all() == True)
-
-        # Add the comm cost 'cost' with comp cost 'min_cost'
-        min_cost[:,-1] += cost[:,-1]
-
-    # Iterate over successors of 'node' and add communication cost
-    for _, succ, edge_cost in G.out_edges(node, data='costs'):
-        assert(succ in neigh_cost)
-
-        # Get the config-cost array of the source vertex of the edge
-        succ_cost = neigh_cost[succ]
-        assert(succ_cost.ndim == 1)
-
-        # Extract the rows in 'edge_cost' whose source vertex config matches the
-        # config in 'succ_cost'
-        idx = node_costs.shape[1] - 1
-        cost = edge_cost[np.equal(edge_cost[:, idx:-1],
-            succ_cost[:-1]).all(axis=1).nonzero()]
-
-        assert(cost.shape[0] == min_cost.shape[0])
-        assert(np.equal(cost[:, :idx], node_costs[:, :-1]).all() == True)
-        assert(np.equal(cost[:, :idx], min_cost[:, :-1]).all() == True)
-
-        # Add the comm cost 'cost' with 'min_cost'
-        min_cost[:,-1] += cost[:,-1]
-
-    # Get the config and cost corresponding to minimum cost
-    min_idx_val = min_cost[min_cost[:,-1].argmin(axis=0)]
-    min_config = min_idx_val[:-1]
-
-    # TODO: Set DP attribute to node with neighbor configs and min_config
-
-    ## Reset edge configs to contain only min_config rows
-    #for pred, _, attr in G.in_edges(node, data=True):
-    #    tbl = attr['costs']
-
-    #    pred_config = neigh_cost[pred][:-1]
-    #    idx = pred_config.shape[0]
-
-    #    # Only include rows whose source configs are different from
-    #    # 'pred_config', or target config is same as 'min_config'
-    #    cond1 = np.not_equal(tbl[:,:idx], pred_config).all(axis=1)
-    #    cond2 = np.equal(tbl[:,idx:-1], min_config).all(axis=1)
-    #    cond = np.logical_or(cond1, cond2)
-    #    attr['costs'] = tbl[cond]
-
-    #for _, succ, attr in G.out_edges(node, data=True):
-    #    tbl = attr['costs']
-
-    #    succ_config = neigh_cost[succ][:-1]
-    #    idx = succ_config.shape[0]
-
-    #    # Only include rows whose source configs are different from
-    #    # 'succ_config', or target config is same as 'min_config'
-    #    cond1 = np.not_equal(tbl[:,idx:-1], succ_config).all(axis=1)
-    #    cond2 = np.equal(tbl[:,:idx], min_config).all(axis=1)
-    #    cond = np.logical_or(cond1, cond2)
-    #    attr['costs'] = tbl[cond]
+#def GetEdgeCosts(G, v, v_tbl, n, neigh_tbl):
+#    edges = G.edges()
+#    edge_configs = nx.get_edge_attributes(G, 'configs')
+#    edge_costs = nx.get_edge_attributes(G, 'costs')
+#
+#    if (v, n) in edges:
+#        tbl = np.concatenate(RowCartesian(v_tbl, neigh_tbl), axis=1)
+#        idx = np.searchsorted(edge_configs[(v,n)], tbl)
+#        costs = edge_costs[(v,n)][idx]
+#    else:
+#        assert((n, v) in G.edges())
 
 
-def Process(G, node, neighbors, processed_nodes):
-    node_attrs = G.nodes(data=True)
+def ExtendTable(tbl, verts, vert_cfgs):
+    cols = tbl.columns
 
-    unprocessed_neighbors = [i for i in neighbors if i not in processed_nodes]
-    node_attrs[node]['unprocessed_neigh'] = unprocessed_neighbors
+    # If all the vertices are already present, just return the original table
+    if set(verts).issubset(cols):
+        return tbl
 
-    # Get the 'costs' array of each neighbor node
-    iterators = []
-    for n in neighbors:
-        iterators.append(node_attrs[n]['costs'])
+    tbl_with_key = tbl.assign(key=0)
+    for v in verts:
+        if v not in cols:
+            v_df = pd.DataFrame(pd.Series(vert_cfgs[v]), columns=[v])
+            v_df = v_df.assign(key=0)
+            if tbl.empty:
+                tbl_with_key = v_df
+            else:
+                tbl_with_key = pd.merge(left=tbl_with_key, right=v_df, on
+                        ='key')
 
-    # Iterate over all combinations of costs
-    node_cost = node_attrs[node]['costs']
-    for vals in itertools.product(*iterators):
-        GetMinConfig(G, node, neighbors, node_cost, vals)
+    return tbl_with_key.drop('key', 1)
 
 
-def DP(G):
-    n_nodes = G.number_of_nodes()
-    min_key, min_val = 0, n_nodes
-    unprocessed_neighbors = {}
+def GetVertexIndices(v, g_tbl, vert_costs):
+    if v in g_tbl.columns:
+        in_tbl = True
+        v_idx = pd.Index(g_tbl.loc[:, v])
+    else:
+        in_tbl = False
+        v_idx = vert_costs[v].index
 
-    # Set the unprocessed neighbor count of each node to its node degree
-    for k, v in nx.degree(G):
-        assert(v > 0)
-        unprocessed_neighbors[k] = v
-        if v < min_val:
-            min_key, min_val = k, v
+    return in_tbl, v_idx
 
-    # Iterate over unprocessed nodes
-    processed = SortedList()
-    while len(unprocessed_neighbors) > 0:
-        # Get the node with minimum unprocessed neighbors
-        min_node = min(unprocessed_neighbors, key=unprocessed_neighbors.get)
-        del unprocessed_neighbors[min_node]
-        assert(min_node not in processed)
 
-        # Process the node
-        neighbors = list(G.predecessors(min_node)) + list(G.successors(min_node))
-        Process(G, min_node, neighbors, processed)
-        processed.add(min_node)
+def GetCosts(src, tgt, src_in_tbl, tgt_in_tbl, src_idx, tgt_idx, edge_costs,
+        costs):
+    if (not src_in_tbl) or (not tgt_in_tbl):
+        m_idx = pd.MultiIndex.from_product([src_idx, tgt_idx])
+    else:
+        m_idx = pd.MultiIndex.from_tuples(zip(src_idx, tgt_idx))
 
-        # Update the unprocessed neighbor count of 'min_node's neighbors
-        for node in neighbors:
-            if node in unprocessed_neighbors:
-                unprocessed_neighbors[node] -= 1
+    curr_costs = edge_costs.loc[m_idx]
 
-    assert(len(processed) == n_nodes)
+    return costs
 
+
+def ProcessVertex(G, v):
+    g_tbl = G.graph['tbl']
+
+    vert_cfgs = nx.get_node_attributes(G, 'config_tuples')
+    vert_costs = nx.get_node_attributes(G, 'costs')
+    edge_costs = nx.get_edge_attributes(G, 'costs')
+
+    verts = [i for i in itertools.chain(G.predecessors(v), G.successors(v))]
+    #verts.append(v)
+
+    g_tbl = ExtendTable(g_tbl, verts, vert_cfgs)
+    G.graph['tbl'] = g_tbl
+
+    #v_in_tbl, v_idx = GetVertexIndices(v, g_tbl, vert_costs)
+    #costs = pd.DataFrame(vert_costs[v].loc[v_idx], columns=['cost'])
+    #costs.index.names = [v]
+
+    #for n in G.predecessors(v):
+    #    n_in_tbl, n_idx = GetVertexIndices(n, g_tbl, vert_costs)
+    #    costs = GetCosts(n, v, n_in_tbl, v_in_tbl, n_idx, v_idx, edge_costs,
+    #            costs)
+
+    #for n in G.successors(v):
+    #    n_in_tbl, n_idx = GetVertexIndices(n, g_tbl, vert_costs)
+    #    GetCosts(v, n, v_in_tbl, n_in_tbl, v_idx, n_idx, edge_costs)
+
+    #neigh = list(G.predecessors(v)) + list(G.successors(v))
+    #names_idx = []
+    #no_tbl_neigh = []
+    #if names:
+    #    for n in neigh:
+    #        try:
+    #            names_idx.append(names.index(n))
+    #        except ValueError:
+    #            no_tbl_neigh.append(n)
+    #else:
+    #    no_tbl_neigh = neigh
+
+    ## Create a list of iterators
+    #t = tbl[:, names_idx]
+    #neigh_tbls = []
+    #if t.size > 0:
+    #    neigh_tbls = [t]
+    #for n in no_tbl_neigh:
+    #    neigh_tbls.append(vert_cfgs[n])
+
+    ## Iterate over all sub-strategies
+    #v_cfg = vert_cfgs[v]
+    #for ss in itertools.product(*neigh_tbls):
+    #    ss = np.concatenate(ss).reshape(1, -1)
+    #    ss = np.repeat(ss, v_cfg.shape[0], axis=0)
+    #    ss = np.concatenate((ss, v_cfg), axis=1)
 
 
 def main():
@@ -219,6 +177,7 @@ def main():
 
     # Create input graph
     G = CreateGraph(batch_size, hidden_dim_size)
+    G.graph['tbl'] = pd.DataFrame()
 
     # Assign config list to nodes in 'G', and their costs
     AssignCostsToNodes(G, n_procs)
@@ -226,8 +185,11 @@ def main():
     # Assign configs and costs for each edge
     AssignCostsToEdges(G, n_procs)
 
-    # Run the DP
-    DP(G)
+    # Process the vertices
+    for v in G.nodes():
+        ProcessVertex(G, v)
+
+    #print(G.graph['tbl'])
 
 
 if __name__ == "__main__":

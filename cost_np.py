@@ -1,4 +1,5 @@
 import numpy as np
+import utils
 
 def GetVertexCosts(node_dom, configs):
     m_dim, n_dim, k_dim = 0, 1, 2
@@ -8,7 +9,7 @@ def GetVertexCosts(node_dom, configs):
 
     # Cost for reducing the output during fwd phase
     # All-reduce cost = 2*((m*n)/P)*(P-1)
-    words = np.multiply.reduce(dom_per_proc[:, [m_dim,n_dim]], axis=1)
+    words = np.multiply.reduce(dom_per_proc[:, m_dim:n_dim+1], axis=1)
     procs = configs[:,k_dim]
     words /= procs
     steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
@@ -41,9 +42,9 @@ def GetEdgeCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
 
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
-    tgt_area = tgt_dom_per_proc[:, [m_dim,k_dim]]
-    src_area = src_dom_per_proc[:, [m_dim,n_dim]]
-    area_needed = GetAreaNeeded(tgt_area, src_area)
+    src_dom_per_proc, tgt_dom_per_proc = utils.RowCartesian(src_dom_per_proc[:,
+        m_dim:n_dim+1], tgt_dom_per_proc[:, [m_dim,k_dim]])
+    area_needed = GetAreaNeeded(tgt_dom_per_proc, src_dom_per_proc)
     costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
                                                             # account for fwd
                                                             # and bwd phases
