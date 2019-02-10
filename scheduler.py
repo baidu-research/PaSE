@@ -20,11 +20,11 @@ def AssignCostsToNodes(G, n_procs):
         config_tuples = cfg.GetNodeConfigs(dom, n_procs)
         configs = np.array(config_tuples)
         costs = cst.GetVertexCosts(np.array(dom), configs)
-        idx = pd.Index(configs, dtype=tuple)
+        idx = pd.Index(configs, dtype=tuple, name=str(v))
 
         attr['config_tuples'] = config_tuples
         attr['configs'] = configs
-        attr['costs'] = pd.Series(costs, index=idx)
+        attr['costs'] = pd.Series(costs, index=idx, name='cost')
 
 
 def AssignCostsToEdges(G, n_procs):
@@ -44,8 +44,9 @@ def AssignCostsToEdges(G, n_procs):
         tgt_costs = tgt_attr['costs']
 
         costs = cst.GetEdgeCosts(src_dom, tgt_dom, src_configs, tgt_configs)
-        idx = pd.MultiIndex.from_product([src_config_tuples, tgt_config_tuples])
-        edge_attr['costs'] = pd.Series(costs, index=idx)
+        idx = pd.MultiIndex.from_product([src_config_tuples, tgt_config_tuples],
+                names=[str(src), str(tgt)])
+        edge_attr['costs'] = pd.Series(costs, index=idx, name='cost')
 
 
 def CreateGraph(batch_size, hidden_dim_size):
@@ -59,44 +60,30 @@ def CreateGraph(batch_size, hidden_dim_size):
     return G
 
 
-#def GetEdgeCosts(G, v, v_tbl, n, neigh_tbl):
-#    edges = G.edges()
-#    edge_configs = nx.get_edge_attributes(G, 'configs')
-#    edge_costs = nx.get_edge_attributes(G, 'costs')
-#
-#    if (v, n) in edges:
-#        tbl = np.concatenate(RowCartesian(v_tbl, neigh_tbl), axis=1)
-#        idx = np.searchsorted(edge_configs[(v,n)], tbl)
-#        costs = edge_costs[(v,n)][idx]
-#    else:
-#        assert((n, v) in G.edges())
-
-
-def ExtendTable(tbl, verts, vert_cfgs):
+def ExtendTable(tbl, verts, vert_labels, vert_cfgs):
     cols = tbl.columns
 
     # If all the vertices are already present, just return the original table
-    if set(verts).issubset(cols):
+    if set(vert_labels).issubset(cols):
         return tbl
 
     tbl_with_key = tbl.assign(key=0)
     for v in verts:
-        if v not in cols:
-            v_df = pd.DataFrame(pd.Series(vert_cfgs[v]), columns=[v])
+        if str(v) not in cols:
+            v_df = pd.DataFrame(pd.Series(vert_cfgs[v], name=str(v)))
             v_df = v_df.assign(key=0)
             if tbl.empty:
                 tbl_with_key = v_df
             else:
-                tbl_with_key = pd.merge(left=tbl_with_key, right=v_df, on
-                        ='key')
+                tbl_with_key = tbl_with_key.merge(v_df, on ='key')
 
     return tbl_with_key.drop('key', 1)
 
 
 def GetVertexIndices(v, g_tbl, vert_costs):
-    if v in g_tbl.columns:
+    if str(v) in g_tbl.columns:
         in_tbl = True
-        v_idx = pd.Index(g_tbl.loc[:, v])
+        v_idx = pd.Index(g_tbl.loc[:, str(v)])
     else:
         in_tbl = False
         v_idx = vert_costs[v].index
@@ -104,16 +91,12 @@ def GetVertexIndices(v, g_tbl, vert_costs):
     return in_tbl, v_idx
 
 
-def GetCosts(src, tgt, src_in_tbl, tgt_in_tbl, src_idx, tgt_idx, edge_costs,
-        costs):
-    if (not src_in_tbl) or (not tgt_in_tbl):
-        m_idx = pd.MultiIndex.from_product([src_idx, tgt_idx])
-    else:
-        m_idx = pd.MultiIndex.from_tuples(zip(src_idx, tgt_idx))
+def AddEdgeCosts(src, tgt, edge_costs, tbl):
+    idx = pd.Index(tbl[[str(src), str(tgt)]])
+    edge_cost = edge_costs[(src, tgt)].loc[idx]
+    tbl['costs'] += edge_cost.values
 
-    curr_costs = edge_costs.loc[m_idx]
-
-    return costs
+    return tbl
 
 
 def ProcessVertex(G, v):
@@ -124,50 +107,42 @@ def ProcessVertex(G, v):
     edge_costs = nx.get_edge_attributes(G, 'costs')
 
     verts = [i for i in itertools.chain(G.predecessors(v), G.successors(v))]
-    #verts.append(v)
+    vert_labels = [str(i) for i in verts]
 
-    g_tbl = ExtendTable(g_tbl, verts, vert_cfgs)
+    # Extend the table with cartesian product of the neighbors
+    g_tbl = ExtendTable(g_tbl, verts, vert_labels, vert_cfgs)
+    tbl = g_tbl[vert_labels]
+
+    # Extend 'tbl' with column for 'v'
+    tbl = ExtendTable(tbl, [v], [str(v)], vert_cfgs)
+
+    # Get vertex costs for configs of 'v'
+    v_idx = tbl[str(v)]
+    tbl = tbl.assign(costs = vert_costs[v].loc[v_idx].values)
+
+    # Add edge cost of neighbors
+    for n in G.predecessors(v):
+        tbl = AddEdgeCosts(n, v, edge_costs, tbl)
+    for n in G.successors(v):
+        tbl = AddEdgeCosts(v, n, edge_costs, tbl)
+
+    # Get the min cost for each neighbor sub-strategy
+    tbl.set_index(vert_labels + [str(v)], inplace=True)
+    idx_names = tbl.index.names
+    assert(len(tbl.columns) == 1)
+    min_idx = tbl.groupby(level=vert_labels)['costs'].idxmin()
+    min_idx = pd.MultiIndex.from_tuples(min_idx.values)
+    tbl = tbl.loc[min_idx]
+    tbl.index.names = idx_names
+    tbl.reset_index(str(v), inplace=True)
+    tbl.drop('costs', 1, inplace=True)
+
+    # Merge 'tbl' with 'g_tbl'
+    merge_idx = vert_labels
+    if str(v) in g_tbl.columns:
+        merge_idx.append(str(v))
+    g_tbl = g_tbl.merge(tbl, on=merge_idx, how='inner')
     G.graph['tbl'] = g_tbl
-
-    #v_in_tbl, v_idx = GetVertexIndices(v, g_tbl, vert_costs)
-    #costs = pd.DataFrame(vert_costs[v].loc[v_idx], columns=['cost'])
-    #costs.index.names = [v]
-
-    #for n in G.predecessors(v):
-    #    n_in_tbl, n_idx = GetVertexIndices(n, g_tbl, vert_costs)
-    #    costs = GetCosts(n, v, n_in_tbl, v_in_tbl, n_idx, v_idx, edge_costs,
-    #            costs)
-
-    #for n in G.successors(v):
-    #    n_in_tbl, n_idx = GetVertexIndices(n, g_tbl, vert_costs)
-    #    GetCosts(v, n, v_in_tbl, n_in_tbl, v_idx, n_idx, edge_costs)
-
-    #neigh = list(G.predecessors(v)) + list(G.successors(v))
-    #names_idx = []
-    #no_tbl_neigh = []
-    #if names:
-    #    for n in neigh:
-    #        try:
-    #            names_idx.append(names.index(n))
-    #        except ValueError:
-    #            no_tbl_neigh.append(n)
-    #else:
-    #    no_tbl_neigh = neigh
-
-    ## Create a list of iterators
-    #t = tbl[:, names_idx]
-    #neigh_tbls = []
-    #if t.size > 0:
-    #    neigh_tbls = [t]
-    #for n in no_tbl_neigh:
-    #    neigh_tbls.append(vert_cfgs[n])
-
-    ## Iterate over all sub-strategies
-    #v_cfg = vert_cfgs[v]
-    #for ss in itertools.product(*neigh_tbls):
-    #    ss = np.concatenate(ss).reshape(1, -1)
-    #    ss = np.repeat(ss, v_cfg.shape[0], axis=0)
-    #    ss = np.concatenate((ss, v_cfg), axis=1)
 
 
 def main():
@@ -189,7 +164,7 @@ def main():
     for v in G.nodes():
         ProcessVertex(G, v)
 
-    #print(G.graph['tbl'])
+    print(G.graph['tbl'])
 
 
 if __name__ == "__main__":
