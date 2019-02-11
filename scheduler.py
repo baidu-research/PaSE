@@ -91,9 +91,17 @@ def GetVertexIndices(v, g_tbl, vert_costs):
     return in_tbl, v_idx
 
 
+def AddVertexCosts(v, vert_costs, tbl):
+    idx = pd.Index(tbl[str(v)])
+    vert_cost = vert_costs.loc[idx]
+    tbl['costs'] += vert_cost.values
+
+    return tbl
+
+
 def AddEdgeCosts(src, tgt, edge_costs, tbl):
     idx = pd.Index(tbl[[str(src), str(tgt)]])
-    edge_cost = edge_costs[(src, tgt)].loc[idx]
+    edge_cost = edge_costs.loc[idx]
     tbl['costs'] += edge_cost.values
 
     return tbl
@@ -121,9 +129,9 @@ def ProcessVertex(G, v):
 
     # Add edge cost of neighbors
     for n in G.predecessors(v):
-        tbl = AddEdgeCosts(n, v, edge_costs, tbl)
+        tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], tbl)
     for n in G.successors(v):
-        tbl = AddEdgeCosts(v, n, edge_costs, tbl)
+        tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], tbl)
 
     # Get the min cost for each neighbor sub-strategy
     tbl.set_index(vert_labels + [str(v)], inplace=True)
@@ -172,10 +180,9 @@ def main():
     edge_costs = nx.get_edge_attributes(G, 'costs')
     g_tbl = g_tbl.assign(costs = 0)
     for v, v_c in G.nodes(data='costs'):
-        idx = pd.Index(g_tbl[str(v)])
-        vert_cost = v_c.loc[idx]
-        g_tbl['costs'] += vert_cost.values
-
+        g_tbl = AddVertexCosts(v, v_c, g_tbl)
+    for u, v, e_c in G.edges(data='costs'):
+        g_tbl = AddEdgeCosts(u, v, e_c, g_tbl)
 
     # Pick the strategy with min cost
     min_idx = g_tbl['costs'].idxmin()
