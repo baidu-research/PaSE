@@ -1,6 +1,17 @@
 import numpy as np
-import utils
 
+
+def RowCartesian(arr1, arr2):
+    shape1 = arr1.shape[0]
+    shape2 = arr2.shape[0]
+
+    arr1 = np.repeat(arr1, repeats=shape2, axis=0)
+    arr2 = np.tile(arr2, (shape1, 1))
+
+    return arr1, arr2
+
+
+# Returns vertex costs for different configs
 def GetVertexCosts(node_dom, configs):
     m_dim, n_dim, k_dim = 0, 1, 2
 
@@ -34,6 +45,7 @@ def GetAreaNeeded(tgt_area, src_area):
     return (area_reqd - area_intersection)
 
 
+# Returns edge costs for different configs
 def GetEdgeCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
     m_dim, n_dim, k_dim = 0, 1, 2
 
@@ -42,7 +54,7 @@ def GetEdgeCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
 
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
-    src_dom_per_proc, tgt_dom_per_proc = utils.RowCartesian(src_dom_per_proc[:,
+    src_dom_per_proc, tgt_dom_per_proc = RowCartesian(src_dom_per_proc[:,
         m_dim:n_dim+1], tgt_dom_per_proc[:, [m_dim,k_dim]])
     area_needed = GetAreaNeeded(tgt_dom_per_proc, src_dom_per_proc)
     costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to

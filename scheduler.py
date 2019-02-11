@@ -9,15 +9,27 @@ import itertools
 import copy as cp
 
 import cost_np as cst
-import config as cfg
 import utils
 
 
+# Generates list of configurations for a vertex
+def GetNodeConfigs(node_dom, n_procs):
+    dim = len(node_dom)
+    log_n_procs = int(math.log2(n_procs))
+    procs = [1 << i for i in range(log_n_procs + 1)]
+
+    configs = [c for c in itertools.product(procs, repeat=dim) if reduce(op.mul,
+        c, 1) <= n_procs]
+    return configs
+
+
+# Computes vertex costs for different configurations of vertices, and assigns
+# them to the vertices
 def AssignCostsToNodes(G, n_procs):
     for v, attr in G.nodes(data=True):
         dom = attr['dom']
 
-        config_tuples = cfg.GetNodeConfigs(dom, n_procs)
+        config_tuples = GetNodeConfigs(dom, n_procs)
         configs = np.array(config_tuples)
         costs = cst.GetVertexCosts(np.array(dom), configs)
         idx = pd.Index(configs, dtype=tuple, name=str(v))
@@ -27,6 +39,7 @@ def AssignCostsToNodes(G, n_procs):
         attr['costs'] = pd.Series(costs, index=idx, name='cost')
 
 
+# Computes edge costs for different configs, and assigns them to edges
 def AssignCostsToEdges(G, n_procs):
     nodes = G.nodes(data=True)
 
@@ -49,6 +62,7 @@ def AssignCostsToEdges(G, n_procs):
         edge_attr['costs'] = pd.Series(costs, index=idx, name='cost')
 
 
+# Creates the graph for the model
 def CreateGraph(batch_size, hidden_dim_size):
     G = nx.DiGraph()
     G.add_node(1, dim=3,dom=[batch_size, hidden_dim_size, hidden_dim_size])
@@ -60,6 +74,8 @@ def CreateGraph(batch_size, hidden_dim_size):
     return G
 
 
+# Extends 'tbl' by adding configuration combinations of the vertices in
+# 'vert_labels'
 def ExtendTable(tbl, vert_labels, vert_cfgs):
     cols = tbl.columns
 
@@ -80,17 +96,7 @@ def ExtendTable(tbl, vert_labels, vert_cfgs):
     return tbl_with_key.drop('key', 1)
 
 
-def GetVertexIndices(v, g_tbl, vert_costs):
-    if str(v) in g_tbl.columns:
-        in_tbl = True
-        v_idx = pd.Index(g_tbl.loc[:, str(v)])
-    else:
-        in_tbl = False
-        v_idx = vert_costs[v].index
-
-    return in_tbl, v_idx
-
-
+# Adds vertex costs of 'v' to the table
 def AddVertexCosts(v, vert_costs, tbl):
     idx = pd.Index(tbl[str(v)])
     vert_cost = vert_costs.loc[idx]
@@ -99,6 +105,7 @@ def AddVertexCosts(v, vert_costs, tbl):
     return tbl
 
 
+# Adds edge costs of '(src, tgt)' to the table
 def AddEdgeCosts(src, tgt, edge_costs, tbl):
     idx = pd.Index(tbl[[str(src), str(tgt)]])
     edge_cost = edge_costs.loc[idx]
@@ -107,6 +114,7 @@ def AddEdgeCosts(src, tgt, edge_costs, tbl):
     return tbl
 
 
+# Processes vertex 'v'
 def ProcessVertex(G, v):
     g_tbl = G.graph['tbl']
 
