@@ -60,7 +60,7 @@ def CreateGraph(batch_size, hidden_dim_size):
     return G
 
 
-def ExtendTable(tbl, verts, vert_labels, vert_cfgs):
+def ExtendTable(tbl, vert_labels, vert_cfgs):
     cols = tbl.columns
 
     # If all the vertices are already present, just return the original table
@@ -68,9 +68,9 @@ def ExtendTable(tbl, verts, vert_labels, vert_cfgs):
         return tbl
 
     tbl_with_key = tbl.assign(key=0)
-    for v in verts:
-        if str(v) not in cols:
-            v_df = pd.DataFrame(pd.Series(vert_cfgs[v], name=str(v)))
+    for v in vert_labels:
+        if v not in cols:
+            v_df = pd.DataFrame(pd.Series(vert_cfgs[int(v)], name=v))
             v_df = v_df.assign(key=0)
             if tbl.empty:
                 tbl_with_key = v_df
@@ -106,15 +106,14 @@ def ProcessVertex(G, v):
     vert_costs = nx.get_node_attributes(G, 'costs')
     edge_costs = nx.get_edge_attributes(G, 'costs')
 
-    verts = [i for i in itertools.chain(G.predecessors(v), G.successors(v))]
-    vert_labels = [str(i) for i in verts]
+    vert_labels = [str(i) for i in itertools.chain(G.predecessors(v), G.successors(v))]
 
     # Extend the table with cartesian product of the neighbors
-    g_tbl = ExtendTable(g_tbl, verts, vert_labels, vert_cfgs)
-    tbl = g_tbl[vert_labels]
+    g_tbl = ExtendTable(g_tbl, vert_labels, vert_cfgs)
 
     # Extend 'tbl' with column for 'v'
-    tbl = ExtendTable(tbl, [v], [str(v)], vert_cfgs)
+    tbl = ExtendTable(g_tbl, [str(v)], vert_cfgs)
+    tbl = tbl[vert_labels + [str(v)]]
 
     # Get vertex costs for configs of 'v'
     v_idx = tbl[str(v)]
@@ -164,7 +163,26 @@ def main():
     for v in G.nodes():
         ProcessVertex(G, v)
 
-    print(G.graph['tbl'])
+    g_tbl = G.graph['tbl']
+    cols = g_tbl.columns
+    assert(len(cols) == G.number_of_nodes())
+
+    # Iterate over all strategies and compute their cost
+    vert_costs = nx.get_node_attributes(G, 'costs')
+    edge_costs = nx.get_edge_attributes(G, 'costs')
+    g_tbl = g_tbl.assign(costs = 0)
+    for v, v_c in G.nodes(data='costs'):
+        idx = pd.Index(g_tbl[str(v)])
+        vert_cost = v_c.loc[idx]
+        g_tbl['costs'] += vert_cost.values
+
+
+    # Pick the strategy with min cost
+    min_idx = g_tbl['costs'].idxmin()
+    min_strategy = g_tbl.drop('costs', 1).loc[min_idx]
+
+    print("Strategy with minimum cost:")
+    print(min_strategy)
 
 
 if __name__ == "__main__":
