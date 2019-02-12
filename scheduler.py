@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 import operator as op
-from functools import partial, reduce
+from functools import reduce
 from sortedcontainers import SortedList
 import itertools
 import math
@@ -198,7 +198,7 @@ def main():
 
     print("Strategy with minimum cost:")
     print("=====")
-    print(min_strategy)
+    print(min_strategy.to_string())
     print("=====")
 
 

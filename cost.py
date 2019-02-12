@@ -37,12 +37,19 @@ def GetVertexCosts(node_dom, configs):
     return costs
 
 
-def GetAreaNeeded(tgt_area, src_area):
-    area_reqd = np.multiply.reduce(tgt_area, axis=1)
-    area_intersection = np.multiply.reduce(np.minimum(tgt_area, src_area),
-            axis=1)
+def GetAreaNeeded(src_area, tgt_area, src_procs, tgt_procs):
+    # Area needed by the target vertex
+    area_reqd = np.prod(tgt_area, axis=1)
 
-    return (area_reqd - area_intersection)
+    # Intersection of area computed by source, and needed by target. If no. of
+    # target procs is more, at least 1 proc needs all data, so the intersection
+    # is 0
+    area_intersection = np.where(tgt_procs > src_procs, 0,
+            np.prod(np.minimum(tgt_area, src_area), axis=1))
+
+    # Area that needs to be communicated
+    area_needed = area_reqd - area_intersection
+    return area_needed
 
 
 # Returns edge costs for different configs
@@ -52,15 +59,17 @@ def GetEdgeCosts(src_dom, tgt_dom, src_cfgs, tgt_cfgs):
     src_dom_per_proc = np.ceil(src_dom / src_cfgs)
     tgt_dom_per_proc = np.ceil(tgt_dom / tgt_cfgs)
 
+    src_procs = np.prod(src_cfgs, axis=1)
+    tgt_procs = np.prod(tgt_cfgs, axis=1)
+
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
     src_dom_per_proc, tgt_dom_per_proc = RowCartesian(src_dom_per_proc[:,
         m_dim:n_dim+1], tgt_dom_per_proc[:, [m_dim,k_dim]])
-    area_needed = GetAreaNeeded(tgt_dom_per_proc, src_dom_per_proc)
+    area_needed = GetAreaNeeded(src_dom_per_proc, tgt_dom_per_proc, src_procs,
+            tgt_procs)
     costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
                                                             # account for fwd
                                                             # and bwd phases
-
-    # TODO: Add costs when no. of procs in layer1 and layer2 are different
 
     return costs
