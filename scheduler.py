@@ -181,6 +181,7 @@ def main():
     g_tbl = G.graph['tbl']
     cols = g_tbl.columns
     assert(len(cols) == G.number_of_nodes())
+    print("Total strategies to check: " + str(g_tbl.shape[0]))
 
     # Iterate over all strategies and compute their cost
     vert_costs = nx.get_node_attributes(G, 'costs')
@@ -196,7 +197,9 @@ def main():
     min_strategy = g_tbl.drop('costs', 1).loc[min_idx]
 
     print("Strategy with minimum cost:")
+    print("=====")
     print(min_strategy)
+    print("=====")
 
 
 if __name__ == "__main__":
