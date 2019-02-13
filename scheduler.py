@@ -62,14 +62,102 @@ def AssignCostsToEdges(G, n_procs):
         edge_attr['costs'] = pd.Series(costs, index=idx, name='cost')
 
 
+# Converts convolution domain to GEMM
+def ConvToGemm(img, fltr, stride, pad):
+    assert(len(img) == 4)
+    assert(len(fltr) == 4)
+    assert(img[1] == fltr[1])
+
+    c = img[1]
+    h = img[2]
+    w = img[3]
+    r = fltr[2]
+    s = fltr[3]
+
+    h_o = int((h - r + 2*pad) / stride) + 1
+    w_o = int((w - s + 2*pad) / stride) + 1
+
+    k = c * r * s
+    n = fltr[0]
+    m = img[0] * h_o * w_o
+
+    return [m, n, k]
+
+
+def Alexnet(G, b):
+    img = [b, 3, 227, 227]
+    node_id = 0
+
+    # Conv1
+    dom = ConvToGemm(img, [96, 3, 11, 11], 4, 0)
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    node_id += 1
+
+    # TODO: maxpool
+
+    # Conv2
+    dom = ConvToGemm(dom, [256, 96, 5, 5], 1, 2)
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    G.add_edge(node_id - 1, node_id)
+    node_id += 1
+
+    # TODO: maxpool
+
+    # Conv3
+    dom = ConvToGemm(dom, [384, 256, 3, 3], 1, 1)
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    G.add_edge(node_id - 1, node_id)
+    node_id += 1
+
+    # Conv4
+    dom = ConvToGemm(dom, [384, 384, 3, 3], 1, 1)
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    G.add_edge(node_id - 1, node_id)
+    node_id += 1
+
+    # Conv5
+    dom = ConvToGemm(dom, [256, 384, 3, 3], 1, 1)
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    G.add_edge(node_id - 1, node_id)
+    node_id += 1
+
+    # TODO: maxpool
+
+    # FC1
+    dom = [b, 4096, 256*6*6]
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    G.add_edge(node_id - 1, node_id)
+    node_id += 1
+
+    # FC2
+    dom = [b, 4096, 4096]
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    G.add_edge(node_id - 1, node_id)
+    node_id += 1
+
+    # FC3
+    dom = [b, 1024, 4096]
+    G.add_node(node_id, dim=len(dom), dom=dom)
+    G.add_edge(node_id - 1, node_id)
+    node_id += 1
+
+    return G
+
+
 # Creates the graph for the model
-def CreateGraph(batch_size, hidden_dim_size):
+def CreateGraph(graph_type, batch_size, hidden_dim_size):
     G = nx.DiGraph()
-    G.add_node(1, dim=3,dom=[batch_size, hidden_dim_size, hidden_dim_size])
-    G.add_node(2, dim=3,dom=[batch_size, hidden_dim_size, hidden_dim_size])
-    G.add_node(3, dim=3,dom=[batch_size, hidden_dim_size, hidden_dim_size])
-    G.add_edge(1, 2)
-    G.add_edge(2, 3)
+
+    if graph_type == 'test':
+        G.add_node(1, dim=3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
+        G.add_node(2, dim=3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
+        G.add_node(3, dim=3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
+        G.add_edge(1, 2)
+        G.add_edge(2, 3)
+    elif graph_type == 'alexnet':
+        G = Alexnet(G, batch_size)
+    else:
+        assert(false)
 
     return G
 
@@ -168,6 +256,9 @@ def main():
             help="Batch size. (Default: 128)")
     parser.add_argument("-m", "--model", type=int, required=False, default=128,
             help="Model size. (Default: 128)")
+    parser.add_argument("-g", "--graph", type=str, required=False,
+            choices=['test', 'alexnet'], default='alexnet', 
+            help="Neural net graph. (Default: 'alexnet')")
     args = vars(parser.parse_args())
 
     batch_size = args['batch']
@@ -175,7 +266,7 @@ def main():
     n_procs = args['procs']
 
     # Create input graph
-    G = CreateGraph(batch_size, hidden_dim_size)
+    G = CreateGraph(args['graph'], batch_size, hidden_dim_size)
     G.graph['tbl'] = pd.DataFrame()
 
     # Assign config list to nodes in 'G', and their costs
