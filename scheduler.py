@@ -7,6 +7,7 @@ from functools import reduce
 from sortedcontainers import SortedList
 import itertools
 import math
+from argparse import ArgumentParser
 
 import cost as cst
 
@@ -160,9 +161,18 @@ def ProcessVertex(G, v):
 
 
 def main():
-    batch_size = 32
-    hidden_dim_size = 32
-    n_procs = 4
+    parser = ArgumentParser()
+    parser.add_argument("-p", "--procs", type=int, required=False, default=8,
+            help="No. of processors. (Default: 32)")
+    parser.add_argument("-b", "--batch", type=int, required=False, default=128,
+            help="Batch size. (Default: 128)")
+    parser.add_argument("-m", "--model", type=int, required=False, default=128,
+            help="Model size. (Default: 128)")
+    args = vars(parser.parse_args())
+
+    batch_size = args['batch']
+    hidden_dim_size = args['model']
+    n_procs = args['procs']
 
     # Create input graph
     G = CreateGraph(batch_size, hidden_dim_size)
