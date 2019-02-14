@@ -2,6 +2,11 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+import math
+import itertools
+from functools import reduce
+import operator as op
+
 
 peak_flop = float(15 * 1000) # 125 TFLOP
 bw = float(150 / 8) # 150 GBytes/sec = 7/8 GWords/sec
@@ -36,7 +41,7 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
 
 
 # Returns edge costs for different configs
-def GetEdgeCosts(src_tsr, tgt_tsr, src_cfgs, tgt_cfgs):
+def GetEdgeCosts(src_op, tgt_op):
     src_tsr = src_op.out_tsr
     tgt_tsr = tgt_op.in_tsr
     src_cfgs = src_op.out_tsr_configs
@@ -53,7 +58,7 @@ def GetEdgeCosts(src_tsr, tgt_tsr, src_cfgs, tgt_cfgs):
 
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
-    area_needed = GetAreaNeeded(src_dom_per_proc, tgt_dom_per_proc, src_procs,
+    area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
             tgt_procs)
     costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
                                                             # account for fwd
@@ -75,11 +80,11 @@ def GetNodeConfigs(node_dom, n_procs):
 
 
 class Gemm():
-    m_idx, n_idx, k_idx = 0, 1, 2
-    
     def __init__(self, dom_size, n_procs, pw_op=False):
         assert(len(dom_size) == 3)
         self.pw_op = pw_op
+
+        m_idx, n_idx, k_idx = 0, 1, 2
 
         # Domain and input/output tensors
         self.dom = tuple(dom_size)
@@ -88,9 +93,9 @@ class Gemm():
 
         # Configurations
         self.dom_config_tuples = GetNodeConfigs(self.dom, n_procs)
-        self.dom_configs = np.array(self.config_tuples)
-        self.in_tsr_configs = self.configs[:, (m_idx, k_idx)]
-        self.out_tsr_configs = self.configs[:, (m_idx:n_idx+1)]
+        self.dom_configs = np.array(self.dom_config_tuples)
+        self.in_tsr_configs = self.dom_configs[:, (m_idx, k_idx)]
+        self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
 
 
     # Returns vertex costs for different configs
@@ -102,13 +107,13 @@ class Gemm():
         costs = 3.0 * np.prod(dom_per_proc, axis=1)
 
         # Cost of pointwise op
-        if pw_op == True:
+        if self.pw_op == True:
             costs += (dom_per_proc[:, m_dim] * dom_per_proc[:, n_dim])
     
         # Cost for reducing the output during fwd phase
         # All-reduce cost = 2*((m*n)/P)*(P-1)
         words = np.prod(dom_per_proc[:, m_dim:n_dim+1], axis=1)
-        procs = self.configs[:,k_dim]
+        procs = self.dom_configs[:,k_dim]
         words /= procs
         steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
         costs += (bw_to_flop * (words * steps))
@@ -116,7 +121,7 @@ class Gemm():
         # Cost for gradient update during bwd phase
         # All-reduce cost = 2*((n*k)/P)*(P-1)
         words = np.prod(dom_per_proc[:, [n_dim,k_dim]], axis=1)
-        procs = self.configs[:,m_dim]
+        procs = self.dom_configs[:,m_dim]
         words /= procs
         steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
         costs += (bw_to_flop * (words * steps))
