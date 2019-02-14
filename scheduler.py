@@ -9,157 +9,7 @@ import itertools
 import math
 from argparse import ArgumentParser
 
-import cost as cst
-
-
-# Generates list of configurations for a vertex
-def GetNodeConfigs(node_dom, n_procs):
-    dim = len(node_dom)
-    log_n_procs = int(math.log2(n_procs))
-    procs = [1 << i for i in range(log_n_procs + 1)]
-
-    configs = [c for c in itertools.product(procs, repeat=dim) if reduce(op.mul,
-        c, 1) <= n_procs]
-    return configs
-
-
-# Computes vertex costs for different configurations of vertices, and assigns
-# them to the vertices
-def AssignCostsToNodes(G, n_procs):
-    for v, attr in G.nodes(data=True):
-        dom = attr['dom']
-
-        config_tuples = GetNodeConfigs(dom, n_procs)
-        configs = np.array(config_tuples)
-        costs = cst.GetVertexCosts(np.array(dom), configs)
-        idx = pd.Index(configs, dtype=tuple, name=str(v))
-
-        attr['config_tuples'] = config_tuples
-        attr['configs'] = configs
-        attr['costs'] = pd.Series(costs, index=idx, name='cost')
-
-
-# Computes edge costs for different configs, and assigns them to edges
-def AssignCostsToEdges(G, n_procs):
-    nodes = G.nodes(data=True)
-
-    for src, tgt, edge_attr in G.edges(data=True):
-        src_attr = nodes[src]
-        tgt_attr = nodes[tgt]
-
-        src_dom = np.array(src_attr['dom'])
-        tgt_dom = np.array(tgt_attr['dom'])
-        src_config_tuples = src_attr['config_tuples']
-        tgt_config_tuples = tgt_attr['config_tuples']
-        src_configs = src_attr['configs']
-        tgt_configs = tgt_attr['configs']
-        src_costs = src_attr['costs']
-        tgt_costs = tgt_attr['costs']
-
-        costs = cst.GetEdgeCosts(src_dom, tgt_dom, src_configs, tgt_configs)
-        idx = pd.MultiIndex.from_product([src_config_tuples, tgt_config_tuples],
-                names=[str(src), str(tgt)])
-        edge_attr['costs'] = pd.Series(costs, index=idx, name='cost')
-
-
-# Converts convolution domain to GEMM
-def ConvToGemm(img, fltr, stride, pad):
-    assert(len(img) == 4)
-    assert(len(fltr) == 4)
-    assert(img[1] == fltr[1])
-
-    c = img[1]
-    h = img[2]
-    w = img[3]
-    r = fltr[2]
-    s = fltr[3]
-
-    h_o = int((h - r + 2*pad) / stride) + 1
-    w_o = int((w - s + 2*pad) / stride) + 1
-
-    k = c * r * s
-    n = fltr[0]
-    m = img[0] * h_o * w_o
-
-    return [m, n, k]
-
-
-def Alexnet(G, b):
-    img = [b, 3, 227, 227]
-    node_id = 0
-
-    # Conv1
-    dom = ConvToGemm(img, [96, 3, 11, 11], 4, 0)
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    node_id += 1
-
-    # TODO: maxpool
-
-    # Conv2
-    dom = ConvToGemm(dom, [256, 96, 5, 5], 1, 2)
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
-
-    # TODO: maxpool
-
-    # Conv3
-    dom = ConvToGemm(dom, [384, 256, 3, 3], 1, 1)
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
-
-    # Conv4
-    dom = ConvToGemm(dom, [384, 384, 3, 3], 1, 1)
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
-
-    # Conv5
-    dom = ConvToGemm(dom, [256, 384, 3, 3], 1, 1)
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
-
-    # TODO: maxpool
-
-    # FC1
-    dom = [b, 4096, 256*6*6]
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
-
-    # FC2
-    dom = [b, 4096, 4096]
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
-
-    # FC3
-    dom = [b, 1024, 4096]
-    G.add_node(node_id, dim=len(dom), dom=dom)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
-
-    return G
-
-
-# Creates the graph for the model
-def CreateGraph(graph_type, batch_size, hidden_dim_size):
-    G = nx.DiGraph()
-
-    if graph_type == 'test':
-        G.add_node(1, dim=3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
-        G.add_node(2, dim=3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
-        G.add_node(3, dim=3, dom=[batch_size, hidden_dim_size, hidden_dim_size])
-        G.add_edge(1, 2)
-        G.add_edge(2, 3)
-    elif graph_type == 'alexnet':
-        G = Alexnet(G, batch_size)
-    else:
-        assert(false)
-
-    return G
+import graph
 
 
 # Extends 'tbl' by adding configuration combinations of the vertices in
@@ -266,14 +116,12 @@ def main():
     n_procs = args['procs']
 
     # Create input graph
-    G = CreateGraph(args['graph'], batch_size, hidden_dim_size)
+    G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs)
     G.graph['tbl'] = pd.DataFrame()
 
-    # Assign config list to nodes in 'G', and their costs
-    AssignCostsToNodes(G, n_procs)
-
-    # Assign configs and costs for each edge
-    AssignCostsToEdges(G, n_procs)
+    # Assign cost to each node and edge
+    AssignCostsToNodes(G)
+    AssignCostsToEdges(G)
 
     # Process the vertices
     for v in G.nodes():
