@@ -18,6 +18,7 @@ def ExtendTable(tbl, vert_labels, vert_ops):
     if set(vert_labels).issubset(cols):
         return tbl
 
+    # Create missing columns and merge them with 'tbl'
     tbl_with_key = tbl.assign(key=0)
     for v in vert_labels:
         if v not in cols:
@@ -59,6 +60,7 @@ def ProcessGraph(G):
     edge_costs = nx.get_edge_attributes(G, 'costs')
 
     nodes = G.nodes()
+    # TODO: Set the processing order to minimize the search space
     for v in nodes:
         vert_labels = [str(i) for i in itertools.chain(G.predecessors(v), G.successors(v))]
 
@@ -71,24 +73,21 @@ def ProcessGraph(G):
 
         # Get vertex costs for configs of 'v'
         v_idx = tbl[str(v)]
-        tbl = tbl.assign(costs = vert_costs[v].loc[v_idx].values)
+        cost_tbl = tbl.assign(costs = vert_costs[v].loc[v_idx].values)
 
         # Add edge cost of neighbors
         for n in G.predecessors(v):
-            tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], tbl)
+            cost_tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], cost_tbl)
         for n in G.successors(v):
-            tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], tbl)
+            cost_tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], cost_tbl)
 
         # Get the min cost for each neighbor sub-strategy
-        tbl.set_index(vert_labels + [str(v)], inplace=True)
-        idx_names = tbl.index.names
-        assert(len(tbl.columns) == 1)
-        min_idx = tbl.groupby(level=vert_labels)['costs'].idxmin()
+        cost_tbl.set_index(vert_labels, append=True, inplace=True)
+        min_idx = cost_tbl['costs'].groupby(level=vert_labels,
+                axis=0).idxmin(axis=0)
         min_idx = pd.MultiIndex.from_tuples(min_idx.values)
-        tbl = tbl.loc[min_idx]
-        tbl.index.names = idx_names
-        tbl.reset_index(str(v), inplace=True)
-        tbl.drop('costs', 1, inplace=True)
+        assert(min_idx.levels[0].dtype == int)
+        tbl = tbl.loc[min_idx.levels[0]]
 
         # Merge 'tbl' with 'g_tbl'
         merge_idx = vert_labels
@@ -133,15 +132,15 @@ def main():
     # Iterate over all strategies and compute their cost
     vert_costs = nx.get_node_attributes(G, 'costs')
     edge_costs = nx.get_edge_attributes(G, 'costs')
-    g_tbl = g_tbl.assign(costs = 0)
+    g_cost_tbl = g_tbl.assign(costs = 0)
     for v, v_c in G.nodes(data='costs'):
-        g_tbl = AddVertexCosts(v, v_c, g_tbl)
+        g_cost_tbl = AddVertexCosts(v, v_c, g_cost_tbl)
     for u, v, e_c in G.edges(data='costs'):
-        g_tbl = AddEdgeCosts(u, v, e_c, g_tbl)
+        g_cost_tbl = AddEdgeCosts(u, v, e_c, g_cost_tbl)
 
     # Pick the strategy with min cost
-    min_idx = g_tbl['costs'].idxmin()
-    min_strategy = g_tbl.drop('costs', 1).loc[min_idx]
+    min_idx = g_cost_tbl['costs'].idxmin(axis=0)
+    min_strategy = g_tbl.loc[min_idx]
 
     print("Strategy with minimum cost:")
     print("=====")

@@ -27,31 +27,35 @@ def RowCartesian(arr1, arr2):
 
 def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
     # Area needed by the target vertex
-    area_reqd = np.prod(tgt_data_sizes, axis=1)
+    tgt_area = np.prod(tgt_data_sizes, axis=1)
 
     # Intersection of area computed by source, and needed by target.
     # If no. of target procs is more than src procs, then at least one proc
-    # contains no source data. So set it to 0
+    # contains no source data. So set it to 0.
     area_intersection = np.where(tgt_procs > src_procs, 0,
             np.prod(np.minimum(tgt_data_sizes, src_data_sizes), axis=1))
 
     # Area that needs to be communicated
-    area_needed = area_reqd - area_intersection
+    area_needed = tgt_area - area_intersection
     return area_needed
 
 
-# Returns edge costs for different configs
+# Returns edge costs for different configs. Edge cost is computed as the
+# difference b/w tensor volume needed per proc by the target vertex and the tensor
+# volume held per proc by the source vertex.
 def GetEdgeCosts(src_op, tgt_op):
     src_tsr = src_op.out_tsr
     tgt_tsr = tgt_op.in_tsr
     src_cfgs = src_op.out_tsr_configs
     tgt_cfgs = tgt_op.in_tsr_configs
 
+    # Calculate the domains per processor
     src_tsr_per_proc = np.ceil(src_tsr / src_cfgs)
     tgt_tsr_per_proc = np.ceil(tgt_tsr / tgt_cfgs)
     src_tsr_per_proc, tgt_tsr_per_proc = RowCartesian(src_tsr_per_proc,
             tgt_tsr_per_proc)
 
+    # Get the no. of procs used for each config
     src_procs = np.prod(src_cfgs, axis=1)
     tgt_procs = np.prod(tgt_cfgs, axis=1)
     src_procs, tgt_procs = RowCartesian(src_procs, tgt_procs)
