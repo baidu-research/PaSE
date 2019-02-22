@@ -81,7 +81,6 @@ def GetEdgeCosts(src_op, tgt_op):
 # Generates list of configurations for a vertex
 def GetNodeConfigs(node_dom, n_procs):
     dim = len(node_dom)
-    log_n_procs = int(math.log2(n_procs))
 
     proc_set = []
     for d in node_dom:
@@ -90,25 +89,6 @@ def GetNodeConfigs(node_dom, n_procs):
     configs = [c for c in itertools.product(*proc_set) if reduce(op.mul, c, 1)
         <= n_procs]
     return configs
-
-
-# Converts convolution domain to GEMM
-def ConvToGemm(img, fltr, stride, pad):
-    assert(len(img) == 4)
-    assert(len(fltr) == 4)
-    assert(img[1] == fltr[1])
-
-    c, h, w = img[1], img[2], img[3]
-    r, s = fltr[2], fltr[3]
-
-    h_o = int((h - r + 2*pad) / stride) + 1
-    w_o = int((w - s + 2*pad) / stride) + 1
-
-    k = c * r * s
-    n = fltr[0]
-    m = img[0] * h_o * w_o
-
-    return (m, n, k)
 
 
 class Gemm():
@@ -129,46 +109,46 @@ class Gemm():
         self.in_tsr_configs = self.dom_configs[:, (m_idx, k_idx)]
         self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
 
-
-    # Returns vertex costs for different configs
-    def GetVertexCosts(self):
-        m_dim, n_dim, k_dim = 0, 1, 2
- 
         # Cost for 1 GEMM in fwd phase + 2 GEMMs in bwd phase
         dom_per_proc = np.ceil(self.dom / self.dom_configs)
-        costs = 3.0 * np.prod(dom_per_proc, axis=1)
+        self.vert_costs = 3.0 * np.prod(dom_per_proc, axis=1)
 
         # Matrix addition cost for weight update
-        update_cost = dom_per_proc[:, k_dim] * dom_per_proc[:, n_dim]
-        costs += update_cost
+        update_cost = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
+        self.vert_costs += update_cost
 
         # Cost of pointwise op
-        if self.pw_op_cnt > 0:
-            pw_cost = dom_per_proc[:, m_dim] * dom_per_proc[:, n_dim]
-            costs += self.pw_op_cnt * 3 * pw_cost # Factor 3 is to account for 1
-                                                  # pointwise op (per element)
-                                                  # in fwd phase, 1
-                                                  # differentiation op in bwd
-                                                  # phase, and 1 hadamard
-                                                  # product in bwd phase
+        if pw_op_cnt > 0:
+            pw_cost = dom_per_proc[:, m_idx] * dom_per_proc[:, n_idx]
+            self.vert_costs += pw_op_cnt * 3 * pw_cost # Factor 3 is to
+                                                       # account for 1 pointwise
+                                                       # op (per element) in fwd
+                                                       # phase, 1
+                                                       # differentiation op in
+                                                       # bwd phase, and 1
+                                                       # hadamard product in bwd
+                                                       # phase
     
         # Cost for reducing the output during fwd phase
         # All-reduce cost = 2*((m*n)/P)*(P-1)
-        words = np.prod(dom_per_proc[:, m_dim:n_dim+1], axis=1)
-        procs = self.dom_configs[:,k_dim]
+        words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
+        procs = self.dom_configs[:,k_idx]
         words /= procs
         steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-        costs += (bw_to_flop * (words * steps))
+        self.vert_costs += (bw_to_flop * (words * steps))
     
         # Cost for gradient update during bwd phase
         # All-reduce cost = 2*((n*k)/P)*(P-1)
-        words = np.prod(dom_per_proc[:, [n_dim,k_dim]], axis=1)
-        procs = self.dom_configs[:,m_dim]
+        words = np.prod(dom_per_proc[:, [n_idx,k_idx]], axis=1)
+        procs = self.dom_configs[:,m_idx]
         words /= procs
         steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-        costs += (bw_to_flop * (words * steps))
-    
-        return costs
+        self.vert_costs += (bw_to_flop * (words * steps))
+
+
+    # Returns vertex costs for different configs
+    def GetVertexCosts(self):
+        return self.vert_costs
 
 
 class MaxPool():
@@ -186,11 +166,10 @@ class Conv():
         assert(len(fltr) == 4)
         assert(img[1] == fltr[1])
 
-        self.n_procs = n_procs
         self.maxpool = maxpool
         self.pw_op_cnt = pw_op_cnt
 
-        m_idx, n_idx, k_idx = 0, 1, 2
+        b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = 0, 1, 2, 3, 4, 5, 6
 
         b, n = img[0], fltr[0]
         c, h, w = img[1], img[2], img[3]
@@ -200,142 +179,128 @@ class Conv():
         w_o = int((w - s + 2*pad) / stride) + 1
 
         # Domain
-        self.dom = ConvToGemm(img, fltr, stride, pad)
+        self.dom = (b, c, h_o, w_o, r, s, n)
 
         # Reduced domain when maxpool is applied to 'img'. Configurations are
         # created on this reduced domain so that there is no intra-op
         # communication for max-pooling.
         if maxpool:
-            self.maxpool.h_o = int((h_o - maxpool.r) / maxpool.stride) + 1
-            self.maxpool.w_o = int((w_o - maxpool.s) / maxpool.stride) + 1
+            h_o = int((h_o - maxpool.r) / maxpool.stride) + 1
+            w_o = int((w_o - maxpool.s) / maxpool.stride) + 1
+            self.maxpool.dom = (b, n, h_o, w_o)
 
-            maxpool_m = b * self.maxpool.h_o * self.maxpool.w_o
-            self.maxpool.dom = (maxpool_m, n)
-            dom_with_maxpool = [maxpool_m] + self.dom[1:]
-        else:
-            dom_with_maxpool = self.dom
+        dom_with_maxpool = (b, c, h_o, w_o, r, s, n)
 
         # Input/output tensors
-        self.in_tsr = (self.dom[m_idx], self.dom[k_idx])
-        if maxpool:
-            self.out_tsr = self.maxpool.dom
-            self.orig_out_tsr = (b, n, self.maxpool.h_o, self.maxpool.w_o)
-        else:
-            self.out_tsr = (self.dom[m_idx], self.dom[n_idx])
-            self.orig_out_tsr = (b, n, h_o, w_o)
+        self.in_tsr = img
+        self.out_tsr = (b, n, h_o, w_o)
 
-        # Configurations
+        # Domain configurations
         self.dom_config_tuples = GetNodeConfigs(dom_with_maxpool, n_procs)
         self.dom_configs = np.array(self.dom_config_tuples)
-        self.in_tsr_configs = self.dom_configs[:, (m_idx, k_idx)]
-        self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
+
+        # In/Out tensor configs
+        self.in_tsr_configs = self.dom_configs[:, b_idx:w_idx+1]
+        self.out_tsr_configs = self.dom_configs[:, (b_idx, n_idx, h_idx, w_idx)]
         if maxpool:
-            self.maxpool.dom_configs = self.dom_configs[:, 0:2]
+            self.maxpool.dom_configs = self.out_tsr_configs
 
-
-    def GetVertexCosts(self):
-        gemm_op = Gemm(self.dom, self.n_procs, self.pw_op_cnt)
-        costs = gemm_op.GetVertexCosts()
+        # Get the cost for convolution op
+        gemm_op = Gemm((b*h_o*w_o, n, c*r*s), n_procs, pw_op_cnt)
+        self.vert_costs = gemm_op.GetVertexCosts()
 
         # Add the cost for max-pooling
         if self.maxpool:
             dom_per_proc = self.maxpool.dom / self.maxpool.dom_configs
             maxpool_costs = 3.0 * np.prod(dom_per_proc, axis=1)
 
-            assert(costs.shape == maxpool_costs.shape)
-            costs += maxpool_costs
+            assert(self.vert_costs.shape == maxpool_costs.shape)
+            self.vert_costs += maxpool_costs
 
-        return costs
+    # Reshape the output tensor
+    #def ReshapeOutput(self, shape):
+    #    assert(self.out_tsr == shape1)
+    #    self.out_tsr = shape2
 
-
-# Computes vertex costs for different configurations of vertices, and assigns
-# them to the vertices
-def AssignCostsToNodes(G):
-    for v, attr in G.nodes(data=True):
-        op = attr['op']
-        costs = op.GetVertexCosts()
-        idx = pd.Index(op.dom_configs, dtype=tuple, name=str(v))
-        attr['costs'] = pd.Series(costs, index=idx, name='cost')
+    def GetVertexCosts(self):
+        return self.vert_costs
 
 
-# Computes edge costs for different configs, and assigns them to edges
-def AssignCostsToEdges(G):
-    node_ops = G.nodes(data='op')
+def AddVertex(G, op):
+    node_id = G.number_of_nodes()
 
-    for src, tgt, edge_attr in G.edges(data=True):
+    costs = op.GetVertexCosts()
+    costs = pd.Series(costs, index=op.dom_config_tuples, name='cost')
+
+    G.add_node(node_id, op=op, costs=costs)
+    return node_id
+
+
+def AddEdge(G, src, tgt, src_op=None, tgt_op=None):
+    assert(src in G)
+    assert(tgt in G)
+
+    if (not src_op) or (not tgt_op):
+        node_ops = G.nodes(data='op')
         src_op = node_ops[src]
         tgt_op = node_ops[tgt]
-        src_config_tuples = src_op.dom_config_tuples
-        tgt_config_tuples = tgt_op.dom_config_tuples
 
-        costs = GetEdgeCosts(src_op, tgt_op)
-        idx = pd.MultiIndex.from_product([src_config_tuples, tgt_config_tuples],
-                names=[str(src), str(tgt)])
-        edge_attr['costs'] = pd.Series(costs, index=idx, name='cost')
+    costs = GetEdgeCosts(src_op, tgt_op)
+    idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
+        tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
+    costs = pd.Series(costs, index=idx, name='cost')
+
+    G.add_edge(src, tgt, costs=costs)
 
 
 def Alexnet(G, b, n_procs):
     img = (b, 3, 227, 227)
-    node_id = 0
 
     # Conv1 + relu + maxpool + norm
-    dom = ConvToGemm(img, (96, 3, 11, 11), 4, 0)
     node_op = Conv(img, (96, 3, 11, 11), 4, 0, n_procs, MaxPool((3,3), 2),
             pw_ops_in_bn+1)
-    G.add_node(node_id, op=node_op)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
 
     # Conv2 + relu + maxpool + norm
-    dom = ConvToGemm(dom, (256, 96, 5, 5), 1, 2)
-    node_op = Conv(node_op.orig_out_tsr, (256, 96, 5, 5), 1, 2, n_procs,
+    node_op = Conv(node_op.out_tsr, (256, 96, 5, 5), 1, 2, n_procs,
             MaxPool((3,3), 2), pw_ops_in_bn+1)
-    G.add_node(node_id, op=node_op)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id)
 
     # Conv3 + relu
-    dom = ConvToGemm(dom, (384, 256, 3, 3), 1, 1)
-    node_op = Conv(node_op.orig_out_tsr, (384, 256, 3, 3), 1, 1, n_procs,
+    node_op = Conv(node_op.out_tsr, (384, 256, 3, 3), 1, 1, n_procs,
             pw_op_cnt=1)
-    G.add_node(node_id, op=node_op)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id)
 
     # Conv4 + relu
-    dom = ConvToGemm(dom, (384, 384, 3, 3), 1, 1)
-    node_op = Conv(node_op.orig_out_tsr, (384, 384, 3, 3), 1, 1, n_procs,
+    node_op = Conv(node_op.out_tsr, (384, 384, 3, 3), 1, 1, n_procs,
             pw_op_cnt=1)
-    G.add_node(node_id, op=node_op)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id)
 
     # Conv5 + relu + maxpool
-    dom = ConvToGemm(dom, (256, 384, 3, 3), 1, 1)
-    node_op = Conv(node_op.orig_out_tsr, (256, 384, 3, 3), 1, 1, n_procs,
+    node_op = Conv(node_op.out_tsr, (256, 384, 3, 3), 1, 1, n_procs,
             MaxPool((3,3), 2), 1)
-    G.add_node(node_id, op=node_op)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id)
 
     # TODO: Reshape
 
     # FC6 + relu
     node_op = Gemm(node_op.out_tsr, (node_op.out_tsr[-1], 4096), n_procs, 1)
-    G.add_node(node_id, op=node_op)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id)
 
     # FC7 + relu
     node_op = Gemm(node_op.out_tsr, (node_op.out_tsr[-1], 4096), n_procs, 1)
-    G.add_node(node_id, op=node_op)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id)
 
     # FC8 + relu
     node_op = Gemm(node_op.out_tsr, (node_op.out_tsr[-1], 1024), n_procs, 1)
-    G.add_node(node_id, op=node_op)
-    G.add_edge(node_id - 1, node_id)
-    node_id += 1
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id)
 
     return G
 
@@ -343,12 +308,13 @@ def Alexnet(G, b, n_procs):
 def TestGraph(G, batch_size, hidden_dim_size, n_procs):
     dom = [batch_size, hidden_dim_size, hidden_dim_size]
 
-    G.add_node(0, op=Gemm(dom, n_procs))
-    G.add_node(1, op=Gemm(dom, n_procs))
-    G.add_node(2, op=Gemm(dom, n_procs))
+    node_id = AddVertex(G, Gemm(dom, n_procs))
 
-    G.add_edge(0, 1)
-    G.add_edge(1, 2)
+    node_id = AddVertex(G, Gemm(dom, n_procs))
+    AddEdge(G, node_id-1, node_id)
+
+    node_id = AddVertex(G, Gemm(dom, n_procs))
+    AddEdge(G, node_id-1, node_id)
 
     return G
 

@@ -118,10 +118,6 @@ def main():
     # Create input graph
     G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs)
 
-    # Assign cost to each node and edge
-    graph.AssignCostsToNodes(G)
-    graph.AssignCostsToEdges(G)
-
     # Process the vertices
     g_tbl = ProcessGraph(G)
 
