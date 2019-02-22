@@ -46,10 +46,40 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
     return area_needed
 
 
+def Reshape(src_tsr, tgt_tsr, src_tsr_per_proc, tgt_tsr_per_proc, reshape):
+    assert(len(src_tsr) > len(tgt_tsr))
+    assert(len(src_tsr) == reduce(op.add, [len(i) for i in reshape]))
+    assert(len(tgt_tsr) == len(reshape))
+
+    sz = tgt_tsr_per_proc.shape[0]
+    reshaped_tsr_per_proc = np.empty(sz, src_tsr_per_proc.shape[1])
+    for i, s in enumerate(reshape):
+        if len(s) == 1:
+            reshaped_tsr_per_proc[:, s] = tgt_tsr_per_proc[:, i]
+        else:
+            arr = np.empty([sz, len(s)])
+            arr[:,-1] = tgt_tsr_per_proc[:, i]
+
+            for j in range(len(s)-1, 0, -1):
+                idx = s[j]
+                val = src_tsr[idx]
+
+                assert(idx < len(src_tsr))
+                assert(np.logical_or((arr[:, j] % val == 0), (val % arr[:,
+                    j] == 0)).all())
+
+                arr[:, j-1] = np.maximum(1, arr[:, j] // val)
+                arr[:, j] = np.where(arr[:,j] > val, val, arr[:,j])
+
+            reshaped_tsr_per_proc[:, s] = arr
+
+    return reshaped_tsr_per_proc
+
+
 # Returns edge costs for different configs. Edge cost is computed as the
 # difference b/w tensor volume needed per proc by the target vertex and the tensor
 # volume held per proc by the source vertex.
-def GetEdgeCosts(src_op, tgt_op):
+def GetEdgeCosts(src_op, tgt_op, reshape):
     src_tsr = src_op.out_tsr
     tgt_tsr = tgt_op.in_tsr
     src_cfgs = src_op.out_tsr_configs
@@ -58,6 +88,13 @@ def GetEdgeCosts(src_op, tgt_op):
     # Calculate the domains per processor
     src_tsr_per_proc = np.ceil(src_tsr / src_cfgs)
     tgt_tsr_per_proc = np.ceil(tgt_tsr / tgt_cfgs)
+
+    if reshape:
+        tgt_tsr_per_proc = Reshape(src_tsr, tgt_tsr, src_tsr_per_proc,
+                tgt_tsr_per_proc, reshape)
+    else:
+        assert(len(src_tsr) == len(tgt_tsr))
+
     src_tsr_per_proc, tgt_tsr_per_proc = RowCartesian(src_tsr_per_proc,
             tgt_tsr_per_proc)
 
@@ -236,7 +273,7 @@ def AddVertex(G, op):
     return node_id
 
 
-def AddEdge(G, src, tgt, src_op=None, tgt_op=None):
+def AddEdge(G, src, tgt, src_op=None, tgt_op=None, reshape=None):
     assert(src in G)
     assert(tgt in G)
 
@@ -245,7 +282,7 @@ def AddEdge(G, src, tgt, src_op=None, tgt_op=None):
         src_op = node_ops[src]
         tgt_op = node_ops[tgt]
 
-    costs = GetEdgeCosts(src_op, tgt_op)
+    costs = GetEdgeCosts(src_op, tgt_op, reshape)
     idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
         tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
     costs = pd.Series(costs, index=idx, name='cost')
@@ -283,9 +320,7 @@ def Alexnet(G, b, n_procs):
     node_op = Conv(node_op.out_tsr, (256, 384, 3, 3), 1, 1, n_procs,
             MaxPool((3,3), 2), 1)
     node_id = AddVertex(G, node_op)
-    AddEdge(G, node_id - 1, node_id)
-
-    # TODO: Reshape
+    AddEdge(G, node_id - 1, node_id, reshape=[(0), (1,2,3)])
 
     # FC6 + relu
     node_op = Gemm(node_op.out_tsr, (node_op.out_tsr[-1], 4096), n_procs, 1)
