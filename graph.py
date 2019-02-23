@@ -47,15 +47,14 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
 
 
 def Reshape(src_tsr, tgt_tsr, src_tsr_per_proc, tgt_tsr_per_proc, reshape):
-    assert(len(src_tsr) > len(tgt_tsr))
     assert(len(src_tsr) == reduce(op.add, [len(i) for i in reshape]))
     assert(len(tgt_tsr) == len(reshape))
 
     sz = tgt_tsr_per_proc.shape[0]
-    reshaped_tsr_per_proc = np.empty(sz, src_tsr_per_proc.shape[1])
+    reshaped_tsr_per_proc = np.empty([sz, src_tsr_per_proc.shape[1]])
     for i, s in enumerate(reshape):
         if len(s) == 1:
-            reshaped_tsr_per_proc[:, s] = tgt_tsr_per_proc[:, i]
+            reshaped_tsr_per_proc[:, s[0]] = tgt_tsr_per_proc[:, i]
         else:
             arr = np.empty([sz, len(s)])
             arr[:,-1] = tgt_tsr_per_proc[:, i]
@@ -65,10 +64,11 @@ def Reshape(src_tsr, tgt_tsr, src_tsr_per_proc, tgt_tsr_per_proc, reshape):
                 val = src_tsr[idx]
 
                 assert(idx < len(src_tsr))
-                assert(np.logical_or((arr[:, j] % val == 0), (val % arr[:,
-                    j] == 0)).all())
+                #assert(np.logical_or((arr[:, j] % val == 0), (val % arr[:,
+                #    j] == 0)).all())
 
-                arr[:, j-1] = np.maximum(1, arr[:, j] // val)
+                #arr[:, j-1] = np.maximum(1, arr[:, j] // val)
+                arr[:, j-1] = np.ceil(arr[:,j] / val).astype(int)
                 arr[:, j] = np.where(arr[:,j] > val, val, arr[:,j])
 
             reshaped_tsr_per_proc[:, s] = arr
@@ -128,6 +128,45 @@ def GetNodeConfigs(node_dom, n_procs):
     return configs
 
 
+def ComputeGemmCost(dom, dom_configs, pw_op_cnt):
+    m_idx, n_idx, k_idx = 0, 1, 2
+    dom_per_proc = np.ceil(dom / dom_configs)
+
+    # Cost for 1 GEMM in fwd phase + 2 GEMMs in bwd phase
+    costs = 3.0 * np.prod(dom_per_proc, axis=1)
+
+    # Matrix addition cost for weight update
+    update_cost = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
+    costs += update_cost
+
+    # Cost of pointwise op
+    if pw_op_cnt > 0:
+        pw_cost = dom_per_proc[:, m_idx] * dom_per_proc[:, n_idx]
+        costs += pw_op_cnt * 3 * pw_cost # Factor 3 is to
+                                         # account for 1 pointwise op (per
+                                         # element) in fwd phase, 1
+                                         # differentiation op in bwd phase, and
+                                         # 1 hadamard product in bwd phase
+    
+    # Cost for reducing the output during fwd phase
+    # All-reduce cost = 2*((m*n)/P)*(P-1)
+    words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
+    procs = dom_configs[:,k_idx]
+    words /= procs
+    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
+    costs += (bw_to_flop * (words * steps))
+    
+    # Cost for gradient update during bwd phase
+    # All-reduce cost = 2*((n*k)/P)*(P-1)
+    words = np.prod(dom_per_proc[:, [n_idx,k_idx]], axis=1)
+    procs = dom_configs[:,m_idx]
+    words /= procs
+    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
+    costs += (bw_to_flop * (words * steps))
+
+    return costs
+
+
 class Gemm():
     def __init__(self, dom_size, n_procs, pw_op_cnt=0):
         assert(len(dom_size) == 3)
@@ -146,42 +185,8 @@ class Gemm():
         self.in_tsr_configs = self.dom_configs[:, (m_idx, k_idx)]
         self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
 
-        # Cost for 1 GEMM in fwd phase + 2 GEMMs in bwd phase
-        dom_per_proc = np.ceil(self.dom / self.dom_configs)
-        self.vert_costs = 3.0 * np.prod(dom_per_proc, axis=1)
-
-        # Matrix addition cost for weight update
-        update_cost = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
-        self.vert_costs += update_cost
-
-        # Cost of pointwise op
-        if pw_op_cnt > 0:
-            pw_cost = dom_per_proc[:, m_idx] * dom_per_proc[:, n_idx]
-            self.vert_costs += pw_op_cnt * 3 * pw_cost # Factor 3 is to
-                                                       # account for 1 pointwise
-                                                       # op (per element) in fwd
-                                                       # phase, 1
-                                                       # differentiation op in
-                                                       # bwd phase, and 1
-                                                       # hadamard product in bwd
-                                                       # phase
-    
-        # Cost for reducing the output during fwd phase
-        # All-reduce cost = 2*((m*n)/P)*(P-1)
-        words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
-        procs = self.dom_configs[:,k_idx]
-        words /= procs
-        steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-        self.vert_costs += (bw_to_flop * (words * steps))
-    
-        # Cost for gradient update during bwd phase
-        # All-reduce cost = 2*((n*k)/P)*(P-1)
-        words = np.prod(dom_per_proc[:, [n_idx,k_idx]], axis=1)
-        procs = self.dom_configs[:,m_idx]
-        words /= procs
-        steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-        self.vert_costs += (bw_to_flop * (words * steps))
-
+        # Compute the costs for configs
+        self.vert_costs = ComputeGemmCost(self.dom, self.dom_configs, pw_op_cnt)
 
     # Returns vertex costs for different configs
     def GetVertexCosts(self):
@@ -243,8 +248,15 @@ class Conv():
             self.maxpool.dom_configs = self.out_tsr_configs
 
         # Get the cost for convolution op
-        gemm_op = Gemm((b*h_o*w_o, n, c*r*s), n_procs, pw_op_cnt)
-        self.vert_costs = gemm_op.GetVertexCosts()
+        gemm_dom = (b * h_o * w_o, n, c * r * s)
+        gemm_m = np.prod(self.dom_configs[:, (b_idx, h_idx, w_idx)],
+                axis=1).reshape(-1, 1)
+        gemm_n = self.dom_configs[:, n_idx].reshape(-1, 1)
+        gemm_k = np.prod(self.dom_configs[:, (c_idx, r_idx, s_idx)],
+                axis=1).reshape(-1, 1)
+        gemm_configs = np.concatenate((gemm_m, gemm_n, gemm_k), axis=1)
+        self.vert_costs = ComputeGemmCost(gemm_dom, gemm_configs, pw_op_cnt)
+        assert(self.dom_configs.shape[0] == self.vert_costs.shape[0])
 
         # Add the cost for max-pooling
         if self.maxpool:
@@ -253,11 +265,6 @@ class Conv():
 
             assert(self.vert_costs.shape == maxpool_costs.shape)
             self.vert_costs += maxpool_costs
-
-    # Reshape the output tensor
-    #def ReshapeOutput(self, shape):
-    #    assert(self.out_tsr == shape1)
-    #    self.out_tsr = shape2
 
     def GetVertexCosts(self):
         return self.vert_costs
@@ -320,20 +327,24 @@ def Alexnet(G, b, n_procs):
     node_op = Conv(node_op.out_tsr, (256, 384, 3, 3), 1, 1, n_procs,
             MaxPool((3,3), 2), 1)
     node_id = AddVertex(G, node_op)
-    AddEdge(G, node_id - 1, node_id, reshape=[(0), (1,2,3)])
-
-    # FC6 + relu
-    node_op = Gemm(node_op.out_tsr, (node_op.out_tsr[-1], 4096), n_procs, 1)
-    node_id = AddVertex(G, node_op)
     AddEdge(G, node_id - 1, node_id)
 
+    # FC6 + relu
+    dom = (node_op.out_tsr[0], 4096, node_op.out_tsr[1] * node_op.out_tsr[2] *
+            node_op.out_tsr[3])
+    node_op = Gemm(dom, n_procs, 1)
+    node_id = AddVertex(G, node_op)
+    AddEdge(G, node_id - 1, node_id, reshape=[(0,), (1,2,3)])
+
     # FC7 + relu
-    node_op = Gemm(node_op.out_tsr, (node_op.out_tsr[-1], 4096), n_procs, 1)
+    dom = (node_op.out_tsr[0], 4096, node_op.out_tsr[1])
+    node_op = Gemm(dom, n_procs, 1)
     node_id = AddVertex(G, node_op)
     AddEdge(G, node_id - 1, node_id)
 
     # FC8 + relu
-    node_op = Gemm(node_op.out_tsr, (node_op.out_tsr[-1], 1024), n_procs, 1)
+    dom = (node_op.out_tsr[0], 1024, node_op.out_tsr[1])
+    node_op = Gemm(dom, n_procs, 1)
     node_id = AddVertex(G, node_op)
     AddEdge(G, node_id - 1, node_id)
 
