@@ -273,6 +273,9 @@ class Conv():
 def AddVertex(G, op):
     node_id = G.number_of_nodes()
 
+    print("Node: " + str(node_id) + "; Configs: " +
+            str(op.dom_configs.shape[0]))
+
     costs = op.GetVertexCosts()
     costs = pd.Series(costs, index=op.dom_config_tuples, name='cost')
 

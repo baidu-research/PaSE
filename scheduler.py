@@ -1,3 +1,4 @@
+import sys
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -124,6 +125,7 @@ def main():
     cols = g_tbl.columns
     assert(len(cols) == G.number_of_nodes())
     print("Total strategies to check: " + str(g_tbl.shape[0]))
+    sys.stdout.flush()
 
     # Iterate over all strategies and compute their cost
     vert_costs = nx.get_node_attributes(G, 'costs')
