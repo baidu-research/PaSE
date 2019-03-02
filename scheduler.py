@@ -1,3 +1,4 @@
+import cProfile
 import sys
 import networkx as nx
 import numpy as np
@@ -108,19 +109,31 @@ def main():
     parser.add_argument("-m", "--model", type=int, required=False, default=128,
             help="Model size. (Default: 128)")
     parser.add_argument("-g", "--graph", type=str, required=False,
-            choices=['test', 'alexnet'], default='alexnet', 
+            choices=['test', 'alexnet', 'resnet101'], default='alexnet', 
             help="Neural net graph. (Default: 'alexnet')")
+    parser.add_argument("--profile", dest="profile", action='store_true',
+            help="Turn on/off profiling")
+    parser.set_defaults(profile=False)
     args = vars(parser.parse_args())
 
     batch_size = args['batch']
     hidden_dim_size = args['model']
     n_procs = args['procs']
 
+    # Profiling
+    if args['profile']:
+        pr = cProfile.Profile()
+
     # Create input graph
     G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs)
 
     # Process the vertices
+    if args['profile']:
+        pr.enable()
     g_tbl = ProcessGraph(G)
+    if args['profile']:
+        pr.disable()
+        pr.print_stats(sort='cumtime')
 
     cols = g_tbl.columns
     assert(len(cols) == G.number_of_nodes())

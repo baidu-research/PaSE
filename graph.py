@@ -14,7 +14,8 @@ bw_to_flop = float(peak_flop / bw)
 pw_ops_in_bn = 9 # No. of pointwise ops in a batch-norm
 
 
-def factors(n):    
+def factors(n):
+    assert(n > 0)
     return set(reduce(list.__add__, ([i, n//i] for i in range(1, int(n**0.5) +
         1) if n % i == 0)))
 
@@ -203,7 +204,8 @@ class MaxPool():
 
 
 class Conv():
-    def __init__(self, img, fltr, stride, pad, n_procs, maxpool=None, pw_op_cnt=0):
+    def __init__(self, img, fltr, stride, pad, n_procs, maxpool=None,
+            pw_op_cnt=0):
         assert(len(img) == 4)
         assert(len(fltr) == 4)
         assert(img[1] == fltr[1])
@@ -300,7 +302,7 @@ def AddEdge(G, src, tgt, src_op=None, tgt_op=None, reshape=None):
     G.add_edge(src, tgt, costs=costs)
 
 
-def Alexnet(G, b, n_procs):
+def AlexNet(G, b, n_procs):
     img = (b, 3, 227, 227)
 
     # Conv1 + relu + maxpool + norm
@@ -354,6 +356,114 @@ def Alexnet(G, b, n_procs):
     return G
 
 
+class ResNet101():
+    def AddBlock(self, img, inplanes, planes, expansion, stride, downsample, avgpool):
+        G = self.graph
+
+        # Conv1 + bn + relu
+        node_op = Conv(img, (planes, inplanes, 1, 1), 1, 1,
+                n_procs=self.n_procs, pw_op_cnt=pw_ops_in_bn+1)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id)
+        in_node_id = node_id-1
+    
+        # Conv2 + bn + relu
+        node_op = Conv(node_op.out_tsr, (planes, planes, 3, 3), stride, 1,
+                n_procs=self.n_procs, pw_op_cnt=pw_ops_in_bn+1)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id)
+    
+        # Aggregated avgpool
+        if avgpool:
+            maxpool = MaxPool((node_op.out_tsr[2], node_op.out_tsr[3]), 1)
+        else:
+            maxpool = None
+
+        # Conv3 + bn
+        node_op = Conv(node_op.out_tsr, (planes * expansion, planes, 1, 1), 1,
+                1, maxpool=maxpool, n_procs=self.n_procs,
+                pw_op_cnt=pw_ops_in_bn)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id)
+
+        if avgpool:
+            print(node_op.out_tsr)
+            assert(node_op.out_tsr[2] == 1)
+            assert(node_op.out_tsr[3] == 1)
+    
+        if downsample:
+            # Conv + bn + relu
+            node_op = Conv(img, (planes * expansion, inplanes, 1, 1), stride, 1,
+                    n_procs=self.n_procs, pw_op_cnt=pw_ops_in_bn+1)
+            node_id = AddVertex(G, node_op)
+            AddEdge(G, node_id-1, node_id)
+            AddEdge(G, in_node_id, node_id)
+    
+        return node_op
+    
+    def AddBlocks(self, img, inplanes, planes, blocks, stride, expansion, avgpool=False):
+        G = self.graph
+    
+        if stride != 1 or inplanes != planes * expansion:
+            downsample = True
+        else:
+            downsample = False
+    
+        node_op = self.AddBlock(img, inplanes, planes, expansion, stride,
+                downsample, False)
+    
+        inplanes = planes * expansion
+        for _ in range(1, blocks):
+            node_op = self.AddBlock(node_op.out_tsr, inplanes, planes,
+                    expansion, stride, False, avgpool)
+    
+        return node_op, inplanes
+    
+    def __init__(self, G, b, n_procs):
+        self.graph = G
+        self.n_procs = n_procs
+
+        img = (b, 3, 227, 227)
+        blocks = (3, 4, 23, 3)
+        planes = (64, 128, 256, 512)
+        num_classes = 1000
+        expansion = 4
+    
+        # Conv1 + bn + relu + maxpool
+        node_op = Conv(img, (64, 3, 7, 7), 2, 3, n_procs, MaxPool((3, 3), 2),
+                pw_ops_in_bn+1)
+        node_id = AddVertex(G, node_op)
+    
+        # Layer1
+        inplanes = 64
+        node_op, inplanes = self.AddBlocks(node_op.out_tsr, inplanes, planes[0],
+                blocks[0], 1, expansion)
+    
+        # Layer2
+        node_op, inplanes = self.AddBlocks(node_op.out_tsr, inplanes, planes[1],
+                blocks[1], 2, expansion)
+    
+        # Layer3
+        node_op, inplanes = self.AddBlocks(node_op.out_tsr, inplanes, planes[2],
+                blocks[2], 2, expansion)
+    
+        # Layer4 + AdaptiveAvePooling
+        node_op, inplanes = self.AddBlocks(node_op.out_tsr, inplanes, planes[3],
+                blocks[3], 2, expansion, True)
+    
+        # FC
+        n = num_classes
+        m = node_op.out_tsr[0]
+        k = node_op.out_tsr[1] * node_op.out_tsr[2] * node_op.out_tsr[3]
+        assert(k == 512 * expansion)
+        node_op = Gemm((m, n, k), n_procs)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id, reshape=[(1,2,3), (0,)])
+
+    def Graph(self):
+        return self.graph
+
+
 def TestGraph(G, batch_size, hidden_dim_size, n_procs):
     dom = [batch_size, hidden_dim_size, hidden_dim_size]
 
@@ -375,10 +485,11 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
     if graph_type == 'test':
         G = TestGraph(G, batch_size, hidden_dim_size, n_procs)
     elif graph_type == 'alexnet':
-        G = Alexnet(G, batch_size, n_procs)
+        G = AlexNet(G, batch_size, n_procs)
+    elif graph_type == 'resnet101':
+        G = ResNet101(G, batch_size, n_procs).Graph()
     else:
         assert(False)
 
     return G
-
 
