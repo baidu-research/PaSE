@@ -4,7 +4,6 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from sortedcontainers import SortedList
 import itertools
 from argparse import ArgumentParser
 
