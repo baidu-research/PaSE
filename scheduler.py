@@ -114,7 +114,10 @@ def main():
             choices=['test', 'alexnet', 'resnet101'], default='alexnet', 
             help="Neural net graph. (Default: 'alexnet')")
     parser.add_argument("--profile", dest="profile", action='store_true',
-            help="Turn on/off profiling")
+            help="Turn on/off profiling.")
+    parser.add_argument("-d", "--dump-graph", dest="dump_graph",
+            action='store_true', help="Dump the graph in dot format to the file "
+            "graph.dot in the working directory.")
     parser.set_defaults(profile=False)
     args = vars(parser.parse_args())
 
@@ -128,6 +131,16 @@ def main():
 
     # Create input graph
     G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs)
+
+    if args['dump_graph']:
+        try:
+            import pydot
+            from networkx.drawing.nx_pydot import write_dot
+            write_dot(G, 'graph.dot')
+            print("Graph written to graph.dot.")
+        except ImportError:
+            print("pydot package not found.")
+            raise
 
     # Process the vertices
     if args['profile']:
