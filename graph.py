@@ -381,7 +381,7 @@ class ResNet101():
             # conv_h = ((h-r+2pad)/stride)+1 = h+2, for r=pad=stride=1
             # maxpool_h = ((conv_h - maxpool_r)/ maxpool_stride) + 1
             # 1 = ((h+2) - maxpool_r) + 1, for maxpool_h=maxpool_stride=1
-            # haxpool_r = h+2
+            # maxpool_r = h+2
             maxpool_r = node_op.out_tsr[2] + 2
             maxpool_s = node_op.out_tsr[3] + 2
             maxpool = MaxPool((maxpool_r, maxpool_s), 1)
