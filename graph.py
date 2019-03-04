@@ -375,7 +375,16 @@ class ResNet101():
     
         # Aggregated avgpool
         if avgpool:
-            maxpool = MaxPool((node_op.out_tsr[2], node_op.out_tsr[3]), 1)
+            assert(downsample == False) # If downsample is true, then avgpool
+                                        # has to be fused with the conv within
+                                        # downsample
+            # conv_h = ((h-r+2pad)/stride)+1 = h+2, for r=pad=stride=1
+            # maxpool_h = ((conv_h - maxpool_r)/ maxpool_stride) + 1
+            # 1 = ((h+2) - maxpool_r) + 1, for maxpool_h=maxpool_stride=1
+            # haxpool_r = h+2
+            maxpool_r = node_op.out_tsr[2] + 2
+            maxpool_s = node_op.out_tsr[3] + 2
+            maxpool = MaxPool((maxpool_r, maxpool_s), 1)
         else:
             maxpool = None
 
@@ -387,7 +396,6 @@ class ResNet101():
         AddEdge(G, node_id-1, node_id)
 
         if avgpool:
-            print(node_op.out_tsr)
             assert(node_op.out_tsr[2] == 1)
             assert(node_op.out_tsr[3] == 1)
     
@@ -413,9 +421,13 @@ class ResNet101():
                 downsample, False)
     
         inplanes = planes * expansion
-        for _ in range(1, blocks):
+        for _ in range(1, blocks-1):
             node_op = self.AddBlock(node_op.out_tsr, inplanes, planes,
-                    expansion, stride, False, avgpool)
+                    expansion, stride, False, False)
+        assert(blocks > 0) # If blocks==0, then avgpool has to be fused with the
+                           # initial block.
+        node_op = self.AddBlock(node_op.out_tsr, inplanes, planes,
+                expansion, stride, False, avgpool)
     
         return node_op, inplanes
     
