@@ -14,7 +14,7 @@ import graph
 # Extends 'tbl' by adding configuration combinations of the vertices in
 # 'vert_labels'
 def ExtendTable(tbl, vert_labels, vert_ops):
-    cols = tbl.columns
+    cols = set(tbl.columns.values)
 
     # If all the vertices are already present, just return the original table
     if set(vert_labels).issubset(cols):
@@ -27,7 +27,7 @@ def ExtendTable(tbl, vert_labels, vert_ops):
             v_df = pd.DataFrame(pd.Series(vert_ops[int(v)].dom_config_tuples,
                 name=v))
             v_df = v_df.assign(key=0)
-            if tbl.empty:
+            if tbl_with_key.empty:
                 tbl_with_key = v_df
             else:
                 tbl_with_key = tbl_with_key.merge(v_df, on ='key')
