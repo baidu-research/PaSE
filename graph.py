@@ -118,11 +118,16 @@ def GetEdgeCosts(src_op, tgt_op, reshape):
 
 # Generates list of configurations for a vertex
 def GetNodeConfigs(node_dom, n_procs):
+    cutoff = 32 # Minimum domain size to reduce search space
     dim = len(node_dom)
 
     proc_set = []
     for d in node_dom:
-        proc_set.append(factors(d))
+        s = factors(d)
+        l = [e for e in s if d/e >= cutoff]
+        if len(l) <= 0:
+            l = [1]
+        proc_set.append(l)
 
     configs = [c for c in itertools.product(*proc_set) if reduce(op.mul, c, 1)
         <= n_procs]
