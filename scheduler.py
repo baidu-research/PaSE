@@ -96,6 +96,9 @@ def ProcessGraph(G):
             merge_idx.append(str(v))
         g_tbl = g_tbl.merge(tbl, on=merge_idx, how='inner')
 
+        print("Processed vertex " + str(v) + "; Current table size: " +
+                str(g_tbl.shape[0]))
+
     return g_tbl
 
 
