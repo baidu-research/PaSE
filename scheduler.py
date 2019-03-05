@@ -52,6 +52,49 @@ def AddEdgeCosts(src, tgt, edge_costs, tbl):
     return tbl
 
 
+# Sorts nodes in the ascending order of no. of unprocessed neighbors.
+def SortNodes(G):
+    n_nodes = G.number_of_nodes()
+    node_deg = np.array(list(G.degree))
+
+    # Sort the array by degree
+    node_deg.view('i8,i8').sort(order=['f1'], axis=0)
+    node_idx = np.empty(n_nodes, dtype=int)
+    for i, v in enumerate(node_deg[:,0]):
+        node_idx[v] = i
+
+    for i, r in enumerate(node_deg):
+        v = r[0]
+        r[1] = -1 # Reset deg so that the sorting below doesn't move neighbors
+                  # above this row
+
+        for neigh in itertools.chain(G.predecessors(v), G.successors(v)):
+            neigh_idx = node_idx[neigh]
+
+            # Update the neighbor only if it hasn't been processed already
+            if neigh_idx > i:
+                # Decrement the deg of neighbor
+                node_deg[neigh_idx, 1] -= 1
+                deg = node_deg[neigh_idx, 1]
+
+                # Find the new index in the sorted array
+                new_idx = neigh_idx
+                while node_deg[new_idx-1, 1] > deg:
+                    new_idx -= 1
+
+                # Swap the row to its new position
+                if new_idx != neigh_idx:
+                    assert(new_idx > i)
+                    assert(node_deg[new_idx, 1] == deg+1)
+
+                    node_idx[neigh] = new_idx
+                    node_idx[node_deg[new_idx, 0]] = neigh_idx
+                    node_deg[[neigh_idx, new_idx]] = node_deg[[new_idx,
+                        neigh_idx]]
+        
+    return list(node_deg[:,0])
+
+
 # Processes vertex 'v'
 def ProcessGraph(G):
     g_tbl = pd.DataFrame()
@@ -60,9 +103,8 @@ def ProcessGraph(G):
     vert_costs = nx.get_node_attributes(G, 'costs')
     edge_costs = nx.get_edge_attributes(G, 'costs')
 
-    nodes = G.nodes()
-    # TODO: Set the processing order to minimize the search space
-    for v in nodes:
+    sorted_nodes = SortNodes(G)
+    for v in sorted_nodes:
         vert_labels = [str(i) for i in itertools.chain(G.predecessors(v), G.successors(v))]
 
         # Extend the table with cartesian product of the neighbors
@@ -131,13 +173,14 @@ def main():
 
     # Create input graph
     G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs)
+    print("")
 
     if args['dump_graph']:
         try:
             import pydot
             from networkx.drawing.nx_pydot import write_dot
             write_dot(G, 'graph.dot')
-            print("Graph written to graph.dot.")
+            print("Graph written to graph.dot.\n")
         except ImportError:
             print("pydot package not found.")
             raise
@@ -146,6 +189,7 @@ def main():
     if args['profile']:
         pr.enable()
     g_tbl = ProcessGraph(G)
+    print("")
     if args['profile']:
         pr.disable()
         pr.print_stats(sort='cumtime')

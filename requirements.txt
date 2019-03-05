@@ -1,0 +1,5 @@
+Python packages:
+numpy
+pandas
+networx
+pydot (Optional. Only needed to dump the graph in dot format.)
