@@ -55,45 +55,57 @@ def AddEdgeCosts(src, tgt, edge_costs, tbl):
 # Sorts nodes in the ascending order of no. of unprocessed neighbors.
 def SortNodes(G):
     n_nodes = G.number_of_nodes()
-    node_deg = np.array(list(G.degree))
+
+    # Create a table with node id, unprocessed neighbor count, and processed
+    # neighbor count
+    node_tbl = [(v, cnt, 0) for v, cnt in G.degree]
+    node_tbl = np.array(node_tbl)
 
     # Sort the array by degree
-    node_deg.view('i8,i8').sort(order=['f1'], axis=0)
+    node_tbl.view('i8,i8,i8').sort(order=['f1'], axis=0)
     node_idx = np.empty(n_nodes, dtype=int)
-    for i, v in enumerate(node_deg[:,0]):
+    for i, v in enumerate(node_tbl[:,0]):
         node_idx[v] = i
 
-    for i, r in enumerate(node_deg):
+    sz = node_tbl.shape[0]
+    for i in range(sz):
+        r = node_tbl[i]
         v = r[0]
         r[1] = -1 # Reset deg so that the sorting below doesn't move neighbors
                   # above this row
+
+        yield v
 
         for neigh in itertools.chain(G.predecessors(v), G.successors(v)):
             neigh_idx = node_idx[neigh]
 
             # Update the neighbor only if it hasn't been processed already
             if neigh_idx > i:
-                # Decrement the deg of neighbor
-                node_deg[neigh_idx, 1] -= 1
-                deg = node_deg[neigh_idx, 1]
+                # Decrement the unprocessed neighbor count of neighbor, and
+                # increment the processed neighbor count
+                node_tbl[neigh_idx, 1] -= 1
+                node_tbl[neigh_idx, 2] += 1
+                up_cnt = node_tbl[neigh_idx, 1] # Unprocessed neigh cnt
+                p_cnt = node_tbl[neigh_idx, 2] # Processed neigh cnt
 
                 # Find the new index in the sorted array
                 new_idx = neigh_idx
-                while node_deg[new_idx-1, 1] > deg:
-                    new_idx -= 1
+                while True:
+                    curr_up_cnt, curr_p_cnt = node_tbl[new_idx-1, 1:3]
+                    if (curr_up_cnt > up_cnt) or ((curr_up_cnt == up_cnt) and
+                            (curr_p_cnt < p_cnt)):
+                        new_idx -= 1
+                    else:
+                        break
 
                 # Swap the row to its new position
                 if new_idx != neigh_idx:
                     assert(new_idx > i)
-                    assert(node_deg[new_idx, 1] == deg+1)
-
                     node_idx[neigh] = new_idx
-                    node_idx[node_deg[new_idx, 0]] = neigh_idx
-                    node_deg[[neigh_idx, new_idx]] = node_deg[[new_idx,
+                    node_idx[node_tbl[new_idx, 0]] = neigh_idx
+                    node_tbl[[neigh_idx, new_idx]] = node_tbl[[new_idx,
                         neigh_idx]]
         
-    return list(node_deg[:,0])
-
 
 # Processes vertex 'v'
 def ProcessGraph(G):
