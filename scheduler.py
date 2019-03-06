@@ -1,5 +1,6 @@
 import cProfile
 import sys
+import time
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -29,26 +30,31 @@ def ExtendTable(tbl, vert_labels, vert_ops):
             if tbl_with_key.empty:
                 tbl_with_key = v_df
             else:
-                tbl_with_key = tbl_with_key.merge(v_df, on ='key')
+                tbl_with_key = tbl_with_key.merge(v_df, on='key')
 
     return tbl_with_key.drop('key', 1)
 
 
 # Adds vertex costs of 'v' to the table
 def AddVertexCosts(v, vert_costs, tbl):
-    idx = pd.Index(tbl[str(v)])
-    vert_cost = vert_costs.loc[idx]
-    tbl['costs'] += vert_cost.values
+    tbl = tbl.merge(vert_costs, left_on=[str(v)], right_index=True, how='left')
+    if 'costs' in tbl:
+        tbl['costs'] += tbl['cost']
+        tbl.drop('cost', 1, inplace=True)
+    else:
+        tbl.rename(columns={'cost': 'costs'}, inplace=True)
 
+    assert(tbl['costs'].isnull().values.any() == False)
     return tbl
 
 
 # Adds edge costs of '(src, tgt)' to the table
 def AddEdgeCosts(src, tgt, edge_costs, tbl):
-    idx = pd.Index(tbl[[str(src), str(tgt)]])
-    edge_cost = edge_costs.loc[idx]
-    tbl['costs'] += edge_cost.values
+    tbl = tbl.merge(edge_costs, on=[str(src), str(tgt)], how='left')
+    tbl['costs'] += tbl['cost']
+    tbl.drop('cost', 1, inplace=True)
 
+    assert(tbl['costs'].isnull().values.any() == False)
     return tbl
 
 
@@ -127,14 +133,16 @@ def ProcessGraph(G):
         tbl = tbl[vert_labels + [str(v)]]
 
         # Get vertex costs for configs of 'v'
-        v_idx = tbl[str(v)]
-        cost_tbl = tbl.assign(costs = vert_costs[v].loc[v_idx].values)
+        cost_tbl = AddVertexCosts(v, vert_costs[v], tbl)
 
         # Add edge cost of neighbors
+        #start_time = time.time()
         for n in G.predecessors(v):
             cost_tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], cost_tbl)
         for n in G.successors(v):
             cost_tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], cost_tbl)
+        #end_time = time.time()
+        #print("Time: " + str(end_time - start_time))
 
         # Get the min cost for each neighbor sub-strategy
         cost_tbl.set_index(vert_labels, append=True, inplace=True)
