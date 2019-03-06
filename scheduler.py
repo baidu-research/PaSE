@@ -66,6 +66,7 @@ def SortNodes(G):
     # neighbor count
     node_tbl = [(v, cnt, 0) for v, cnt in G.degree]
     node_tbl = np.array(node_tbl)
+    assert(node_tbl.shape[0] == n_nodes)
 
     # Sort the array by degree
     node_tbl.view('i8,i8,i8').sort(order=['f1'], axis=0)
@@ -73,8 +74,7 @@ def SortNodes(G):
     for i, v in enumerate(node_tbl[:,0]):
         node_idx[v] = i
 
-    sz = node_tbl.shape[0]
-    for i in range(sz):
+    for i in range(n_nodes):
         r = node_tbl[i]
         v = r[0]
         r[1] = -1 # Reset deg so that the sorting below doesn't move neighbors
@@ -135,14 +135,10 @@ def ProcessGraph(G):
         # Get vertex costs for configs of 'v'
         cost_tbl = AddVertexCosts(v, vert_costs[v], tbl)
 
-        # Add edge cost of neighbors
-        #start_time = time.time()
         for n in G.predecessors(v):
             cost_tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], cost_tbl)
         for n in G.successors(v):
             cost_tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], cost_tbl)
-        #end_time = time.time()
-        #print("Time: " + str(end_time - start_time))
 
         # Get the min cost for each neighbor sub-strategy
         cost_tbl.set_index(vert_labels, append=True, inplace=True)
