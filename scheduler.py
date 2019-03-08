@@ -13,7 +13,7 @@ import graph
 
 # Extends 'tbl' by adding configuration combinations of the vertices in
 # 'vert_labels'
-def ExtendTable(tbl, vert_labels, vert_ops):
+def ExtendTable(tbl, vert_labels, vert_ops, unprocessed_nodes):
     cols = set(tbl.columns.values)
 
     # If all the vertices are already present, just return the original table
@@ -24,6 +24,8 @@ def ExtendTable(tbl, vert_labels, vert_ops):
     tbl_with_key = tbl.assign(key=0)
     for v in vert_labels:
         if v not in cols:
+            unprocessed_nodes.add(str(v))
+
             v_df = pd.DataFrame(pd.Series(vert_ops[int(v)].dom_config_tuples,
                 name=v))
             v_df = v_df.assign(key=0)
@@ -38,10 +40,10 @@ def ExtendTable(tbl, vert_labels, vert_ops):
 # Adds vertex costs of 'v' to the table
 def AddVertexCosts(v, vert_costs, tbl):
     tbl = tbl.merge(vert_costs, left_on=[str(v)], right_index=True, how='left')
-    if 'costs' in tbl:
+    try:
         tbl['costs'] += tbl['cost']
         tbl.drop('cost', 1, inplace=True)
-    else:
+    except KeyError:
         tbl.rename(columns={'cost': 'costs'}, inplace=True)
 
     assert(tbl['costs'].isnull().values.any() == False)
@@ -116,6 +118,7 @@ def SortNodes(G):
 # Processes vertex 'v'
 def ProcessGraph(G):
     g_tbl = pd.DataFrame()
+    unprocessed_nodes = set()
 
     vert_ops = nx.get_node_attributes(G, 'op')
     vert_costs = nx.get_node_attributes(G, 'costs')
@@ -126,33 +129,48 @@ def ProcessGraph(G):
         vert_labels = [str(i) for i in itertools.chain(G.predecessors(v), G.successors(v))]
 
         # Extend the table with cartesian product of the neighbors
-        g_tbl = ExtendTable(g_tbl, vert_labels, vert_ops)
+        g_tbl = ExtendTable(g_tbl, vert_labels, vert_ops, unprocessed_nodes)
 
         # Extend 'tbl' with column for 'v'
-        tbl = ExtendTable(g_tbl, [str(v)], vert_ops)
+        tbl = ExtendTable(g_tbl, [str(v)], vert_ops, unprocessed_nodes)
         tbl = tbl[vert_labels + [str(v)]]
 
+        # Remove 'v' from unprocessed_nodes
+        unprocessed_nodes.remove(str(v))
+
         # Get vertex costs for configs of 'v'
-        cost_tbl = AddVertexCosts(v, vert_costs[v], tbl)
+        tbl = AddVertexCosts(v, vert_costs[v], tbl)
 
         for n in G.predecessors(v):
-            cost_tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], cost_tbl)
+            tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], tbl)
         for n in G.successors(v):
-            cost_tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], cost_tbl)
+            tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], tbl)
 
         # Get the min cost for each neighbor sub-strategy
-        cost_tbl.set_index(vert_labels, append=True, inplace=True)
-        min_idx = cost_tbl['costs'].groupby(level=vert_labels,
-                axis=0).idxmin(axis=0)
-        min_idx = pd.MultiIndex.from_tuples(min_idx.values)
-        assert(min_idx.levels[0].dtype == int)
-        tbl = tbl.loc[min_idx.levels[0]]
+        tbl.set_index(vert_labels, append=True, inplace=True)
+        min_idx = tbl['costs'].groupby(level=vert_labels, axis=0).idxmin(axis=0)
+        tbl = tbl.loc[min_idx].reset_index(vert_labels)
 
         # Merge 'tbl' with 'g_tbl'
         merge_idx = vert_labels
         if str(v) in g_tbl.columns:
             merge_idx.append(str(v))
         g_tbl = g_tbl.merge(tbl, on=merge_idx, how='inner')
+
+        try:
+            g_tbl['g_costs'] += g_tbl['costs']
+            g_tbl.drop('costs', 1, inplace=True)
+        except KeyError:
+            g_tbl.rename(columns={'costs':'g_costs'}, inplace=True)
+
+        if unprocessed_nodes:
+            lst = list(unprocessed_nodes)
+            g_tbl.set_index(lst, append=True, inplace=True)
+            min_idx = g_tbl['g_costs'].groupby(level=lst, axis=0).idxmin(axis=0)
+            g_tbl = g_tbl.loc[min_idx].reset_index(lst)
+        else:
+            min_idx = g_tbl['g_costs'].idxmin(axis=0)
+            g_tbl = g_tbl.loc[min_idx]
 
         print("Processed vertex " + str(v) + "; Current table size: " +
                 str(g_tbl.shape[0]))
@@ -210,27 +228,28 @@ def main():
         pr.disable()
         pr.print_stats(sort='cumtime')
 
-    cols = g_tbl.columns
-    assert(len(cols) == G.number_of_nodes())
-    print("Total strategies to check: " + str(g_tbl.shape[0]))
-    sys.stdout.flush()
+    #cols = g_tbl.columns
+    #assert(len(cols) == G.number_of_nodes())
+    #print("Total strategies to check: " + str(g_tbl.shape[0]))
+    #sys.stdout.flush()
 
-    # Iterate over all strategies and compute their cost
-    vert_costs = nx.get_node_attributes(G, 'costs')
-    edge_costs = nx.get_edge_attributes(G, 'costs')
-    g_cost_tbl = g_tbl.assign(costs = 0)
-    for v, v_c in G.nodes(data='costs'):
-        g_cost_tbl = AddVertexCosts(v, v_c, g_cost_tbl)
-    for u, v, e_c in G.edges(data='costs'):
-        g_cost_tbl = AddEdgeCosts(u, v, e_c, g_cost_tbl)
+    ## Iterate over all strategies and compute their cost
+    #vert_costs = nx.get_node_attributes(G, 'costs')
+    #edge_costs = nx.get_edge_attributes(G, 'costs')
+    #g_cost_tbl = g_tbl.assign(costs = 0)
+    #for v, v_c in G.nodes(data='costs'):
+    #    g_cost_tbl = AddVertexCosts(v, v_c, g_cost_tbl)
+    #for u, v, e_c in G.edges(data='costs'):
+    #    g_cost_tbl = AddEdgeCosts(u, v, e_c, g_cost_tbl)
 
-    # Pick the strategy with min cost
-    min_idx = g_cost_tbl['costs'].idxmin(axis=0)
-    min_strategy = g_tbl.loc[min_idx]
+    ## Pick the strategy with min cost
+    #min_idx = g_cost_tbl['costs'].idxmin(axis=0)
+    #min_strategy = g_tbl.loc[min_idx]
 
     print("Strategy with minimum cost:")
     print("=====")
-    print(min_strategy.to_string())
+    #print(min_strategy.to_string())
+    print(g_tbl.drop('g_costs').to_string())
     print("=====")
 
 
