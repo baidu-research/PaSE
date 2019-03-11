@@ -14,6 +14,14 @@ bw_to_flop = float(peak_flop / bw)
 pw_ops_in_bn = 9 # No. of pointwise ops in a batch-norm
 
 
+def MakePair(v):
+    if hasattr(v, "__len__"):
+        assert(len(v) == 2)
+        return v
+    else:
+        return (v, v)
+
+
 def factors(n):
     assert(n > 0)
     return set(reduce(list.__add__, ([i, n//i] for i in range(1, int(n**0.5) +
@@ -173,6 +181,25 @@ def ComputeGemmCost(dom, dom_configs, pw_op_cnt):
     return costs
 
 
+class Concat():
+    def __init__(self, tensors, dim=0):
+        l = len(tensors[0].out_tsr)
+
+        # Make sure size of all dimensions except 'dim' is the same for all
+        # tensors
+        for i, t in enumerate(tensors):
+            assert(dim < len(t.out_tsr))
+            assert(len(t.out_tsr) == l)
+            for j in range(l):
+                if j != dim:
+                    assert(t.out_tsr[j] == tensors[0].out_tsr[j])
+
+        # Concatenate the 'dim' dimension
+        self.out_tsr = list(tensors[0].out_tsr)
+        for i in range(1, len(tensors)):
+            self.out_tsr[dim] += tensors[i].out_tsr[dim]
+
+
 class Gemm():
     def __init__(self, dom_size, n_procs, pw_op_cnt=0):
         assert(len(dom_size) == 3)
@@ -200,20 +227,36 @@ class Gemm():
 
 
 class MaxPool():
-    def __init__(self, fltr, stride):
+    def __init__(self, fltr, stride, padding=0):
         assert(len(fltr) == 2)
 
         self.r = fltr[0]
         self.s = fltr[1]
-        self.stride = stride
+
+        self.stride_r, self.stride_s = MakePair(stride)
+        self.pad_r, self.pad_s = MakePair(padding)
+
+
+def AvgPool(h, w):
+    # conv_h = ((h-r+2pad)/stride)+1 = h+2, for r=pad=stride=1
+    # maxpool_h = ((conv_h - maxpool_r)/ maxpool_stride) + 1
+    # 1 = ((h+2) - maxpool_r) + 1, for maxpool_h=maxpool_stride=1
+    # maxpool_r = h+2
+    r = h + 2
+    s = w + 2
+
+    return MaxPool((r, s), 1)
 
 
 class Conv():
-    def __init__(self, img, fltr, stride, pad, n_procs, maxpool=None,
-            pw_op_cnt=0):
+    def __init__(self, img, fltr, stride, pad, n_procs, pre_maxpool=None,
+            maxpool=None, pw_op_cnt=0):
         assert(len(img) == 4)
         assert(len(fltr) == 4)
         assert(img[1] == fltr[1])
+
+        stride_r, stride_s = MakePair(stride)
+        pad_r, pad_s = MakePair(pad)
 
         self.maxpool = maxpool
         self.pw_op_cnt = pw_op_cnt
@@ -224,8 +267,14 @@ class Conv():
         c, h, w = img[1], img[2], img[3]
         r, s = fltr[2], fltr[3]
 
-        h_o = int((h - r + 2*pad) / stride) + 1
-        w_o = int((w - s + 2*pad) / stride) + 1
+        if pre_maxpool:
+            h = int((h - pre_maxpool.r + pre_maxpool.pad_r) /
+                    pre_maxpool.stride_r) + 1
+            w = int((w - pre_maxpool.s + pre_maxpool.pad_s) /
+                    pre_maxpool.stride_s) + 1
+
+        h_o = int((h - r + 2*pad_r) / stride_r) + 1
+        w_o = int((w - s + 2*pad_s) / stride_s) + 1
 
         # Domain
         self.dom = (b, c, h_o, w_o, r, s, n)
@@ -234,8 +283,8 @@ class Conv():
         # created on this reduced domain so that there is no intra-op
         # communication for max-pooling.
         if maxpool:
-            h_o = int((h_o - maxpool.r) / maxpool.stride) + 1
-            w_o = int((w_o - maxpool.s) / maxpool.stride) + 1
+            h_o = int((h_o - maxpool.r + maxpool.pad_r) / maxpool.stride_r) + 1
+            w_o = int((w_o - maxpool.s + maxpool.pad_s) / maxpool.stride_s) + 1
             self.maxpool.dom = (b, n, h_o, w_o)
 
         dom_with_maxpool = (b, c, h_o, w_o, r, s, n)
@@ -311,13 +360,13 @@ def AlexNet(G, b, n_procs):
     img = (b, 3, 227, 227)
 
     # Conv1 + relu + maxpool + norm
-    node_op = Conv(img, (96, 3, 11, 11), 4, 0, n_procs, MaxPool((3,3), 2),
-            pw_ops_in_bn+1)
+    node_op = Conv(img, (96, 3, 11, 11), 4, 0, n_procs, maxpool=MaxPool((3,3), 2),
+            pw_op_cnt=pw_ops_in_bn+1)
     node_id = AddVertex(G, node_op)
 
     # Conv2 + relu + maxpool + norm
     node_op = Conv(node_op.out_tsr, (256, 96, 5, 5), 1, 2, n_procs,
-            MaxPool((3,3), 2), pw_ops_in_bn+1)
+            maxpool=MaxPool((3,3), 2), pw_op_cnt=pw_ops_in_bn+1)
     node_id = AddVertex(G, node_op)
     AddEdge(G, node_id - 1, node_id)
 
@@ -335,7 +384,7 @@ def AlexNet(G, b, n_procs):
 
     # Conv5 + relu + maxpool
     node_op = Conv(node_op.out_tsr, (256, 384, 3, 3), 1, 1, n_procs,
-            MaxPool((3,3), 2), 1)
+            maxpool=MaxPool((3,3), 2), pw_op_cnt=1)
     node_id = AddVertex(G, node_op)
     AddEdge(G, node_id - 1, node_id)
 
@@ -361,6 +410,150 @@ def AlexNet(G, b, n_procs):
     return G
 
 
+class Inception3():
+    # Conv2d + BN + relu
+    def AddBasicConv(self, G, img, in_channels, out_channels, kernel_size,
+            pre_maxpool=None, maxpool=None, stride=1, padding=0):
+        fltr = (out_channels, in_channels) + MakePair(kernel_size)
+        node_op = Conv(img, fltr, stride, padding, self.n_procs, pw_op_cnt =
+                pw_ops_in_bn+1)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id)
+
+        return node_op
+
+    def AddInceptionA(self, G, img, in_channels, pool):
+        node_op1 = self.AddBasicConv(G, img, in_channels, 64, 1)
+
+        node_op = self.AddBasicConv(G, img, in_channels, 48, 1)
+        node_op2 = self.AddBasicConv(G, node_op.out_tsr, 48, 64, 5, padding=2)
+
+        node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
+        node_op3 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3, padding=1)
+
+        pre_maxpool = Maxpool((3, 3), 1, 1)
+        node_op4 = self.AddBasicConv(G, img, in_channels, pool, 1,
+                pre_maxpool=pre_maxpool)
+
+        # TODO
+        node_op = Concat((node_op1, node_op2, node_op3, node_op4), 1)
+        return node_op
+
+    def AddInceptionB(self, G, img, in_channels):
+        node_op1 = self.AddBasicConv(G, img, in_channels, 384, 3, stride=2)
+
+        node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
+        node_op2 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3,
+                maxpool=Maxpool((3,3), 2), stride=2)
+
+        #TODO
+        node_op = Concat((node_op1, node_op2, node_op3), 1)
+        return node_op
+
+    def AddInceptionC(self, G, img, in_channels, out_channels):
+        node_op1 = self.AddBasicConv(G, img, in_channels, 192, 1)
+
+        node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+                out_channels, (1, 7), padding=(0,3))
+        node_op2 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
+                (7,1), padding=(3,0))
+
+        node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+                out_channels, (7,1), padding=(3,0))
+        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+                out_channels, (1,7), padding=(0,3))
+        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+                out_channels, (7,1), padding=(3,0))
+        node_op3 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
+                (1,7), padding=(0,3))
+
+        node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
+                pre_maxpool=MaxPool((3, 3), 1, 1))
+
+        # TODO
+        node_op = Concat((node_op1, node_op2, node_op3, node_op4), 1)
+        return node_op
+
+    def AddInceptionD(self, G, img, in_channels):
+        node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
+        node_op1 = self.AddBasicConv(G, node_op.out_tsr, 192, 320, 3, stride=2)
+
+        node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (1,7),
+                padding=(0,3))
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (7,1),
+                padding=(3,0))
+        node_op2 = self.AddBasicConv(G, node_op.out_tsr, 192, 192, 3, stride=2)
+
+        node_op3 = MaxPool(G, img, (3,3), 2)
+
+        # TODO
+        node_op = Concat((node_op1, node_op2, node_op3), 1)
+        return node_op
+
+    def AddInceptionE(self, G, img, in_channels):
+        node_op1 = self.AddBasicConv(G, img, in_channels, 320, 1)
+
+        node_op2_0 = self.AddBasicConv(G, img, in_channels, 384, 1)
+        node_op2_1 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (1,3),
+                padding=(0,1))
+        node_op2_2 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (3,1),
+                padding=(1,0))
+        node_op2 = Concat((node_op2_1, node_op2_2), 1)
+
+        node_op = self.AddBasicConv(G, img, in_channels, 448, 1)
+        node_op3_0 = self.AddBasicConv(G, node_op.out_tsr, 448, 384, 3, 1)
+        node_op3_1 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (1,3),
+                padding=(0,1))
+        node_op3_2 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (3,1),
+                padding=(1,0))
+        node_op3 = Concat((node_op3_1, node_op3_2), 1)
+
+        node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
+                pre_maxpool=MaxPool((3,3), 1, 1))
+
+        node_op = Concat((node_op1, node_op2, node_op3, node_op4), 1)
+        return node_op
+
+    def __init__(self, G, b, n_procs):
+        self.n_procs = n_procs
+        img = (b, 3, 299, 299)
+        num_classes = 1000
+
+        node_op = self.AddBasicConv(G, img, 3, 32, 3, stride=2)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 32, 3)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 64, 3,
+                maxpool=MaxPool((3, 3), 2), padding=1)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 80, 1)
+        node_op = self.AddBasicConv(G, node_op.out_tsr, 80, 192, 3,
+                maxpool=MaxPool((3,3), 2))
+
+        node_op = self.AddInceptionA(G, node_op.out_tsr, 192, 32)
+        node_op = self.AddInceptionA(G, node_op.out_tsr, 256, 64)
+        node_op = self.AddInceptionA(G, node_op.out_tsr, 288, 64)
+
+        node_op = self.AddInceptionB(G, node_op.out_tsr, 288)
+
+        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 128)
+        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 160)
+        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 160)
+        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 192)
+
+        node_op = self.AddInceptionD(G, node_op.out_tsr, 768)
+
+        node_op = self.AddInceptionE(G, node_op.out_tsr, 1280)
+        node_op = self.AddInceptionE(G, node_op.out_tsr, 2048, avgpool=True)
+
+        node_op = Gemm((node_op.out_tsr[0], num_classes, 2048), n_procs)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id, reshape=[(0,), (1, 2, 3)]) 
+
+
+
 class ResNet101():
     def AddBlock(self, img, inplanes, planes, expansion, stride, downsample, avgpool):
         G = self.graph
@@ -383,13 +576,7 @@ class ResNet101():
             assert(downsample == False) # If downsample is true, then avgpool
                                         # has to be fused with the conv within
                                         # downsample
-            # conv_h = ((h-r+2pad)/stride)+1 = h+2, for r=pad=stride=1
-            # maxpool_h = ((conv_h - maxpool_r)/ maxpool_stride) + 1
-            # 1 = ((h+2) - maxpool_r) + 1, for maxpool_h=maxpool_stride=1
-            # maxpool_r = h+2
-            maxpool_r = node_op.out_tsr[2] + 2
-            maxpool_s = node_op.out_tsr[3] + 2
-            maxpool = MaxPool((maxpool_r, maxpool_s), 1)
+            maxpool = AvgPool(node_op.out_tsr[2], node_op.out_tsr[3])
         else:
             maxpool = None
 
@@ -447,8 +634,8 @@ class ResNet101():
         expansion = 4
     
         # Conv1 + bn + relu + maxpool
-        node_op = Conv(img, (64, 3, 7, 7), 2, 3, n_procs, MaxPool((3, 3), 2),
-                pw_ops_in_bn+1)
+        node_op = Conv(img, (64, 3, 7, 7), 2, 3, n_procs, maxpool=MaxPool((3,
+            3), 2, 1), pw_op_cnt=pw_ops_in_bn+1)
         node_id = AddVertex(G, node_op)
     
         # Layer1
@@ -475,7 +662,7 @@ class ResNet101():
         assert(k == 512 * expansion)
         node_op = Gemm((m, n, k), n_procs)
         node_id = AddVertex(G, node_op)
-        AddEdge(G, node_id-1, node_id, reshape=[(1,2,3), (0,)])
+        AddEdge(G, node_id-1, node_id, reshape=[(0,), (1,2,3)])
 
     def Graph(self):
         return self.graph
