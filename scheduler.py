@@ -189,7 +189,11 @@ def ProcessGraph(G):
             assert((tbl['new_costs'] == tbl['costs']).all())
             g_tbl = tbl.drop('new_costs', 1)
         else:
-            g_tbl = g_tbl.merge(tbl, on=list(curr_cols), how='inner')
+            if curr_cols:
+                g_tbl = g_tbl.merge(tbl, on=list(curr_cols), how='inner')
+            else:
+                g_tbl = g_tbl.assign(key=0).merge(tbl.assign(key=0),
+                        on='key').drop('key', 1)
             g_tbl['costs_x'] += g_tbl['new_costs']
             g_tbl.drop(['costs_y', 'new_costs'], 1, inplace=True)
             g_tbl.rename(columns={'costs_x':'costs'}, inplace=True)
@@ -212,8 +216,8 @@ def main():
     parser.add_argument("-m", "--model", type=int, required=False, default=128,
             help="Model size. (Default: 128)")
     parser.add_argument("-g", "--graph", type=str, required=False,
-            choices=['test', 'alexnet', 'resnet101'], default='alexnet', 
-            help="Neural net graph. (Default: 'alexnet')")
+            choices=['test', 'alexnet', 'resnet101', 'inception3'],
+            default='alexnet', help="Neural net graph. (Default: 'alexnet')")
     parser.add_argument("--profile", dest="profile", action='store_true',
             help="Turn on/off profiling.")
     parser.add_argument("-d", "--dump-graph", dest="dump_graph",

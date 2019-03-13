@@ -28,7 +28,7 @@ def factors(n):
         1) if n % i == 0)))
 
 
-def RowCartesian(arr1, arr2):
+def RowCartesianProd(arr1, arr2):
     shape1 = arr1.shape[0]
     shape2 = arr2.shape[0]
 
@@ -85,15 +85,43 @@ def Reshape(src_tsr, tgt_tsr, src_tsr_per_proc, tgt_tsr_per_proc, reshape):
     return reshaped_tsr_per_proc
 
 
+def GetConvolutedSize(h, w, r, s, stride, pad):
+    stride_r, stride_s = MakePair(stride)
+    pad_r, pad_s = MakePair(pad)
+
+    h_o = int((h - r + 2*pad_r) / stride_r) + 1
+    w_o = int((w - s + 2*pad_s) / stride_s) + 1
+
+    return h_o, w_o
+
+
+# Make sure size of all dimensions except 'concat_dim' is the same for all
+# in_ops
+def CheckConcat(in_ops, concat_dim):
+    l = len(in_ops[0].out_tsr)
+    for i, t in enumerate(in_ops):
+        assert(concat_dim < len(t.out_tsr))
+        assert(len(t.out_tsr) == l)
+        for j in range(l):
+            if j != concat_dim:
+                assert(t.out_tsr[j] == in_ops[0].out_tsr[j])
+
+
+def GetConcatenatedSize(in_ops, concat_dim):
+    CheckConcat(in_ops, concat_dim)
+    assert(len(in_ops) > 1)
+
+    out_tsr = list(in_ops[0].out_tsr)
+    for i in range(1, len(in_ops)):
+        out_tsr[concat_dim] += in_ops[i].out_tsr[concat_dim]
+
+    return out_tsr
+
+
 # Returns edge costs for different configs. Edge cost is computed as the
 # difference b/w tensor volume needed per proc by the target vertex and the tensor
 # volume held per proc by the source vertex.
-def GetEdgeCosts(src_op, tgt_op, reshape):
-    src_tsr = src_op.out_tsr
-    tgt_tsr = tgt_op.in_tsr
-    src_cfgs = src_op.out_tsr_configs
-    tgt_cfgs = tgt_op.in_tsr_configs
-
+def GetEdgeCosts(src_tsr, tgt_tsr, src_cfgs, tgt_cfgs, reshape):
     # Calculate the domains per processor
     src_tsr_per_proc = np.ceil(src_tsr / src_cfgs)
     tgt_tsr_per_proc = np.ceil(tgt_tsr / tgt_cfgs)
@@ -104,13 +132,13 @@ def GetEdgeCosts(src_op, tgt_op, reshape):
     else:
         assert(len(src_tsr) == len(tgt_tsr))
 
-    src_tsr_per_proc, tgt_tsr_per_proc = RowCartesian(src_tsr_per_proc,
+    src_tsr_per_proc, tgt_tsr_per_proc = RowCartesianProd(src_tsr_per_proc,
             tgt_tsr_per_proc)
 
     # Get the no. of procs used for each config
     src_procs = np.prod(src_cfgs, axis=1)
     tgt_procs = np.prod(tgt_cfgs, axis=1)
-    src_procs, tgt_procs = RowCartesian(src_procs, tgt_procs)
+    src_procs, tgt_procs = RowCartesianProd(src_procs, tgt_procs)
 
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
@@ -125,12 +153,12 @@ def GetEdgeCosts(src_op, tgt_op, reshape):
 
 
 # Generates list of configurations for a vertex
-def GetNodeConfigs(node_dom, n_procs):
+def GetConfigs(vol, n_procs):
     cutoff = 32 # Minimum domain size to reduce search space
-    dim = len(node_dom)
+    dim = len(vol)
 
     proc_set = []
-    for d in node_dom:
+    for d in vol:
         s = factors(d)
         l = [e for e in s if d/e >= cutoff]
         if len(l) <= 0:
@@ -182,22 +210,24 @@ def ComputeGemmCost(dom, dom_configs, pw_op_cnt):
 
 
 class Concat():
-    def __init__(self, tensors, dim=0):
-        l = len(tensors[0].out_tsr)
-
-        # Make sure size of all dimensions except 'dim' is the same for all
-        # tensors
-        for i, t in enumerate(tensors):
-            assert(dim < len(t.out_tsr))
-            assert(len(t.out_tsr) == l)
-            for j in range(l):
-                if j != dim:
-                    assert(t.out_tsr[j] == tensors[0].out_tsr[j])
+    def __init__(self, in_ops, dim, n_procs):
+        l = len(in_ops[0].out_tsr)
+        n_ops = len(in_ops)
 
         # Concatenate the 'dim' dimension
-        self.out_tsr = list(tensors[0].out_tsr)
-        for i in range(1, len(tensors)):
-            self.out_tsr[dim] += tensors[i].out_tsr[dim]
+        #self.in_tsr = (op.out_tsr for op in in_ops)
+        self.dom = GetConcatenatedSize(in_ops, dim)
+        self.in_tsr = self.dom
+        self.out_tsr = self.dom
+
+        # Configs
+        self.dom_config_tuples = GetConfigs(self.dom, n_procs)
+        self.dom_configs = np.array(self.dom_config_tuples)
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs
+
+    def GetVertexCosts(self):
+        return 0
 
 
 class Gemm():
@@ -213,7 +243,7 @@ class Gemm():
         self.out_tsr = (dom_size[m_idx], dom_size[n_idx])
 
         # Configurations
-        self.dom_config_tuples = GetNodeConfigs(self.dom, n_procs)
+        self.dom_config_tuples = GetConfigs(self.dom, n_procs)
         self.dom_configs = np.array(self.dom_config_tuples)
         self.in_tsr_configs = self.dom_configs[:, (m_idx, k_idx)]
         self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
@@ -227,17 +257,51 @@ class Gemm():
 
 
 class MaxPool():
-    def __init__(self, fltr, stride, padding=0):
+    def __init__(self, fltr, stride, pad=0, img=None, n_procs=0):
         assert(len(fltr) == 2)
 
         self.r = fltr[0]
         self.s = fltr[1]
 
+        self.stride = stride
+        self.pad = pad
+
         self.stride_r, self.stride_s = MakePair(stride)
-        self.pad_r, self.pad_s = MakePair(padding)
+        self.pad_r, self.pad_s = MakePair(pad)
+
+        if img:
+            assert(n_procs > 1)
+            assert(len(img) == 4)
+
+            b, c, h, w = img
+
+            h_o = int((h - self.r + 2*self.pad_r) / self.stride_r) + 1
+            w_o = int((w - self.s + 2*self.pad_s) / self.stride_s) + 1
+
+            self.in_tsr = img
+            self.out_tsr = (b, c, h_o, w_o)
+
+            self.dom = self.out_tsr
+            self.dom_config_tuples = GetConfigs(self.dom, n_procs)
+            self.dom_configs = np.array(self.dom_config_tuples)
+            self.in_tsr_configs = self.dom_configs
+            self.out_tsr_configs = self.dom_configs
+
+    def GetVertexCosts(self):
+        try:
+            return self.vert_costs
+        except AttributeError:
+            try:
+                dom_per_proc = self.dom / self.dom_configs
+                costs = 3.0 * np.prod(dom_per_proc, axis=1)
+                self.vert_costs = costs
+            except AttributeError:
+                self.vert_costs = 0
+
+        return self.vert_costs
 
 
-def AvgPool(h, w):
+def AdaptivePool(h, w, img=None, n_procs=0):
     # conv_h = ((h-r+2pad)/stride)+1 = h+2, for r=pad=stride=1
     # maxpool_h = ((conv_h - maxpool_r)/ maxpool_stride) + 1
     # 1 = ((h+2) - maxpool_r) + 1, for maxpool_h=maxpool_stride=1
@@ -245,7 +309,7 @@ def AvgPool(h, w):
     r = h + 2
     s = w + 2
 
-    return MaxPool((r, s), 1)
+    return MaxPool((r, s), 1, img=img, n_procs=n_procs)
 
 
 class Conv():
@@ -258,23 +322,20 @@ class Conv():
         stride_r, stride_s = MakePair(stride)
         pad_r, pad_s = MakePair(pad)
 
+        self.pre_maxpool = pre_maxpool
         self.maxpool = maxpool
         self.pw_op_cnt = pw_op_cnt
 
-        b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = 0, 1, 2, 3, 4, 5, 6
-
-        b, n = img[0], fltr[0]
-        c, h, w = img[1], img[2], img[3]
-        r, s = fltr[2], fltr[3]
+        b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
+        b, c, h, w = img
+        n, _, r, s = fltr
 
         if pre_maxpool:
-            h = int((h - pre_maxpool.r + pre_maxpool.pad_r) /
-                    pre_maxpool.stride_r) + 1
-            w = int((w - pre_maxpool.s + pre_maxpool.pad_s) /
-                    pre_maxpool.stride_s) + 1
+            h, w = GetConvolutedSize(h, w, pre_maxpool.r, pre_maxpool.s,
+                    pre_maxpool.stride, pre_maxpool.pad)
+            self.pre_maxpool.dom = (b, n, h, w)
 
-        h_o = int((h - r + 2*pad_r) / stride_r) + 1
-        w_o = int((w - s + 2*pad_s) / stride_s) + 1
+        h_o, w_o = GetConvolutedSize(h, w, r, s, stride, pad)
 
         # Domain
         self.dom = (b, c, h_o, w_o, r, s, n)
@@ -283,8 +344,8 @@ class Conv():
         # created on this reduced domain so that there is no intra-op
         # communication for max-pooling.
         if maxpool:
-            h_o = int((h_o - maxpool.r + maxpool.pad_r) / maxpool.stride_r) + 1
-            w_o = int((w_o - maxpool.s + maxpool.pad_s) / maxpool.stride_s) + 1
+            h_o, w_o = GetConvolutedSize(h_o, w_o, maxpool.r, maxpool.s,
+                    maxpool.stride, maxpool.pad)
             self.maxpool.dom = (b, n, h_o, w_o)
 
         dom_with_maxpool = (b, c, h_o, w_o, r, s, n)
@@ -294,12 +355,14 @@ class Conv():
         self.out_tsr = (b, n, h_o, w_o)
 
         # Domain configurations
-        self.dom_config_tuples = GetNodeConfigs(dom_with_maxpool, n_procs)
+        self.dom_config_tuples = GetConfigs(dom_with_maxpool, n_procs)
         self.dom_configs = np.array(self.dom_config_tuples)
 
         # In/Out tensor configs
         self.in_tsr_configs = self.dom_configs[:, b_idx:w_idx+1]
         self.out_tsr_configs = self.dom_configs[:, (b_idx, n_idx, h_idx, w_idx)]
+        if pre_maxpool:
+            self.pre_maxpool.dom_configs = self.out_tsr_configs
         if maxpool:
             self.maxpool.dom_configs = self.out_tsr_configs
 
@@ -315,10 +378,12 @@ class Conv():
         assert(self.dom_configs.shape[0] == self.vert_costs.shape[0])
 
         # Add the cost for max-pooling
+        if self.pre_maxpool:
+            maxpool_costs = self.pre_maxpool.GetVertexCosts()
+            assert(self.vert_costs.shape == maxpool_costs.shape)
+            self.vert_costs += maxpool_costs
         if self.maxpool:
-            dom_per_proc = self.maxpool.dom / self.maxpool.dom_configs
-            maxpool_costs = 3.0 * np.prod(dom_per_proc, axis=1)
-
+            maxpool_costs = self.maxpool.GetVertexCosts()
             assert(self.vert_costs.shape == maxpool_costs.shape)
             self.vert_costs += maxpool_costs
 
@@ -339,7 +404,8 @@ def AddVertex(G, op):
     return node_id
 
 
-def AddEdge(G, src, tgt, src_op=None, tgt_op=None, reshape=None):
+def AddEdge(G, src, tgt, src_op=None, tgt_op=None, src_tsr=None, tgt_tsr=None,
+        src_cfgs=None, tgt_cfgs=None, reshape=None):
     assert(src in G)
     assert(tgt in G)
 
@@ -348,12 +414,55 @@ def AddEdge(G, src, tgt, src_op=None, tgt_op=None, reshape=None):
         src_op = node_ops[src]
         tgt_op = node_ops[tgt]
 
-    costs = GetEdgeCosts(src_op, tgt_op, reshape)
+    if src_tsr is None:
+        src_tsr = src_op.out_tsr
+    if tgt_tsr is None:
+        tgt_tsr = tgt_op.in_tsr
+    if src_cfgs is None:
+        src_cfgs = src_op.out_tsr_configs
+    if tgt_cfgs is None:
+        tgt_cfgs = tgt_op.in_tsr_configs
+
+    costs = GetEdgeCosts(src_tsr, tgt_tsr, src_cfgs, tgt_cfgs, reshape)
     idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
         tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
     costs = pd.Series(costs, index=idx, name='cost')
 
     G.add_edge(src, tgt, costs=costs)
+
+
+def ConcatenateVertices(G, src_verts, concat_dim, n_procs):
+    assert(len(src_verts) > 1)
+    node_ops = G.nodes(data='op')
+
+    # ops and cfgs
+    src_ops = []
+    for v in src_verts:
+        assert(v in node_ops)
+        src_ops.append(node_ops[v])
+    tgt_op = Concat(src_ops, concat_dim, n_procs)
+    tgt_vert = AddVertex(G, tgt_op)
+    tgt_tsr = tgt_op.in_tsr
+    tgt_cfgs = tgt_op.dom_configs
+
+    # Ratio of original size to concatenated size of src tensors
+    sz = tgt_tsr[concat_dim]
+    ratios = [float(s.out_tsr[concat_dim])/sz for s in src_ops]
+
+    # Iterate over each src tensor and create edge and assign edge costs
+    for ratio, src_vert, src_op in zip(ratios, src_verts, src_ops):
+        src_tsr = src_op.out_tsr
+        src_cfgs = src_op.out_tsr_configs
+    
+        # Get target cfgs corresponding to src tensor size based on 'ratios'
+        cfgs = np.asfarray(tgt_cfgs)
+        cfgs[:, concat_dim] *= ratio
+        np.ceil(cfgs[:, concat_dim], out=cfgs[:, concat_dim])
+
+        AddEdge(G, src_vert, tgt_vert, src_op, tgt_op, src_tsr, src_tsr,
+                src_cfgs, cfgs)
+
+    return tgt_vert, tgt_op
 
 
 def AlexNet(G, b, n_procs):
@@ -418,118 +527,129 @@ class Inception3():
         node_op = Conv(img, fltr, stride, padding, self.n_procs, pw_op_cnt =
                 pw_ops_in_bn+1)
         node_id = AddVertex(G, node_op)
-        AddEdge(G, node_id-1, node_id)
+        if node_id > 0:
+            AddEdge(G, node_id-1, node_id)
 
-        return node_op
+        return node_id, node_op
 
     def AddInceptionA(self, G, img, in_channels, pool):
-        node_op1 = self.AddBasicConv(G, img, in_channels, 64, 1)
+        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 64, 1)
 
-        node_op = self.AddBasicConv(G, img, in_channels, 48, 1)
-        node_op2 = self.AddBasicConv(G, node_op.out_tsr, 48, 64, 5, padding=2)
+        _, node_op = self.AddBasicConv(G, img, in_channels, 48, 1)
+        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, 48, 64, 5, padding=2)
 
-        node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
-        node_op3 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3, padding=1)
+        _, node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
+        node_id3, node_op3 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3, padding=1)
 
-        pre_maxpool = Maxpool((3, 3), 1, 1)
-        node_op4 = self.AddBasicConv(G, img, in_channels, pool, 1,
+        pre_maxpool = MaxPool((3, 3), 1, 1)
+        node_id4, node_op4 = self.AddBasicConv(G, img, in_channels, pool, 1,
                 pre_maxpool=pre_maxpool)
 
-        # TODO
-        node_op = Concat((node_op1, node_op2, node_op3, node_op4), 1)
+        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3,
+            node_id4), 1, self.n_procs)
         return node_op
 
     def AddInceptionB(self, G, img, in_channels):
-        node_op1 = self.AddBasicConv(G, img, in_channels, 384, 3, stride=2)
+        inp_node_id = G.number_of_nodes()
 
-        node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
-        node_op2 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3,
-                maxpool=Maxpool((3,3), 2), stride=2)
+        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 384, 3, stride=2)
 
-        #TODO
-        node_op = Concat((node_op1, node_op2, node_op3), 1)
+        _, node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
+        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3, stride=2)
+
+        node_op3 = MaxPool((3,3), 2, img=img, n_procs=self.n_procs)
+        node_id3 = AddVertex(G, node_op3)
+        AddEdge(G, inp_node_id, node_id3)
+
+        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3), 1,
+                self.n_procs)
         return node_op
 
     def AddInceptionC(self, G, img, in_channels, out_channels):
-        node_op1 = self.AddBasicConv(G, img, in_channels, 192, 1)
+        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 192, 1)
 
-        node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        _, node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
                 out_channels, (1, 7), padding=(0,3))
-        node_op2 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
+        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
                 (7,1), padding=(3,0))
 
-        node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        _, node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
                 out_channels, (7,1), padding=(3,0))
-        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
                 out_channels, (1,7), padding=(0,3))
-        node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
                 out_channels, (7,1), padding=(3,0))
-        node_op3 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
+        node_id3, node_op3 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
                 (1,7), padding=(0,3))
 
-        node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
+        node_id4, node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
                 pre_maxpool=MaxPool((3, 3), 1, 1))
 
-        # TODO
-        node_op = Concat((node_op1, node_op2, node_op3, node_op4), 1)
+        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3,
+            node_id4), 1, self.n_procs)
         return node_op
 
     def AddInceptionD(self, G, img, in_channels):
-        node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
-        node_op1 = self.AddBasicConv(G, node_op.out_tsr, 192, 320, 3, stride=2)
+        inp_node_id = G.number_of_nodes()
 
-        node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (1,7),
+        _, node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
+        node_id1, node_op1 = self.AddBasicConv(G, node_op.out_tsr, 192, 320, 3, stride=2)
+
+        _, node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (1,7),
                 padding=(0,3))
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (7,1),
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (7,1),
                 padding=(3,0))
-        node_op2 = self.AddBasicConv(G, node_op.out_tsr, 192, 192, 3, stride=2)
+        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, 192, 192, 3, stride=2)
 
-        node_op3 = MaxPool(G, img, (3,3), 2)
+        node_op3 = MaxPool((3,3), 2, img=img, n_procs=self.n_procs)
+        node_id3 = AddVertex(G, node_op3)
+        AddEdge(G, inp_node_id, node_id3)
 
-        # TODO
-        node_op = Concat((node_op1, node_op2, node_op3), 1)
+        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3), 1,
+                self.n_procs)
         return node_op
 
     def AddInceptionE(self, G, img, in_channels):
-        node_op1 = self.AddBasicConv(G, img, in_channels, 320, 1)
+        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 320, 1)
 
-        node_op2_0 = self.AddBasicConv(G, img, in_channels, 384, 1)
-        node_op2_1 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (1,3),
+        node_id2_0, node_op2_0 = self.AddBasicConv(G, img, in_channels, 384, 1)
+        node_id2_1, node_op2_1 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (1,3),
                 padding=(0,1))
-        node_op2_2 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (3,1),
+        node_id2_2, node_op2_2 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (3,1),
                 padding=(1,0))
-        node_op2 = Concat((node_op2_1, node_op2_2), 1)
 
-        node_op = self.AddBasicConv(G, img, in_channels, 448, 1)
-        node_op3_0 = self.AddBasicConv(G, node_op.out_tsr, 448, 384, 3, 1)
-        node_op3_1 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (1,3),
+        _, node_op = self.AddBasicConv(G, img, in_channels, 448, 1)
+        node_id3_0, node_op3_0 = self.AddBasicConv(G, node_op.out_tsr, 448, 384,
+                3, padding=1)
+        node_id3_1, node_op3_1 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (1,3),
                 padding=(0,1))
-        node_op3_2 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (3,1),
+        node_id3_2, node_op3_2 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (3,1),
                 padding=(1,0))
-        node_op3 = Concat((node_op3_1, node_op3_2), 1)
 
-        node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
+        node_id4, node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
                 pre_maxpool=MaxPool((3,3), 1, 1))
 
-        node_op = Concat((node_op1, node_op2, node_op3, node_op4), 1)
+        _, node_op = ConcatenateVertices(G, (node_id1, node_id2_1, node_id2_2,
+            node_id3_1, node_id3_2, node_id4), 1, self.n_procs)
         return node_op
 
     def __init__(self, G, b, n_procs):
+        self.G = G
         self.n_procs = n_procs
         img = (b, 3, 299, 299)
         num_classes = 1000
 
-        node_op = self.AddBasicConv(G, img, 3, 32, 3, stride=2)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 32, 3)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 64, 3,
+        _, node_op = self.AddBasicConv(G, img, 3, 32, 3, stride=2)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 32, 3)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 64, 3,
                 maxpool=MaxPool((3, 3), 2), padding=1)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 80, 1)
-        node_op = self.AddBasicConv(G, node_op.out_tsr, 80, 192, 3,
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 80, 1)
+        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 80, 192, 3,
                 maxpool=MaxPool((3,3), 2))
 
         node_op = self.AddInceptionA(G, node_op.out_tsr, 192, 32)
@@ -546,12 +666,16 @@ class Inception3():
         node_op = self.AddInceptionD(G, node_op.out_tsr, 768)
 
         node_op = self.AddInceptionE(G, node_op.out_tsr, 1280)
-        node_op = self.AddInceptionE(G, node_op.out_tsr, 2048, avgpool=True)
+        node_op = self.AddInceptionE(G, node_op.out_tsr, 2048)
+
+        node_op = AdaptivePool(1, 1, img=node_op.out_tsr, n_procs=self.n_procs)
 
         node_op = Gemm((node_op.out_tsr[0], num_classes, 2048), n_procs)
         node_id = AddVertex(G, node_op)
         AddEdge(G, node_id-1, node_id, reshape=[(0,), (1, 2, 3)]) 
 
+    def Graph(self):
+        return self.G
 
 
 class ResNet101():
@@ -571,12 +695,12 @@ class ResNet101():
         node_id = AddVertex(G, node_op)
         AddEdge(G, node_id-1, node_id)
     
-        # Aggregated avgpool
+        # Adaptive avgpool
         if avgpool:
             assert(downsample == False) # If downsample is true, then avgpool
                                         # has to be fused with the conv within
                                         # downsample
-            maxpool = AvgPool(node_op.out_tsr[2], node_op.out_tsr[3])
+            maxpool = AdaptivePool(node_op.out_tsr[2], node_op.out_tsr[3])
         else:
             maxpool = None
 
@@ -692,6 +816,8 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
         G = AlexNet(G, batch_size, n_procs)
     elif graph_type == 'resnet101':
         G = ResNet101(G, batch_size, n_procs).Graph()
+    elif graph_type == 'inception3':
+        G = Inception3(G, batch_size, n_procs).Graph()
     else:
         assert(False)
 
