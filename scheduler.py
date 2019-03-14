@@ -50,7 +50,6 @@ def AddVertexCosts(v, vert_costs, tbl):
     except KeyError:
         tbl.rename(columns={'cost': 'costs'}, inplace=True)
 
-    assert(tbl['costs'].isnull().values.any() == False)
     return tbl
 
 
@@ -60,7 +59,6 @@ def AddEdgeCosts(src, tgt, edge_costs, tbl):
     tbl['costs'] += tbl['cost']
     tbl.drop('cost', 1, inplace=True)
 
-    assert(tbl['costs'].isnull().values.any() == False)
     return tbl
 
 
@@ -150,14 +148,15 @@ class Processor:
         cfg_to_df = lambda x : pd.DataFrame().assign(**{str(x) :
             self.vert_ops[x].dom_config_tuples})
 
-        assert(all('costs' not in self.v_to_tbl_map[n].columns for n in
-            p_neigh))
-
         # Merge tables of processed neighbors and add configurations of 'v' to 'tbl'
         if p_neigh:
             tbl = MergeTables([self.v_to_tbl_map[n] for n in p_neigh])
-            tbl = MergeTwoTables(tbl, cfg_to_df(v))
-        else:
+            assert(tbl.shape[0] > 0)
+
+        try:
+            if str(v) not in tbl.columns:
+                tbl = MergeTwoTables(tbl, cfg_to_df(v))
+        except NameError:
             tbl = cfg_to_df(v)
 
         # Add all combinations of configurations of unprocessed neighbors
@@ -166,6 +165,7 @@ class Processor:
             if str(n) not in cols:
                 tbl = MergeTwoTables(tbl, cfg_to_df(n))
 
+        assert(tbl.shape[0] > 0)
         return tbl
 
     # Compute costs for sub-strategies in 'tbl'
@@ -204,6 +204,9 @@ class Processor:
         tbl = self.GenerateTable(v, p_neigh, up_neigh)
         tbl = self.ComputeCosts(tbl, v, p_preds, p_scsrs, up_preds, up_scsrs)
 
+        print("Processing vertex " + str(v) + "; Table size: " +
+                str(tbl.shape[0]))
+
         # Add individual sub-strategy costs to get complete sub-strategy costs
         # for 'tbl'
         cost_col_name = 'costs_' + str(v)
@@ -218,17 +221,19 @@ class Processor:
         tbl = ReduceTable(tbl, col_names, cost_col_name)
 
         # Update the vertex to table map
-        self.v_to_tbl_map[v] = tbl
-        for n in p_neigh:
-            self.v_to_tbl_map[n] = tbl
+        for c in tbl.columns:
+            try:
+                self.v_to_tbl_map[int(c)] = tbl
+            except ValueError:
+                assert(c.startswith('costs_'))
 
+        print("Processed vertex " + str(v) + "; Table size: " +
+                str(tbl.shape[0]) + "\n")
         return tbl
 
     def ProcessGraph(self, vert_order):
         for v in vert_order:
             tbl = self.ProcessVertex(v)
-            print("Processed vertex " + str(v) + "; Current table size: " +
-                    str(tbl.shape[0]))
 
         assert(len(tbl.columns) == self.n_nodes + 1)
         return tbl
