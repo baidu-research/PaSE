@@ -11,28 +11,34 @@ from argparse import ArgumentParser
 import graph
 
 
-# Extends 'tbl' by adding configuration combinations of the vertices in
-# 'vert_labels'
-def ExtendTable(tbl, vert_labels, vert_ops):
-    cols = set(tbl.columns.values)
+def MergeTwoTables(tbl1, tbl2):
+    common_keys = list(set(tbl1.columns).intersection(tbl2.columns))
 
-    # If vert_labels is empty, return the original table
-    if not vert_labels:
-        return tbl
+    if not common_keys:
+        if 'key' not in tbl1.columns:
+            tbl1 = tbl1.assign(key=0)
+        if 'key' not in tbl2.columns:
+            tbl2 = tbl2.assign(key=0)
+        return tbl1.merge(tbl2, on='key').drop('key', 1)
+    else:
+        return tbl1.merge(tbl2, on=common_keys)
 
-    # Create missing columns and merge them with 'tbl'
-    tbl_with_key = tbl.assign(key=0)
-    for v in vert_labels:
-        assert(v not in cols)
-        v_df = pd.DataFrame(pd.Series(vert_ops[int(v)].dom_config_tuples,
-            name=v))
-        v_df = v_df.assign(key=0)
-        if tbl_with_key.empty:
-            tbl_with_key = v_df
-        else:
-            tbl_with_key = tbl_with_key.merge(v_df, on='key')
 
-    return tbl_with_key.drop('key', 1)
+def MergeTables(tbls):
+    n_tbls = len(tbls)
+
+    if n_tbls == 0:
+        return None
+
+    if n_tbls == 1:
+        return tbls[0]
+
+    m_tbl = MergeTwoTables(tbls[0], tbls[1])
+
+    for tbl in tbls[2:]:
+        m_tbl = MergeTwoTables(m_tbl, tbl)
+
+    return m_tbl
 
 
 # Adds vertex costs of 'v' to the table
@@ -113,11 +119,12 @@ def SortNodes(G):
                         neigh_idx]]
         
 
-def ReduceTable(tbl, group_label, col):
-    if group_label:
-        min_idx = tbl.groupby(group_label, axis=0)[col].idxmin(axis=0)
+def ReduceTable(tbl, grouping_cols, minimization_col):
+    if grouping_cols:
+        min_idx = tbl.groupby(grouping_cols,
+                axis=0)[minimization_col].idxmin(axis=0)
     else:
-        min_idx = tbl[col].idxmin(axis=0)
+        min_idx = tbl[minimization_col].idxmin(axis=0)
 
     if len(min_idx.shape) == 0:
         min_idx = [min_idx]
@@ -125,87 +132,106 @@ def ReduceTable(tbl, group_label, col):
     return tbl.loc[min_idx]
 
 
-# Processes vertex 'v'
-def ProcessGraph(G):
-    g_tbl = pd.DataFrame()
-    unprocessed_nodes = set()
-    unprocessed_node_labels = set()
+class Processor:
+    def __init__(self, G):
+        self.n_nodes = G.number_of_nodes()
 
-    vert_ops = nx.get_node_attributes(G, 'op')
-    vert_costs = nx.get_node_attributes(G, 'costs')
-    edge_costs = nx.get_edge_attributes(G, 'costs')
+        self.G = G
+        self.v_to_tbl_map = self.n_nodes * [None]
+        self.processed_nodes = set()
+        self.processed_node_labels = set()
 
-    sorted_nodes = SortNodes(G)
-    for v in sorted_nodes:
-        preds = set(G.predecessors(v))
-        succs = set(G.successors(v))
-        neigh = preds.union(succs)
+        self.vert_ops = nx.get_node_attributes(G, 'op')
+        self.vert_costs = nx.get_node_attributes(self.G, 'costs')
+        self.edge_costs = nx.get_edge_attributes(self.G, 'costs')
 
-        vert_labels = [str(i) for i in neigh]
-        tbl_cols = set(vert_labels + [str(v)])
-        g_cols = set(g_tbl.columns.values)
+    # Generates table for vertex 'v'
+    def GenerateTable(self, v, p_neigh, up_neigh):
+        cfg_to_df = lambda x : pd.DataFrame().assign(**{str(x) :
+            self.vert_ops[x].dom_config_tuples})
 
-        curr_cols = g_cols.intersection(tbl_cols)
-        new_cols = tbl_cols - curr_cols
+        assert(all('costs' not in self.v_to_tbl_map[n].columns for n in
+            p_neigh))
 
-        # Extend the table with cartesian product of the neighbors
-        tbl = ExtendTable(g_tbl[curr_cols], new_cols, vert_ops)
-
-        # Update unprocessed_nodes
-        unprocessed_nodes.update(set(int(i) for i in new_cols))
-        unprocessed_nodes.remove(v)
-        unprocessed_node_labels.update(new_cols)
-        unprocessed_node_labels.remove(str(v))
-
-        unprocessed_preds = preds.intersection(unprocessed_nodes)
-        unprocessed_succs = succs.intersection(unprocessed_nodes)
-        processed_preds = preds - unprocessed_preds
-        processed_succs = succs - unprocessed_succs
-
-        # Get vertex costs for configs of 'v'
-        tbl = AddVertexCosts(v, vert_costs[v], tbl)
-
-        # Add unprocessed edge costs
-        for n in unprocessed_preds:
-            tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], tbl)
-        for n in unprocessed_succs:
-            tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], tbl)
-
-        # Store the node cost and unprocessed edge costs to be added to g_tbl
-        # later
-        tbl['new_costs'] = tbl['costs']
-
-        # Add processed edge costs
-        for n in processed_preds:
-            tbl = AddEdgeCosts(n, v, edge_costs[(n, v)], tbl)
-        for n in processed_succs:
-            tbl = AddEdgeCosts(v, n, edge_costs[(v, n)], tbl)
-
-        # Get the min cost for each neighbor sub-strategy
-        tbl = ReduceTable(tbl, vert_labels, 'costs')
-
-        # Merge 'tbl' with 'g_tbl' and add the local costs to global costs
-        if g_tbl.empty:
-            assert((tbl['new_costs'] == tbl['costs']).all())
-            g_tbl = tbl.drop('new_costs', 1)
+        # Merge tables of processed neighbors and add configurations of 'v' to 'tbl'
+        if p_neigh:
+            tbl = MergeTables([self.v_to_tbl_map[n] for n in p_neigh])
+            tbl = MergeTwoTables(tbl, cfg_to_df(v))
         else:
-            if curr_cols:
-                g_tbl = g_tbl.merge(tbl, on=list(curr_cols), how='inner')
-            else:
-                g_tbl = g_tbl.assign(key=0).merge(tbl.assign(key=0),
-                        on='key').drop('key', 1)
-            g_tbl['costs_x'] += g_tbl['new_costs']
-            g_tbl.drop(['costs_y', 'new_costs'], 1, inplace=True)
-            g_tbl.rename(columns={'costs_x':'costs'}, inplace=True)
+            tbl = cfg_to_df(v)
 
-        # Reduce all processed nodes
-        g_tbl = ReduceTable(g_tbl, list(unprocessed_node_labels), 'costs')
+        # Add all combinations of configurations of unprocessed neighbors
+        cols = set(tbl.columns)
+        for n in up_neigh:
+            if str(n) not in cols:
+                tbl = MergeTwoTables(tbl, cfg_to_df(n))
 
-        print("Processed vertex " + str(v) + "; Current table size: " +
-                str(g_tbl.shape[0]))
+        return tbl
 
-    return g_tbl
+    # Compute costs for sub-strategies in 'tbl'
+    def ComputeCosts(self, tbl, v, p_preds, p_scsrs, up_preds, up_scsrs):
+        tbl = AddVertexCosts(v, self.vert_costs[v], tbl)
 
+        for n in up_preds:
+            tbl = AddEdgeCosts(n, v, self.edge_costs[(n, v)], tbl)
+        for n in up_scsrs:
+            tbl = AddEdgeCosts(v, n, self.edge_costs[(v, n)], tbl)
+
+        tbl.rename(columns={'costs' : 'costs_' + str(v)}, inplace=True)
+
+        return tbl
+
+    def ProcessVertex(self, v):
+        preds = set(self.G.predecessors(v))
+        scsrs = set(self.G.successors(v))
+
+        p_preds = self.processed_nodes.intersection(preds)
+        p_scsrs = self.processed_nodes.intersection(scsrs)
+        p_neigh = p_preds.union(p_scsrs)
+
+        up_preds = preds - p_preds
+        up_scsrs = scsrs - p_scsrs
+        up_neigh = up_preds.union(up_scsrs)
+
+        assert(v not in self.processed_nodes)
+
+        # Add 'v' to processed node set
+        self.processed_nodes.add(v)
+        self.processed_node_labels.add(str(v))
+
+        # Create the table for 'v' by merging neighbor tables, and compute costs
+        # for different sub-strategies
+        tbl = self.GenerateTable(v, p_neigh, up_neigh)
+        tbl = self.ComputeCosts(tbl, v, p_preds, p_scsrs, up_preds, up_scsrs)
+
+        # Add individual sub-strategy costs to get complete sub-strategy costs
+        # for 'tbl'
+        cost_col_name = 'costs_' + str(v)
+        for c in tbl.columns:
+            if c.startswith('costs_') and c != cost_col_name:
+                tbl[cost_col_name] += tbl[c]
+                tbl.drop(c, 1, inplace=True)
+
+        cols = set(tbl.columns) - self.processed_node_labels
+        cols.remove(cost_col_name)
+        col_names = [str(c) for c in cols]
+        tbl = ReduceTable(tbl, col_names, cost_col_name)
+
+        # Update the vertex to table map
+        self.v_to_tbl_map[v] = tbl
+        for n in p_neigh:
+            self.v_to_tbl_map[n] = tbl
+
+        return tbl
+
+    def ProcessGraph(self, vert_order):
+        for v in vert_order:
+            tbl = self.ProcessVertex(v)
+            print("Processed vertex " + str(v) + "; Current table size: " +
+                    str(tbl.shape[0]))
+
+        assert(len(tbl.columns) == self.n_nodes + 1)
+        return tbl
 
 def main():
     parser = ArgumentParser()
@@ -251,7 +277,7 @@ def main():
     # Process the vertices
     if args['profile']:
         pr.enable()
-    g_tbl = ProcessGraph(G)
+    g_tbl = Processor(G).ProcessGraph(SortNodes(G))
     print("")
     if args['profile']:
         pr.disable()
@@ -263,7 +289,7 @@ def main():
 
     print("Strategy with minimum cost:")
     print("=====")
-    print(g_tbl.drop('costs').to_string())
+    print(g_tbl.to_string())
     print("=====")
 
 
