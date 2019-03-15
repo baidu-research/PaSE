@@ -521,122 +521,119 @@ def AlexNet(G, b, n_procs):
 
 class Inception3():
     # Conv2d + BN + relu
-    def AddBasicConv(self, G, img, in_channels, out_channels, kernel_size,
+    def AddBasicConv(self, G, in_node_id, img, in_channels, out_channels, kernel_size,
             pre_maxpool=None, maxpool=None, stride=1, padding=0):
         fltr = (out_channels, in_channels) + MakePair(kernel_size)
         node_op = Conv(img, fltr, stride, padding, self.n_procs, pw_op_cnt =
                 pw_ops_in_bn+1)
         node_id = AddVertex(G, node_op)
-        if node_id > 0:
-            AddEdge(G, node_id-1, node_id)
+
+        if in_node_id >= 0:
+            AddEdge(G, in_node_id, node_id)
 
         return node_id, node_op
 
-    def AddInceptionA(self, G, img, in_channels, pool):
-        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 64, 1)
+    def AddInceptionA(self, G, in_node_id, img, in_channels, pool):
+        node_id1, node_op1 = self.AddBasicConv(G, in_node_id, img, in_channels, 64, 1)
 
-        _, node_op = self.AddBasicConv(G, img, in_channels, 48, 1)
-        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, 48, 64, 5, padding=2)
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, 48, 1)
+        node_id2, node_op2 = self.AddBasicConv(G, node_id, node_op.out_tsr, 48, 64, 5, padding=2)
 
-        _, node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
-        node_id3, node_op3 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3, padding=1)
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, 64, 1)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 64, 96, 3, padding=1)
+        node_id3, node_op3 = self.AddBasicConv(G, node_id, node_op.out_tsr, 96, 96, 3, padding=1)
 
         pre_maxpool = MaxPool((3, 3), 1, 1)
-        node_id4, node_op4 = self.AddBasicConv(G, img, in_channels, pool, 1,
+        node_id4, node_op4 = self.AddBasicConv(G, in_node_id, img, in_channels, pool, 1,
                 pre_maxpool=pre_maxpool)
 
-        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3,
+        node_id, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3,
             node_id4), 1, self.n_procs)
-        return node_op
+        return node_id, node_op
 
-    def AddInceptionB(self, G, img, in_channels):
-        inp_node_id = G.number_of_nodes()
+    def AddInceptionB(self, G, in_node_id, img, in_channels):
+        node_id1, node_op1 = self.AddBasicConv(G, in_node_id, img, in_channels, 384, 3, stride=2)
 
-        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 384, 3, stride=2)
-
-        _, node_op = self.AddBasicConv(G, img, in_channels, 64, 1)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 96, 3, padding=1)
-        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, 96, 96, 3, stride=2)
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, 64, 1)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 64, 96, 3, padding=1)
+        node_id2, node_op2 = self.AddBasicConv(G, node_id, node_op.out_tsr, 96, 96, 3, stride=2)
 
         node_op3 = MaxPool((3,3), 2, img=img, n_procs=self.n_procs)
         node_id3 = AddVertex(G, node_op3)
-        AddEdge(G, inp_node_id, node_id3)
+        AddEdge(G, in_node_id, node_id3)
 
-        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3), 1,
+        node_id, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3), 1,
                 self.n_procs)
-        return node_op
+        return node_id, node_op
 
-    def AddInceptionC(self, G, img, in_channels, out_channels):
-        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 192, 1)
+    def AddInceptionC(self, G, in_node_id, img, in_channels, out_channels):
+        node_id1, node_op1 = self.AddBasicConv(G, in_node_id, img, in_channels, 192, 1)
 
-        _, node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, out_channels, 1)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, out_channels,
                 out_channels, (1, 7), padding=(0,3))
-        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
+        node_id2, node_op2 = self.AddBasicConv(G, node_id, node_op.out_tsr, out_channels, 192,
                 (7,1), padding=(3,0))
 
-        _, node_op = self.AddBasicConv(G, img, in_channels, out_channels, 1)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, out_channels, 1)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, out_channels,
                 out_channels, (7,1), padding=(3,0))
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, out_channels,
                 out_channels, (1,7), padding=(0,3))
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, out_channels,
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, out_channels,
                 out_channels, (7,1), padding=(3,0))
-        node_id3, node_op3 = self.AddBasicConv(G, node_op.out_tsr, out_channels, 192,
+        node_id3, node_op3 = self.AddBasicConv(G, node_id, node_op.out_tsr, out_channels, 192,
                 (1,7), padding=(0,3))
 
-        node_id4, node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
+        node_id4, node_op4 = self.AddBasicConv(G, in_node_id, img, in_channels, 192, 1,
                 pre_maxpool=MaxPool((3, 3), 1, 1))
 
-        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3,
+        node_id, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3,
             node_id4), 1, self.n_procs)
-        return node_op
+        return node_id, node_op
 
-    def AddInceptionD(self, G, img, in_channels):
-        inp_node_id = G.number_of_nodes()
+    def AddInceptionD(self, G, in_node_id, img, in_channels):
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, 192, 1)
+        node_id1, node_op1 = self.AddBasicConv(G, node_id, node_op.out_tsr, 192, 320, 3, stride=2)
 
-        _, node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
-        node_id1, node_op1 = self.AddBasicConv(G, node_op.out_tsr, 192, 320, 3, stride=2)
-
-        _, node_op = self.AddBasicConv(G, img, in_channels, 192, 1)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (1,7),
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, 192, 1)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 192, 192, (1,7),
                 padding=(0,3))
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 192, 192, (7,1),
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 192, 192, (7,1),
                 padding=(3,0))
-        node_id2, node_op2 = self.AddBasicConv(G, node_op.out_tsr, 192, 192, 3, stride=2)
+        node_id2, node_op2 = self.AddBasicConv(G, node_id, node_op.out_tsr, 192, 192, 3, stride=2)
 
         node_op3 = MaxPool((3,3), 2, img=img, n_procs=self.n_procs)
         node_id3 = AddVertex(G, node_op3)
-        AddEdge(G, inp_node_id, node_id3)
+        AddEdge(G, in_node_id, node_id3)
 
-        _, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3), 1,
+        node_id, node_op = ConcatenateVertices(G, (node_id1, node_id2, node_id3), 1,
                 self.n_procs)
-        return node_op
+        return node_id, node_op
 
-    def AddInceptionE(self, G, img, in_channels):
-        node_id1, node_op1 = self.AddBasicConv(G, img, in_channels, 320, 1)
+    def AddInceptionE(self, G, in_node_id, img, in_channels):
+        node_id1, node_op1 = self.AddBasicConv(G, in_node_id, img, in_channels, 320, 1)
 
-        node_id2_0, node_op2_0 = self.AddBasicConv(G, img, in_channels, 384, 1)
-        node_id2_1, node_op2_1 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (1,3),
+        node_id2_0, node_op2_0 = self.AddBasicConv(G, in_node_id, img, in_channels, 384, 1)
+        node_id2_1, node_op2_1 = self.AddBasicConv(G, node_id2_0, node_op2_0.out_tsr, 384, 384, (1,3),
                 padding=(0,1))
-        node_id2_2, node_op2_2 = self.AddBasicConv(G, node_op2_0.out_tsr, 384, 384, (3,1),
+        node_id2_2, node_op2_2 = self.AddBasicConv(G, node_id2_0, node_op2_0.out_tsr, 384, 384, (3,1),
                 padding=(1,0))
 
-        _, node_op = self.AddBasicConv(G, img, in_channels, 448, 1)
-        node_id3_0, node_op3_0 = self.AddBasicConv(G, node_op.out_tsr, 448, 384,
+        node_id, node_op = self.AddBasicConv(G, in_node_id, img, in_channels, 448, 1)
+        node_id3_0, node_op3_0 = self.AddBasicConv(G, node_id, node_op.out_tsr, 448, 384,
                 3, padding=1)
-        node_id3_1, node_op3_1 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (1,3),
+        node_id3_1, node_op3_1 = self.AddBasicConv(G, node_id3_0, node_op3_0.out_tsr, 384, 384, (1,3),
                 padding=(0,1))
-        node_id3_2, node_op3_2 = self.AddBasicConv(G, node_op3_0.out_tsr, 384, 384, (3,1),
+        node_id3_2, node_op3_2 = self.AddBasicConv(G, node_id3_0, node_op3_0.out_tsr, 384, 384, (3,1),
                 padding=(1,0))
 
-        node_id4, node_op4 = self.AddBasicConv(G, img, in_channels, 192, 1,
+        node_id4, node_op4 = self.AddBasicConv(G, in_node_id, img, in_channels, 192, 1,
                 pre_maxpool=MaxPool((3,3), 1, 1))
 
-        _, node_op = ConcatenateVertices(G, (node_id1, node_id2_1, node_id2_2,
+        node_id, node_op = ConcatenateVertices(G, (node_id1, node_id2_1, node_id2_2,
             node_id3_1, node_id3_2, node_id4), 1, self.n_procs)
-        return node_op
+        return node_id, node_op
 
     def __init__(self, G, b, n_procs):
         self.G = G
@@ -644,31 +641,35 @@ class Inception3():
         img = (b, 3, 299, 299)
         num_classes = 1000
 
-        _, node_op = self.AddBasicConv(G, img, 3, 32, 3, stride=2)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 32, 3)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 32, 64, 3,
-                maxpool=MaxPool((3, 3), 2), padding=1)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 64, 80, 1)
-        _, node_op = self.AddBasicConv(G, node_op.out_tsr, 80, 192, 3,
-                maxpool=MaxPool((3,3), 2))
+        node_id, node_op = self.AddBasicConv(G, -1, img, 3, 32, 3, stride=2)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 32,
+                32, 3)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 32,
+                64, 3, maxpool=MaxPool((3, 3), 2), padding=1)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 64,
+                80, 1)
+        node_id, node_op = self.AddBasicConv(G, node_id, node_op.out_tsr, 80,
+                192, 3, maxpool=MaxPool((3,3), 2))
 
-        node_op = self.AddInceptionA(G, node_op.out_tsr, 192, 32)
-        node_op = self.AddInceptionA(G, node_op.out_tsr, 256, 64)
-        node_op = self.AddInceptionA(G, node_op.out_tsr, 288, 64)
+        node_id, node_op = self.AddInceptionA(G, node_id, node_op.out_tsr, 192, 32)
+        node_id, node_op = self.AddInceptionA(G, node_id, node_op.out_tsr, 256, 64)
+        node_id, node_op = self.AddInceptionA(G, node_id, node_op.out_tsr, 288, 64)
 
-        node_op = self.AddInceptionB(G, node_op.out_tsr, 288)
+        node_id, node_op = self.AddInceptionB(G, node_id, node_op.out_tsr, 288)
 
-        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 128)
-        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 160)
-        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 160)
-        node_op = self.AddInceptionC(G, node_op.out_tsr, 768, 192)
+        node_id, node_op = self.AddInceptionC(G, node_id, node_op.out_tsr, 768, 128)
+        node_id, node_op = self.AddInceptionC(G, node_id, node_op.out_tsr, 768, 160)
+        node_id, node_op = self.AddInceptionC(G, node_id, node_op.out_tsr, 768, 160)
+        node_id, node_op = self.AddInceptionC(G, node_id, node_op.out_tsr, 768, 192)
 
-        node_op = self.AddInceptionD(G, node_op.out_tsr, 768)
+        node_id, node_op = self.AddInceptionD(G, node_id, node_op.out_tsr, 768)
 
-        node_op = self.AddInceptionE(G, node_op.out_tsr, 1280)
-        node_op = self.AddInceptionE(G, node_op.out_tsr, 2048)
+        node_id, node_op = self.AddInceptionE(G, node_id, node_op.out_tsr, 1280)
+        node_id, node_op = self.AddInceptionE(G, node_id, node_op.out_tsr, 2048)
 
         node_op = AdaptivePool(1, 1, img=node_op.out_tsr, n_procs=self.n_procs)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id)
 
         node_op = Gemm((node_op.out_tsr[0], num_classes, 2048), n_procs)
         node_id = AddVertex(G, node_op)
