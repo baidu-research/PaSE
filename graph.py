@@ -8,8 +8,16 @@ from functools import reduce
 import operator as op
 
 
-peak_flop = float(15 * 1000) # 125 TFLOP
-bw = float(150 / 8) # 150 GBytes/sec = 7/8 GWords/sec
+p100_peak_flop = float(10.6 * 1000) # GFLOPs
+p100_bw = float((36.72 * 2) / 8) # Unidirectional for 2 sublinks per direction.
+                                 # GBytes/sec = b/8 GWords/sec
+
+v100_peak_flop = float(15.7 * 1000) # GFLOPs
+v100_bw = float((47.99 * 3) / 8) # Unidirectional for 3 sublinks per direction.
+                                 # GBytes/sec = b/8 GWords/sec
+
+peak_flop = p100_peak_flop
+bw = p100_bw
 bw_to_flop = float(peak_flop / bw)
 pw_ops_in_bn = 9 # No. of pointwise ops in a batch-norm
 
@@ -154,7 +162,7 @@ def GetEdgeCosts(src_tsr, tgt_tsr, src_cfgs, tgt_cfgs, reshape):
 
 # Generates list of configurations for a vertex
 def GetConfigs(vol, n_procs):
-    cutoff = 32 # Minimum domain size to reduce search space
+    cutoff = 4 # Minimum domain size to reduce search space
     dim = len(vol)
 
     proc_set = []

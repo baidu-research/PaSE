@@ -290,7 +290,15 @@ def main():
 
     # Convert 'g_tbl' into Series from DataFrame
     assert(g_tbl.shape[0] == 1)
-    g_tbl = g_tbl.iloc[0]
+    cols = []
+    for c in g_tbl.columns:
+        try:
+            cols.append(int(c))
+        except ValueError:
+            assert(c.startswith('costs_'))
+            g_tbl.drop(c, 1, inplace=True)
+    g_tbl.columns = cols
+    g_tbl = g_tbl.iloc[0].sort_index()
 
     print("Strategy with minimum cost:")
     print("=====")
