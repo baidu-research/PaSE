@@ -11,36 +11,6 @@ from argparse import ArgumentParser
 import graph
 
 
-def MergeTwoTables(tbl1, tbl2):
-    common_keys = list(set(tbl1.columns).intersection(tbl2.columns))
-
-    if not common_keys:
-        if 'key' not in tbl1.columns:
-            tbl1 = tbl1.assign(key=0)
-        if 'key' not in tbl2.columns:
-            tbl2 = tbl2.assign(key=0)
-        return tbl1.merge(tbl2, on='key').drop('key', 1)
-    else:
-        return tbl1.merge(tbl2, on=common_keys)
-
-
-def MergeTables(tbls):
-    n_tbls = len(tbls)
-
-    if n_tbls == 0:
-        return None
-
-    if n_tbls == 1:
-        return tbls[0]
-
-    m_tbl = MergeTwoTables(tbls[0], tbls[1])
-
-    for tbl in tbls[2:]:
-        m_tbl = MergeTwoTables(m_tbl, tbl)
-
-    return m_tbl
-
-
 # Adds vertex costs of 'v' to the table
 def AddVertexCosts(v, vert_costs, tbl):
     tbl = tbl.merge(vert_costs, left_on=[str(v)], right_index=True, how='left')
@@ -60,6 +30,19 @@ def AddEdgeCosts(src, tgt, edge_costs, tbl):
     tbl.drop('cost', 1, inplace=True)
 
     return tbl
+
+
+def MergeTables(tbl1, tbl2):
+    common_keys = list(set(tbl1.columns).intersection(tbl2.columns))
+
+    if not common_keys:
+        if 'key' not in tbl1.columns:
+            tbl1 = tbl1.assign(key=0)
+        if 'key' not in tbl2.columns:
+            tbl2 = tbl2.assign(key=0)
+        return tbl1.merge(tbl2, on='key').drop('key', 1)
+    else:
+        return tbl1.merge(tbl2, on=common_keys)
 
 
 # Sorts nodes in the ascending order of no. of unprocessed neighbors.
@@ -150,12 +133,15 @@ class Processor:
 
         # Merge tables of processed neighbors and add configurations of 'v' to 'tbl'
         if p_neigh:
-            tbl = MergeTables([self.v_to_tbl_map[n] for n in p_neigh])
+            it = iter(p_neigh)
+            tbl = self.v_to_tbl_map[next(it)]
+            for n in it:
+                tbl = MergeTables(tbl, self.v_to_tbl_map[n])
             assert(tbl.shape[0] > 0)
 
         try:
             if str(v) not in tbl.columns:
-                tbl = MergeTwoTables(tbl, cfg_to_df(v))
+                tbl = MergeTables(tbl, cfg_to_df(v))
         except NameError:
             tbl = cfg_to_df(v)
 
@@ -163,7 +149,7 @@ class Processor:
         cols = set(tbl.columns)
         for n in up_neigh:
             if str(n) not in cols:
-                tbl = MergeTwoTables(tbl, cfg_to_df(n))
+                tbl = MergeTables(tbl, cfg_to_df(n))
 
         assert(tbl.shape[0] > 0)
         return tbl
