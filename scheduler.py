@@ -90,14 +90,14 @@ class Processor:
             assert(cnt < self.n_nodes)
             yield node_id
 
-            # Invalidate the count in node_tbl for node_id
+            # Invalidate the count for node_id in node_tbl
             node_tbl[min_idx, 1] = self.n_nodes
 
             # Update node_tbl and node_dict for nodes that are affected by
             # node_id
             node_set = node_dict[node_id]
             for v in node_set:
-                assert(node_tbl[v, 1] < self.n_nodes)
+                assert(node_tbl[v, 1] < self.n_nodes) # v has to be unprocessed
                 s = node_dict[v].union(node_set)
                 s = s - {node_id, v}
                 node_dict[v] = s
