@@ -1,15 +1,17 @@
+import sys
 import time
+from argparse import ArgumentParser
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 import torch.optim as optim
-from torch.autograd import Variable
+from torch.utils.data import Dataset, DataLoader
 
+import cuda_helper
 
 class AlexNet(nn.Module):
-
     def __init__(self, num_classes=1000):
         super(AlexNet, self).__init__()
         self.features = nn.Sequential(
@@ -46,53 +48,74 @@ class AlexNet(nn.Module):
         return x
 
 
-def alexnet(pretrained=False, **kwargs):
-    r"""AlexNet model architecture from the
-    `"One weird trick..." <https://arxiv.org/abs/1404.5997>`_ paper.
+def run(model, criterion, optimizer, x, labels):
+    y = model(x)
+    loss = criterion(y, labels)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
-    model = AlexNet(**kwargs)
-    return model
+    return loss
 
 
 def main():
+    parser = ArgumentParser()
+    parser.add_argument('-b', '--batch', type=int, required=False, default=256,
+            help="Batch size. (Default: 256)")
+    parser.add_argument('-p', '--procs', type=int, required=False, default=8,
+            help="No. of processors. (Default: 8)")
+    parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
+            help="No. of epochs")
+    parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
+            choices=list(range(2)), 
+            help="Strategy to be used. 0: OWT, 1: Optimized. (Default: 0)")
+    args = vars(parser.parse_args())
+
+    # Parameter values
+    batch_size = args['batch']
+    n_procs = args['procs']
+    epochs = args['epochs']
+    strategy = args['strategy']
     warmup = 4
-    epochs = 32
-    batch_size = 256
     num_classes = 1000
 
-    torch.set_default_dtype(torch.float32)
-    model = alexnet(num_classes=num_classes)
+    assert(batch_size % n_procs == 0)
+
+    cu_helper = cuda_helper.CudaHelper(n_procs)
+
+    # Model
+    model = AlexNet(num_classes)
+    model.cuda()
+    model = nn.DataParallel(model, device_ids=cu_helper.device_ids)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
-    x = Variable(torch.randn(batch_size, 3, 224, 224, dtype=torch.float32))
-    labels = Variable(torch.FloatTensor(batch_size).uniform_(0, num_classes).long())
+    # Input, label tensors
+    x = torch.cuda.FloatTensor(batch_size, 3, 224, 224).normal_()
+    labels = torch.cuda.LongTensor(batch_size).random_(0, num_classes)
 
+    # Warmup runs
+    for i in range(warmup):
+        loss = run(model, criterion, optimizer, x, labels)
+
+    # Training
     tot_time = float(0)
     cnt = 0
-    for i in range(epochs):
-        if i > warmup:
-            start = time.time()
+    for i in range(warmup, epochs):
+        running_loss = 0.0
 
-        optimizer.zero_grad()
-        y = model(x)
-        loss = criterion(y, labels)
-        loss.backward()
-        optimizer.step()
+        start = time.time()
+        loss = run(model, criterion, optimizer, x, labels)
+        end = time.time()
 
-        if i > warmup:
-            end = time.time()
-            tot_time += (end - start)
-            cnt += 1
+        tot_time += (end - start)
+        cnt += 1
+        running_loss += loss.item()
 
-        print("Loss: " + str(loss.item()))
+        print("Loss: " + str(running_loss))
 
     avg_time = tot_time / float(cnt)
     print("Avg. time: " + str(avg_time) + " s")
-
 
 
 if __name__ == "__main__":
