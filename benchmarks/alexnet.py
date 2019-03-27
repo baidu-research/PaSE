@@ -1,12 +1,11 @@
+import time
+
 import numpy as np
+import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
-
-import torch
 import torch.optim as optim
 from torch.autograd import Variable
-from torchsummary import summary
-from torchviz import make_dot
 
 
 class AlexNet(nn.Module):
@@ -67,19 +66,32 @@ def main():
     torch.set_default_dtype(torch.float32)
     model = alexnet(num_classes=num_classes)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
     x = Variable(torch.randn(batch_size, 3, 224, 224, dtype=torch.float32))
     labels = Variable(torch.FloatTensor(batch_size).uniform_(0, num_classes).long())
 
-    for _ in range(epochs):
+    tot_time = float(0)
+    cnt = 0
+    for i in range(epochs):
+        if i > warmup:
+            start = time.time()
+
         optimizer.zero_grad()
         y = model(x)
         loss = criterion(y, labels)
         loss.backward()
         optimizer.step()
 
+        if i > warmup:
+            end = time.time()
+            tot_time += (end - start)
+            cnt += 1
+
         print("Loss: " + str(loss.item()))
+
+    avg_time = tot_time / float(cnt)
+    print("Avg. time: " + str(avg_time) + " s")
 
 
 
