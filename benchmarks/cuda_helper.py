@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn as nn
 
 
 class CudaHelper():
@@ -17,3 +18,14 @@ class CudaHelper():
         self.default_device_id = torch.cuda.current_device()
         self.default_device = torch.device("cuda:" +
                 str(self.default_device_id))
+
+
+def ModelParallelLinear(dim1, dim2, devices, pointwise_ops=None):
+    models = []
+    for d in devices:
+        model = nn.Linear(dim1, dim2).cuda(d)
+        if pointwise_ops is not None:
+            model = nn.Sequential(model, *pointwise_ops)
+        models.append(model)
+
+    return models
