@@ -87,7 +87,7 @@ class AlexNetOptimal(nn.Module):
         self.classifier3 = cuda_helper.ModelParallelLinear(dim1, dim2, devices)
 
     def forward(self, x):
-        from torch.nn.parallel._functions import ReduceAddCoalesced
+        from torch.nn.parallel._functions import Broadcast, ReduceAddCoalesced
         xs = nn.parallel.scatter(x, self.device_ids)
 
         # Apply features
@@ -95,32 +95,42 @@ class AlexNetOptimal(nn.Module):
         xs = nn.parallel.parallel_apply(features, xs)
         assert(len(xs) % 2 == 0)
 
-        # Distribute the inputs
+        # Gather and split the inputs for next layer
         inputs = []
         for i in range(0, len(xs), 2):
             t1, t2 = xs[i:i+2]
-            proc1, proc2 = self.devices[i:i+2]
+            t1 = t1.view(-1, 256 * 6 * 6)
+            t2 = t2.view(-1, 256 * 6 * 6)
 
-            t = torch.cat([t1, t2.to(proc1, non_blocking=True)])
-            t = t.view(-1, 256*6*6)
-            inputs.append(t)
+            # Gather the tensor from neighboring procs at the even numbered
+            # procs
+            t = nn.parallel.gather([t1, t2], i, dim=0)
 
-            t = torch.cat([t1.to(proc2, non_blocking=True), t2])
-            t = t.view(-1, 256*6*6)
-            inputs.append(t)
-        torch.cuda.synchronize()
-        xs = inputs
+            # Split the tensor along the other dimension
+            assert(t.shape[1] % 4 == 0)
+            ts = t.split(int(t.shape[1]/4), dim=1)
+            inputs.append(ts)
+
+        # Transpose the split tensor among even procs, and broadcast to odd
+        # procs
+        xs = []
+        for p, t in zip(range(0,8,2), zip(*inputs)):
+            t = nn.parallel.gather(t, p, dim=0)
+            t = Broadcast.apply([p, p+1], t)
+            xs += t
 
         # Apply the first classifier
         assert(len(self.classifier1) == len(xs))
         xs = nn.parallel.parallel_apply(self.classifier1, xs)
 
         # Reduce the outputs
-        r1 = ReduceAddCoalesced.apply(self.devices[0], 4, xs[0::2])
-        r2 = ReduceAddCoalesced.apply(self.devices[1], 4, xs[1::2])
-        xs = [r1, r2, r1.to(self.devices[2]), r2.to(self.devices[3]),
-                r1.to(self.devices[4]), r2.to(self.devices[5]),
-                r1.to(self.devices[6]), r2.to(self.devices[7])]
+        r1 = ReduceAddCoalesced.apply(self.device_ids[0], 1, *xs[0::2])[0]
+        r2 = ReduceAddCoalesced.apply(self.device_ids[1], 1, *xs[1::2])[0]
+
+        # Broadcast the reduced outputs for next classifier
+        b1 = Broadcast.apply([0, 2, 4, 6], r1)
+        b2 = Broadcast.apply([1, 3, 5, 7], r2)
+        xs = [t for pair in zip(b1, b2) for t in pair]
 
         # Apply the second classifier
         assert(len(self.classifier2) == len(xs))
@@ -129,9 +139,9 @@ class AlexNetOptimal(nn.Module):
         # Reduce the outputs
         r = []
         for i in range(0, 8, 2):
-            x = ReduceAddCoalesced.apply(self.devices[i], 2, xs[i:i+2])
-            r.append(x)
-            r.append(x.to(self.device[i+1]))
+            x = ReduceAddCoalesced.apply(self.device_ids[i], 1, xs[i:i+2])[0]
+            x = Broadcast.apply([i, i+1], x)
+            r += x
         xs = r
 
         # Apply the third classifier
@@ -139,12 +149,12 @@ class AlexNetOptimal(nn.Module):
         xs = nn.parallel.parallel_apply(self.classifier3, xs)
 
         # Reduce the outputs
-        r1 = ReduceAddCoalesced.apply(self.devices[0], 4, xs[0::2])
-        r2 = ReduceAddCoalesced.apply(self.devices[1], 4, xs[1::2])
+        r1 = ReduceAddCoalesced.apply(self.device_ids[0], 1, xs[0::2])[0]
+        r2 = ReduceAddCoalesced.apply(self.device_ids[1], 1, xs[1::2])[0]
         xs = [r1, r2]
 
         # Gather the final output into device 0
-        x = nn.parallel.gather(xs, self.devices[0])
+        x = nn.parallel.gather(xs, self.device_ids[0])
 
         return x
 
@@ -169,7 +179,7 @@ def main():
             help="No. of epochs")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(2)), 
-            help="Strategy to be used. 0: DataParallel, 1: Optimized. (Default: 0)")
+            help="Strategy to use. 0: DataParallel, 1: Optimized. (Default: 0)")
     args = vars(parser.parse_args())
 
     # Parameter values
