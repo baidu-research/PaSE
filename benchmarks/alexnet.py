@@ -139,7 +139,7 @@ class AlexNetOptimal(nn.Module):
         # Reduce the outputs
         r = []
         for i in range(0, 8, 2):
-            x = ReduceAddCoalesced.apply(self.device_ids[i], 1, xs[i:i+2])[0]
+            x = ReduceAddCoalesced.apply(self.device_ids[i], 1, *xs[i:i+2])[0]
             x = Broadcast.apply([i, i+1], x)
             r += x
         xs = r
@@ -149,12 +149,12 @@ class AlexNetOptimal(nn.Module):
         xs = nn.parallel.parallel_apply(self.classifier3, xs)
 
         # Reduce the outputs
-        r1 = ReduceAddCoalesced.apply(self.device_ids[0], 1, xs[0::2])[0]
-        r2 = ReduceAddCoalesced.apply(self.device_ids[1], 1, xs[1::2])[0]
+        r1 = ReduceAddCoalesced.apply(self.device_ids[0], 1, *xs[0::2])[0]
+        r2 = ReduceAddCoalesced.apply(self.device_ids[1], 1, *xs[1::2])[0]
         xs = [r1, r2]
 
         # Gather the final output into device 0
-        x = nn.parallel.gather(xs, self.device_ids[0])
+        x = nn.parallel.gather(xs, self.device_ids[0], dim=1)
 
         return x
 
