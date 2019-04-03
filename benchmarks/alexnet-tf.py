@@ -276,6 +276,9 @@ def main():
     # Get the number of training/validation steps per epoch
     train_batches_per_epoch = np.floor(train_generator.data_size / batch_size).astype(np.int16)
     val_batches_per_epoch = np.floor(val_generator.data_size / batch_size).astype(np.int16)
+
+    tot_time = float(0)
+    cnt = 0
     
     # Start Tensorflow session
     with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
@@ -303,10 +306,16 @@ def main():
                 # Get a batch of images and labels
                 batch_xs, batch_ys = train_generator.next_batch(batch_size)
                 
+                start = time.time()
+
                 # And run the training op
                 sess.run(train_op, feed_dict={x: batch_xs, 
                                               y: batch_ys, 
                                               keep_prob: dropout_rate})
+
+                end = time.time()
+                tot_time += (end - start)
+                cnt += 1
                 
                 # Generate summary with the current batch of data and write to file
                 if step%display_step == 0:
@@ -335,15 +344,9 @@ def main():
             # Reset the file pointer of the image data generator
             val_generator.reset_pointer()
             train_generator.reset_pointer()
-            
-            print("{} Saving checkpoint of model...".format(datetime.now()))  
-            
-            #save checkpoint of the model
-            checkpoint_name = os.path.join(checkpoint_path, 'model_epoch'+str(epoch+1)+'.ckpt')
-            save_path = saver.save(sess, checkpoint_name)  
-            
-            print("{} Model checkpoint saved at {}".format(datetime.now(), checkpoint_name))
-        
+
+    avg_time = tot_time / float(cnt)
+    print("Avg. time: " + str(avg_time) + " s")
 
 
 if __name__ == "__main__":
