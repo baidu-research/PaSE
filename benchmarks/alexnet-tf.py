@@ -8,22 +8,10 @@ import functools
 import numpy as np
 import tensorflow as tf
 
+from imagenet_loader import ImageDataGenerator
+
 def get_gpu_device(idx):
     return tf.device(tf.DeviceSpec(device_type = "GPU", device_index = idx))
-
-
-def parse_image(filename, label):
-  image_string = tf.read_file(filename)
-
-  image = tf.image.decode_jpeg(image_string, channels=3)
-
-  # This will convert to float values in [0, 1]
-  image = tf.image.convert_image_dtype(image, tf.float32)
-
-  image = tf.image.resize_images(image, [227, 227])
-  label = tf.strings.to_number(label, out_type=tf.int32)
-
-  return image, label
 
 
 class AlexNet(object):
@@ -305,74 +293,6 @@ def model_par_fc(X, num_in, num_out, in_ch_parts, out_ch_parts, gpu_id, name,
     return out_split
     
 
-class ImageDataGenerator():
-    #def __init__(self, data_size, num_classes):
-    #    self.data_size = data_size
-    #    self.num_classes = num_classes
-
-    #    #self.data = np.random.uniform(size=[data_size, 227, 227, 3])
-    #    #self.labels = np.random.randint(0, high=self.num_classes,
-    #    #        size=[data_size, self.num_classes])
-
-    #    self.data = np.random.normal(size=[data_size, 227, 227, 3], loc=127,
-    #            scale=60)
-    #    self.labels = np.random.randint(size=[data_size, self.num_classes], low
-    #            = 0, high = num_classes - 1)
-
-    #def next_batch(self, batch_size):
-    #    return self.data, self.labels
-
-    #def reset_pointer(self):
-    #    pass
-
-    #def __init__(self, dataset_dir, labels_filename):
-    #    dataset = imagenet.get_split('train', dataset_dir, labels_filename,
-    #            file_pattern='%s')
-    #    provider = slim.dataset_data_provider.DatasetDataProvider(dataset)
-    #    [self.image, self.label] = provider.get(['image', 'label'])
-    #    #assert(self.image.shape[0] == self.label.shape[0])
-
-    #    self.data_size = 1000 #self.image.shape[0]
-    #    self.idx = 0
-
-    #def next_batch(self, batch_size):
-    #    start = self.idx
-    #    end = min(self.idx+batch_size, self.data_size)
-    #    image = self.image[start:end]
-    #    label = self.label[start:end]
-    #    self.idx += 1
-    #    return image, label
-
-    #def reset_pointer(self):
-    #    self.idx = 0
-
-    def __init__(self, batch_size, dataset_dir, labels_filename):
-      filenames = []
-      labels = []
-      with open(labels_filename, 'r') as label_file:
-        for line in label_file:
-          s = line.split(' ')
-          filenames.append(dataset_dir + '/train/' + s[0])
-          labels.append(s[1])
-
-      self.data_size = len(labels)
-
-      dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
-      #dataset = dataset.shuffle(len(filenames))
-      dataset = dataset.map(parse_image, num_parallel_calls=32)
-      dataset = dataset.batch(batch_size)
-      dataset = dataset.prefetch(8)
-
-      self.dataset_iterator = dataset.make_initializable_iterator()
-      self.initializer = self.dataset_iterator.initializer
-
-    def next_batch(self):
-      return self.dataset_iterator.get_next()
-
-    def reset_pointer(self):
-      tf.get_default_session().run(self.initializer)
-        
-    
 def main():
     parser = ArgumentParser()
     parser.add_argument('-b', '--batch', type=int, required=False, default=256,
@@ -404,11 +324,10 @@ def main():
                                                  range(num_gpus))[:-1]
     
     # Initalize the data generator seperately for the training and validation set
-    #train_generator = ImageDataGenerator(batch_size, num_classes)
-    #val_generator = ImageDataGenerator(batch_size, num_classes)
     dataset_dir = "/work/data/image/imagenet/imagenet_1_per_class/"
     labels_filename = dataset_dir + "train_1_per_class.txt"
-    train_generator = ImageDataGenerator(batch_size, dataset_dir, labels_filename)
+    train_generator = ImageDataGenerator(batch_size, dataset_dir,
+            labels_filename, 32, 8)
     
     # TF placeholder for graph input and output
     #x = tf.placeholder(tf.float32, [batch_size, 227, 227, 3])
@@ -477,30 +396,28 @@ def main():
       print("{} Start training...".format(datetime.now()))
       
       # Loop over number of epochs
+      start = time.time()
       for epoch in range(num_epochs):
             # Reset the file pointer of the image data generator
             train_generator.reset_pointer()
             step = 0
 
             while step < train_batches_per_epoch:
-                start = time.time()
                 loss_val, _ = sess.run([loss, train_op], feed_dict={keep_prob:
                                                                     dropout_rate})
-                end = time.time()
-
-                cnt += 1
-                tot_time += (end - start)
                 
                 # Generate summary with the current batch of data and write to file
-                if step % display_step == 0:
-                    print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
-                    if log_summary:
-                        s = sess.run(merged_summary, feed_dict={x: batch_xs, 
-                                                                y: batch_ys, 
-                                                                keep_prob: 1.})
-                        writer.add_summary(s, epoch*train_batches_per_epoch + step)
-                    
+                #if step % display_step == 0:
+                #    print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
+                #    if log_summary:
+                #        s = sess.run(merged_summary, feed_dict={x: batch_xs, 
+                #                                                y: batch_ys, 
+                #                                                keep_prob: 1.})
+                #        writer.add_summary(s, epoch*train_batches_per_epoch + step)
+                #    
                 step += 1
+      end = time.time()
+      tot_time += (end - start)
              
             
     #avg_time = tot_time / float(cnt - warmup)
