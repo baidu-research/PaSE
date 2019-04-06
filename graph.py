@@ -217,6 +217,29 @@ def ComputeGemmCost(dom, dom_configs, pw_op_cnt):
     return costs
 
 
+class Embedding():
+    def __init__(b, vocab_size, embed_dim, n_procs):
+        self.dom = (b,)
+        self.in_tsr = (b, vocab_size)
+        self.out_tsr = (vocab_size, embed_dim)
+
+        self.dom_config_tuples = GetConfigs(self.dom, n_procs)
+        self.dom_configs = np.array(self.dom_config_tuples).reshape(-1,1)
+        self.in_tsr_configs = np.concatenate(self.dom_configs, np.repeat(1,
+            self.dom_configs.shape[0]).reshape(-1,1), axis=1)
+        self.out_tsr_configs = self.in_tsr_configs
+
+        # Backprop cost of synchronization
+        dom_per_proc = np.ceil(self.dom / self.dom_configs)
+        words = np.prod(dom_per_proc)
+        procs = self.dom_configs
+        steps = 2.0 * (procs - 1)
+        self.vert_costs = (bw_to_flop * (words * steps))
+
+        def GetVertexCosts(self):
+            return self.vert_costs
+
+
 class Concat():
     def __init__(self, in_ops, dim, n_procs):
         l = len(in_ops[0].out_tsr)
@@ -497,6 +520,39 @@ def ConcatenateVertices(G, src_verts, concat_dim, n_procs):
                 src_cfgs, cfgs)
 
     return tgt_vert, tgt_op
+
+
+def Encoder(G, b, h, n_layers, unroll, n_procs):
+    prev_layer = []
+    curr_layer = []
+
+    def AdjustVertexCosts(node_op):
+        node_op.vert_costs *= (4 * 2) # 4 for n dim and 2 for k dim
+
+    def AdjustEdgeCosts(G, src_id, tgt_id):
+        costs = nx.get_edge_attributes(G, 'costs')[(src_id, tgt_id)]
+        costs *= 2
+
+    for l in range(n_layers):
+        for i in range(unroll):
+            node_op = Gemm((b, h, h), n_procs, pw_op_cnt=1)
+            # 8 matmults are performed in total
+            AdjustVertexCosts(node_op)
+            node_id = AddVertex(G, node_op)
+            curr_layer.append(node_id)
+
+            if i > 0:
+                AddEdge(G, node_id - 1, node_id)
+                # Both C and H matrices are transferred to next cycle
+                AdjustEdgeCosts(G, node_id-1, node_id)
+
+            if l > 0:
+                # Only H matrix is transferred to next layer
+                AddEdge(G, prev_layer[i], node_id)
+
+        prev_layer, curr_layer = curr_layer, []
+
+    return G
 
 
 def AlexNet(G, b, n_procs):
@@ -850,6 +906,11 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
         G = ResNet101(G, batch_size, n_procs).Graph()
     elif graph_type == 'inception3':
         G = Inception3(G, batch_size, n_procs).Graph()
+    elif graph_type == 'encoder':
+        layers = 2
+        unroll = 40
+        hidden = 1024
+        G = Encoder(G, batch_size, hidden, layers, unroll, n_procs)
     else:
         assert(False)
 
