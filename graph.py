@@ -238,6 +238,29 @@ class Concat():
         return 0
 
 
+class Add():
+    def __init__(self, dom_size, n_procs, pw_op_cnt=0):
+        self.pw_op_cnt = pw_op_cnt
+
+        # Domain and in / out tensors
+        self.dom = tuple(dom_size)
+        self.in_tsr = self.dom
+        self.out_tsr = self.dom
+
+        # configs
+        self.dom_config_tuples = GetConfigs(self.dom, n_procs)
+        self.dom_configs = np.array(self.dom_config_tuples)
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs
+
+        # Costs
+        dom_per_proc = np.ceil(self.dom / self.dom_configs)
+        self.vert_costs = (1 + pw_op_cnt) * np.prod(dom_per_proc, axis = 1)
+
+    def GetVertexCosts(self):
+        return self.vert_costs
+
+
 class Gemm():
     def __init__(self, dom_size, n_procs, pw_op_cnt=0):
         assert(len(dom_size) == 3)
@@ -285,6 +308,9 @@ class MaxPool():
 
             h_o = int((h - self.r + 2*self.pad_r) / self.stride_r) + 1
             w_o = int((w - self.s + 2*self.pad_s) / self.stride_s) + 1
+
+            assert(h_o > 0)
+            assert(w_o > 0)
 
             self.in_tsr = img
             self.out_tsr = (b, c, h_o, w_o)
@@ -688,15 +714,25 @@ class Inception3():
 
 
 class ResNet101():
-    def AddBlock(self, img, inplanes, planes, expansion, stride, downsample, avgpool):
+    def AddBlock(self, img, inplanes, planes, expansion, stride, downsample):
         G = self.graph
+
+        in_node_id = G.number_of_nodes() - 1
+        identity = in_node_id
+
+        if downsample:
+            # Conv + bn + relu
+            node_op = Conv(img, (planes * expansion, inplanes, 1, 1), stride, 1,
+                    n_procs=self.n_procs, pw_op_cnt=pw_ops_in_bn+1)
+            node_id = AddVertex(G, node_op)
+            AddEdge(G, in_node_id, node_id)
+            identity = node_id
 
         # Conv1 + bn + relu
         node_op = Conv(img, (planes, inplanes, 1, 1), 1, 1,
                 n_procs=self.n_procs, pw_op_cnt=pw_ops_in_bn+1)
         node_id = AddVertex(G, node_op)
-        AddEdge(G, node_id-1, node_id)
-        in_node_id = node_id-1
+        AddEdge(G, in_node_id, node_id)
     
         # Conv2 + bn + relu
         node_op = Conv(node_op.out_tsr, (planes, planes, 3, 3), stride, 1,
@@ -704,37 +740,22 @@ class ResNet101():
         node_id = AddVertex(G, node_op)
         AddEdge(G, node_id-1, node_id)
     
-        # Adaptive avgpool
-        if avgpool:
-            assert(downsample == False) # If downsample is true, then avgpool
-                                        # has to be fused with the conv within
-                                        # downsample
-            maxpool = AdaptivePool(node_op.out_tsr[2], node_op.out_tsr[3])
-        else:
-            maxpool = None
-
         # Conv3 + bn
         node_op = Conv(node_op.out_tsr, (planes * expansion, planes, 1, 1), 1,
-                1, maxpool=maxpool, n_procs=self.n_procs,
+                1, maxpool=None, n_procs=self.n_procs,
                 pw_op_cnt=pw_ops_in_bn)
         node_id = AddVertex(G, node_op)
         AddEdge(G, node_id-1, node_id)
 
-        if avgpool:
-            assert(node_op.out_tsr[2] == 1)
-            assert(node_op.out_tsr[3] == 1)
-    
-        if downsample:
-            # Conv + bn + relu
-            node_op = Conv(img, (planes * expansion, inplanes, 1, 1), stride, 1,
-                    n_procs=self.n_procs, pw_op_cnt=pw_ops_in_bn+1)
-            node_id = AddVertex(G, node_op)
-            AddEdge(G, node_id-1, node_id)
-            AddEdge(G, in_node_id, node_id)
-    
+        # Add + relu
+        node_op = Add(node_op.out_tsr, self.n_procs, 1)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id-1, node_id)
+        AddEdge(G, identity, node_id)
+
         return node_op
     
-    def AddBlocks(self, img, inplanes, planes, blocks, stride, expansion, avgpool=False):
+    def AddBlocks(self, img, inplanes, planes, blocks, stride, expansion):
         G = self.graph
     
         if stride != 1 or inplanes != planes * expansion:
@@ -743,16 +764,12 @@ class ResNet101():
             downsample = False
     
         node_op = self.AddBlock(img, inplanes, planes, expansion, stride,
-                downsample, False)
+                                downsample)
     
         inplanes = planes * expansion
-        for _ in range(1, blocks-1):
+        for _ in range(1, blocks):
             node_op = self.AddBlock(node_op.out_tsr, inplanes, planes,
-                    expansion, stride, False, False)
-        assert(blocks > 0) # If blocks==0, then avgpool has to be fused with the
-                           # initial block.
-        node_op = self.AddBlock(node_op.out_tsr, inplanes, planes,
-                expansion, stride, False, avgpool)
+                    expansion, stride, False)
     
         return node_op, inplanes
     
@@ -786,7 +803,13 @@ class ResNet101():
     
         # Layer4 + AdaptiveAvePooling
         node_op, inplanes = self.AddBlocks(node_op.out_tsr, inplanes, planes[3],
-                blocks[3], 2, expansion, True)
+                blocks[3], 2, expansion)
+    
+        # Adaptive avgpool
+        node_op = MaxPool((node_op.out_tsr[2], node_op.out_tsr[3]), 1, img =
+                          node_op.out_tsr, n_procs = self.n_procs)
+        assert(node_op.out_tsr[2] == 1)
+        assert(node_op.out_tsr[3] == 1)
     
         # FC
         n = num_classes
