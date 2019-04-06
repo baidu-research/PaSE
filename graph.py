@@ -20,6 +20,7 @@ peak_flop = p100_peak_flop
 bw = p100_bw
 bw_to_flop = float(peak_flop / bw)
 pw_ops_in_bn = 9 # No. of pointwise ops in a batch-norm
+exp_cost = 3 # Cost of computing exponent
 
 
 def MakePair(v):
@@ -306,6 +307,38 @@ class Gemm():
         self.vert_costs = ComputeGemmCost(self.dom, self.dom_configs, pw_op_cnt)
 
     # Returns vertex costs for different configs
+    def GetVertexCosts(self):
+        return self.vert_costs
+
+
+class Softmax():
+    def __init__(self, dom_size, n_procs):
+        assert(len(dom_size) == 2)
+
+        # Domain and input/output
+        self.dom = tuple(dom_size)
+        self.in_tsr = self.dom
+        self.out_tsr = self.dom
+
+        # Configs
+        self.dom_config_tuples = GetConfigs(self.dom, n_procs)
+        self.dom_configs = np.array(self.dom_config_tuples)
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs
+
+        # Compute costs
+        dom_per_proc = self.dom / self.dom_configs
+        fwd_comp_costs = (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
+        bwd_comp_costs = 3.0 * np.prod(dom_per_proc, axis=1)
+        comp_costs = fwd_comp_costs + bwd_comp_costs
+
+        # Communication costs
+        words = dom_per_proc[:, 0] # 1 word per batch => batchsize/proc
+        steps = 2.0 * (n_procs - 1)
+        comm_costs = bw_to_flop * (words * steps)
+
+        self.vert_costs = comp_costs + comm_costs
+
     def GetVertexCosts(self):
         return self.vert_costs
 
