@@ -219,26 +219,27 @@ def ComputeGemmCost(dom, dom_configs, pw_op_cnt):
 
 
 class Embedding():
-    def __init__(b, vocab_size, embed_dim, n_procs):
+    def __init__(self, b, vocab_size, embed_dim, n_procs):
         self.dom = (b,)
         self.in_tsr = (b, vocab_size)
         self.out_tsr = (vocab_size, embed_dim)
 
         self.dom_config_tuples = GetConfigs(self.dom, n_procs)
         self.dom_configs = np.array(self.dom_config_tuples).reshape(-1,1)
-        self.in_tsr_configs = np.concatenate(self.dom_configs, np.repeat(1,
-            self.dom_configs.shape[0]).reshape(-1,1), axis=1)
+        rep = np.repeat(1, self.dom_configs.shape[0]).reshape(-1, 1)
+        self.in_tsr_configs = np.concatenate((self.dom_configs, rep), axis=1)
         self.out_tsr_configs = self.in_tsr_configs
 
         # Backprop cost of synchronization
         dom_per_proc = np.ceil(self.dom / self.dom_configs)
-        words = np.prod(dom_per_proc)
-        procs = self.dom_configs
+        words = np.prod(dom_per_proc, axis = 1)
+        procs = self.dom_configs[:,0]
+        words /= procs
         steps = 2.0 * (procs - 1)
         self.vert_costs = (bw_to_flop * (words * steps))
 
-        def GetVertexCosts(self):
-            return self.vert_costs
+    def GetVertexCosts(self):
+        return self.vert_costs
 
 
 class Concat():
@@ -555,7 +556,7 @@ def ConcatenateVertices(G, src_verts, concat_dim, n_procs):
     return tgt_vert, tgt_op
 
 
-def Encoder(G, b, h, n_layers, unroll, n_procs):
+def RNNStack(G, b, h, n_layers, unroll, n_procs):
     prev_layer = []
     curr_layer = []
 
@@ -566,6 +567,8 @@ def Encoder(G, b, h, n_layers, unroll, n_procs):
         costs = nx.get_edge_attributes(G, 'costs')[(src_id, tgt_id)]
         costs *= 2
 
+    first_layers = []
+    last_layers = []
     for l in range(n_layers):
         for i in range(unroll):
             node_op = Gemm((b, h, h), n_procs, pw_op_cnt=1)
@@ -573,6 +576,11 @@ def Encoder(G, b, h, n_layers, unroll, n_procs):
             AdjustVertexCosts(node_op)
             node_id = AddVertex(G, node_op)
             curr_layer.append(node_id)
+
+            if l == 0:
+                first_layers.append(node_id)
+            elif l == n_layers - 1:
+                last_layers.append(node_id)
 
             if i > 0:
                 AddEdge(G, node_id - 1, node_id)
@@ -584,6 +592,38 @@ def Encoder(G, b, h, n_layers, unroll, n_procs):
                 AddEdge(G, prev_layer[i], node_id)
 
         prev_layer, curr_layer = curr_layer, []
+
+    return G, first_layers, last_layers
+
+
+def Seq2seq(G, b, n_procs):
+    n_layers = 2
+    unroll = 40
+    h = 1024
+
+    vocab_size = 40960
+    embed_dim = h
+
+    # Encoder + decoder
+    G, first_layers, last_layers = RNNStack(G, b, h, n_layers, 2 * unroll,
+            n_procs)
+
+    assert(len(first_layers) == 2 * unroll)
+    assert(len(last_layers) == 2 * unroll)
+
+    decoder_layers = last_layers[unroll+1:]
+
+    # Add embeddings to inputs
+    for l in first_layers:
+        node_op = Embedding(b, vocab_size, embed_dim, n_procs)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, node_id, l)
+
+    # Add softmax to outputs of decoder
+    for l in decoder_layers:
+        node_op = Softmax((b, h), n_procs)
+        node_id = AddVertex(G, node_op)
+        AddEdge(G, l, node_id)
 
     return G
 
@@ -939,11 +979,8 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
         G = ResNet101(G, batch_size, n_procs).Graph()
     elif graph_type == 'inception3':
         G = Inception3(G, batch_size, n_procs).Graph()
-    elif graph_type == 'encoder':
-        layers = 2
-        unroll = 40
-        hidden = 1024
-        G = Encoder(G, batch_size, hidden, layers, unroll, n_procs)
+    elif graph_type == 'seq2seq':
+        G = Seq2seq(G, batch_size, n_procs)
     else:
         assert(False)
 
