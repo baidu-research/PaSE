@@ -15,9 +15,9 @@ def parse_image(filename, label):
   return image, label
 
 
-class ImageDataGenerator():
+class ImageDataLoader():
     def __init__(self, batch_size, dataset_dir, labels_filename,
-            num_parallel_calls=32, prefetches=8):
+            num_parallel_calls = 32, prefetches = 8):
       filenames = []
       labels = []
       with open(labels_filename, 'r') as label_file:
@@ -42,5 +42,5 @@ class ImageDataGenerator():
 
     def reset_pointer(self):
       tf.get_default_session().run(self.initializer)
-        
+ 
 

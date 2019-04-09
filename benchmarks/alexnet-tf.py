@@ -8,7 +8,7 @@ import functools
 import numpy as np
 import tensorflow as tf
 
-from imagenet_loader import ImageDataGenerator
+from dataloader import ImageDataLoader
 
 def get_gpu_device(idx):
     return tf.device(tf.DeviceSpec(device_type = "GPU", device_index = idx))
@@ -326,8 +326,8 @@ def main():
     # Initalize the data generator seperately for the training and validation set
     dataset_dir = "/work/data/image/imagenet/imagenet_1_per_class/"
     labels_filename = dataset_dir + "train_1_per_class.txt"
-    train_generator = ImageDataGenerator(batch_size, dataset_dir,
-            labels_filename, 32, 8)
+    train_generator = ImageDataLoader(batch_size, dataset_dir, labels_filename,
+            32, 8)
     
     # TF placeholder for graph input and output
     #x = tf.placeholder(tf.float32, [batch_size, 227, 227, 3])
