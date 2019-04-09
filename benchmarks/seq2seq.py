@@ -138,11 +138,11 @@ def enc_dec_model_inputs(batch_size):
     return inputs, targets, target_sequence_length, max_target_len
 
 
-def hyperparam_inputs():
-    lr_rate = tf.placeholder(tf.float32, name='lr_rate')
-    keep_prob = tf.placeholder(tf.float32, name='keep_prob')
-    
-    return lr_rate, keep_prob
+#def hyperparam_inputs():
+#    lr_rate = tf.placeholder(tf.float32, name='lr_rate')
+#    keep_prob = tf.placeholder(tf.float32, name='keep_prob')
+#    
+#    return lr_rate, keep_prob
 
 
 def process_decoder_input(target_data, go_id, batch_size):
@@ -350,9 +350,8 @@ def main():
     encoding_embedding_size = args['hidden']
     decoding_embedding_size = args['hidden']
     
-    learning_rate = 0.001
-    keep_probability = 0.5
-
+    lr = 0.001
+    keep_prob = 0.5
 
     num_gpus = args['procs']
     os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
@@ -371,7 +370,7 @@ def main():
     print("Target vocab length: " + str(target_vocab_to_int_len))
     
     input_data, targets, target_sequence_length, max_target_sequence_length = enc_dec_model_inputs(batch_size)
-    lr, keep_prob = hyperparam_inputs()
+    #lr, keep_prob = hyperparam_inputs()
     
     split_params = {'input_data' : input_data,
                     'target_data' : targets,
@@ -415,9 +414,7 @@ def main():
                     [train_op, cost],
                     {input_data: source_batch,
                      targets: target_batch,
-                     lr: learning_rate,
-                     target_sequence_length: targets_lengths,
-                     keep_prob: keep_probability})
+                     target_sequence_length: targets_lengths})
     
     
                 if batch_i % display_step == 0 and batch_i > 0:

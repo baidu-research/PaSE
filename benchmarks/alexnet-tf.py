@@ -326,6 +326,8 @@ def main():
                                                  range(num_gpus))[:-1]
     
     # Initalize the data generator seperately for the training and validation set
+    dataset_dir = args['dataset_dir']
+    labels_filename = args['labels_filename']
     train_generator = ImageDataLoader(batch_size, dataset_dir, labels_filename,
             32, 8)
     
