@@ -29,6 +29,7 @@ def make_data_parallel(fn, num_gpus, split_args, unsplit_args):
     return tf.stack(out_split, axis=0)
 
 
+'''
 def load_data(path):
     input_file = os.path.join(path)
     with open(input_file, 'r', encoding='utf-8') as f:
@@ -156,132 +157,6 @@ def process_decoder_input(target_data, go_id, batch_size):
     return after_concat
 
 
-def encoding_layer(rnn_inputs, rnn_size, num_layers, keep_prob, 
-                   source_vocab_size, 
-                   encoding_embedding_size):
-    """
-    :return: tuple (RNN output, RNN state)
-    """
-    embed = tf.contrib.layers.embed_sequence(rnn_inputs, 
-                                             vocab_size=source_vocab_size, 
-                                             embed_dim=encoding_embedding_size)
-    
-    #stacked_cells = tf.keras.layers.StackedRNNCells([tf.contrib.rnn.DropoutWrapper(tf.keras.layers.LSTMCell(rnn_size),
-    #    keep_prob) for _ in range(num_layers)])
-    stacked_cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.DropoutWrapper(tf.contrib.rnn.LSTMCell(rnn_size),
-        keep_prob) for _ in range(num_layers)])
-    
-    outputs, state = tf.nn.dynamic_rnn(stacked_cells, 
-                                       embed, 
-                                       dtype=tf.float32)
-    return outputs, state
-
-
-def decoding_layer_train(encoder_state, dec_cell, dec_embed_input, 
-                         target_sequence_length, max_summary_length, 
-                         output_layer, keep_prob):
-    """
-    Create a training process in decoding layer 
-    :return: BasicDecoderOutput containing training logits and sample_id
-    """
-    dec_cell = tf.contrib.rnn.DropoutWrapper(dec_cell, 
-                                             output_keep_prob=keep_prob)
-    
-    # for only input layer
-    helper = tf.contrib.seq2seq.TrainingHelper(dec_embed_input, 
-                                               target_sequence_length)
-    
-    decoder = tf.contrib.seq2seq.BasicDecoder(dec_cell, 
-                                              helper, 
-                                              encoder_state, 
-                                              output_layer)
-
-    # unrolling the decoder layer
-    outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, 
-                                                      impute_finished=True, 
-                                                      maximum_iterations=max_summary_length)
-    return outputs
-
-
-def decoding_layer(dec_input, encoder_state,
-                   target_sequence_length, max_target_sequence_length, rnn_size,
-                   num_layers, target_vocab_size, batch_size, keep_prob,
-                   decoding_embedding_size):
-    """
-    Create decoding layer
-    :return: Tuple of (Training BasicDecoderOutput, Inference BasicDecoderOutput)
-    """
-    dec_embeddings = tf.Variable(tf.random_uniform([target_vocab_size, decoding_embedding_size]))
-    dec_embed_input = tf.nn.embedding_lookup(dec_embeddings, dec_input)
-    
-    #cells = tf.keras.layers.StackedRNNCells([tf.keras.layers.LSTMCell(rnn_size)
-    #    for _ in range(num_layers)])
-    cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.LSTMCell(rnn_size) for _
-        in range(num_layers)])
-    
-    with tf.variable_scope("decode"):
-        output_layer = tf.layers.Dense(target_vocab_size)
-        train_output = decoding_layer_train(encoder_state, 
-                                            cells, 
-                                            dec_embed_input, 
-                                            target_sequence_length, 
-                                            max_target_sequence_length, 
-                                            output_layer, 
-                                            keep_prob)
-
-    return train_output
-
-
-def seq2seq_model(input_data, target_data, keep_prob, batch_size,
-                  target_sequence_length, max_target_sentence_length,
-                  max_target_sequence_length,
-                  source_vocab_size, target_vocab_size,
-                  enc_embedding_size, dec_embedding_size,
-                  rnn_size, num_layers, go_id):
-    """
-    Build the Sequence-to-Sequence model
-    :return: Tuple of (Training BasicDecoderOutput, Inference BasicDecoderOutput)
-    """
-    enc_outputs, enc_states = encoding_layer(input_data, 
-                                             rnn_size, 
-                                             num_layers, 
-                                             keep_prob, 
-                                             source_vocab_size, 
-                                             enc_embedding_size)
-    
-    dec_input = process_decoder_input(target_data, 
-                                      go_id, 
-                                      batch_size)
-    
-    train_logits = decoding_layer(dec_input,
-                                  enc_states, 
-                                  target_sequence_length, 
-                                  max_target_sentence_length,
-                                  rnn_size,
-                                  num_layers,
-                                  target_vocab_size,
-                                  batch_size,
-                                  keep_prob,
-                                  dec_embedding_size)
-    
-    training_logits = tf.identity(train_logits.rnn_output, name='logits')
-    
-    # https://www.tensorflow.org/api_docs/python/tf/sequence_mask
-    # - Returns a mask tensor representing the first N positions of each cell.
-    masks = tf.sequence_mask(target_sequence_length, max_target_sequence_length, dtype=tf.float32, name='masks')
-    
-    # Loss function - weighted softmax cross entropy
-    #print_op = tf.print({0 : tf.shape(training_logits), 1 :
-    #    tf.shape(target_data)}, output_stream = sys.stdout)
-    #with tf.control_dependencies([print_op]):
-    #    cost = tf.contrib.seq2seq.sequence_loss(training_logits, target_data, masks,
-    #            average_across_timesteps = True, average_across_batch = False)
-    cost = tf.contrib.seq2seq.sequence_loss(training_logits, target_data, masks,
-            average_across_timesteps = True, average_across_batch = True)
-        
-    return cost
-
-
 def pad_sentence_batch(sentence_batch, pad_int, pad_size):
     """Pad sentences with <PAD> so that each sentence of a batch has the same length"""
     return [sentence + [pad_int] * (pad_size - len(sentence)) for sentence in sentence_batch]
@@ -318,6 +193,131 @@ def get_batches(sources, targets, batch_size, source_pad_int, target_pad_int):
             assert(x == y)
 
         yield pad_sources_batch, pad_targets_batch, pad_source_lengths, pad_targets_lengths
+
+
+'''
+
+
+def encoding_layer(rnn_inputs, rnn_size, num_layers, keep_prob, 
+                   source_vocab_size, 
+                   encoding_embedding_size):
+    """
+    :return: tuple (RNN output, RNN state)
+    """
+    embed = tf.contrib.layers.embed_sequence(rnn_inputs, 
+                                             vocab_size=source_vocab_size, 
+                                             embed_dim=encoding_embedding_size)
+    
+    #stacked_cells = tf.keras.layers.StackedRNNCells([tf.contrib.rnn.DropoutWrapper(tf.keras.layers.LSTMCell(rnn_size),
+    #    keep_prob) for _ in range(num_layers)])
+    stacked_cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.DropoutWrapper(tf.contrib.rnn.LSTMCell(rnn_size),
+        keep_prob) for _ in range(num_layers)])
+    
+    outputs, state = tf.nn.dynamic_rnn(stacked_cells, 
+                                       embed, 
+                                       dtype=tf.float32)
+    return outputs, state
+
+
+def decoding_layer_train(encoder_state, dec_cell, dec_embed_input, 
+                         target_sequence_length, output_layer, keep_prob):
+    """
+    Create a training process in decoding layer 
+    :return: BasicDecoderOutput containing training logits and sample_id
+    """
+    dec_cell = tf.contrib.rnn.DropoutWrapper(dec_cell, 
+                                             output_keep_prob=keep_prob)
+    
+    # for only input layer
+    helper = tf.contrib.seq2seq.TrainingHelper(dec_embed_input, 
+                                               target_sequence_length)
+    
+    decoder = tf.contrib.seq2seq.BasicDecoder(dec_cell, 
+                                              helper, 
+                                              encoder_state, 
+                                              output_layer)
+
+    # unrolling the decoder layer
+    outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, 
+                                                      impute_finished=True)
+    return outputs
+
+
+def decoding_layer(dec_input, encoder_state,
+                   target_sequence_length, rnn_size,
+                   num_layers, target_vocab_size, batch_size, keep_prob,
+                   decoding_embedding_size):
+    """
+    Create decoding layer
+    :return: Tuple of (Training BasicDecoderOutput, Inference BasicDecoderOutput)
+    """
+    dec_embeddings = tf.Variable(tf.random_uniform([target_vocab_size, decoding_embedding_size]))
+    dec_embed_input = tf.nn.embedding_lookup(dec_embeddings, dec_input)
+    
+    #cells = tf.keras.layers.StackedRNNCells([tf.keras.layers.LSTMCell(rnn_size)
+    #    for _ in range(num_layers)])
+    cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.LSTMCell(rnn_size) for _
+        in range(num_layers)])
+    
+    with tf.variable_scope("decode"):
+        output_layer = tf.layers.Dense(target_vocab_size)
+        train_output = decoding_layer_train(encoder_state, 
+                                            cells, 
+                                            dec_embed_input, 
+                                            target_sequence_length, 
+                                            output_layer, 
+                                            keep_prob)
+
+    return train_output
+
+
+def seq2seq_model(input_data, target_data, keep_prob, batch_size,
+                  target_sequence_length, max_target_sentence_length,
+                  source_vocab_size, target_vocab_size,
+                  enc_embedding_size, dec_embedding_size,
+                  rnn_size, num_layers, go_id):
+    """
+    Build the Sequence-to-Sequence model
+    :return: Tuple of (Training BasicDecoderOutput, Inference BasicDecoderOutput)
+    """
+    enc_outputs, enc_states = encoding_layer(input_data, 
+                                             rnn_size, 
+                                             num_layers, 
+                                             keep_prob, 
+                                             source_vocab_size, 
+                                             enc_embedding_size)
+    
+    dec_input = process_decoder_input(target_data, 
+                                      go_id, 
+                                      batch_size)
+    
+    train_logits = decoding_layer(dec_input,
+                                  enc_states, 
+                                  target_sequence_length, 
+                                  max_target_sentence_length,
+                                  rnn_size,
+                                  num_layers,
+                                  target_vocab_size,
+                                  batch_size,
+                                  keep_prob,
+                                  dec_embedding_size)
+    
+    training_logits = tf.identity(train_logits.rnn_output, name='logits')
+    
+    # https://www.tensorflow.org/api_docs/python/tf/sequence_mask
+    # - Returns a mask tensor representing the first N positions of each cell.
+    masks = tf.sequence_mask(target_sequence_length, dtype=tf.float32, name='masks')
+    
+    # Loss function - weighted softmax cross entropy
+    #print_op = tf.print({0 : tf.shape(training_logits), 1 :
+    #    tf.shape(target_data)}, output_stream = sys.stdout)
+    #with tf.control_dependencies([print_op]):
+    #    cost = tf.contrib.seq2seq.sequence_loss(training_logits, target_data, masks,
+    #            average_across_timesteps = True, average_across_batch = False)
+    cost = tf.contrib.seq2seq.sequence_loss(training_logits, target_data, masks,
+            average_across_timesteps = True, average_across_batch = True)
+        
+    return cost
 
 
 def main():
@@ -360,17 +360,21 @@ def main():
     source_path = args['src']
     target_path = args['tgt']
 
-    print("Start processing data...")
-    source_int_text, target_int_text, source_vocab_to_int_len, target_vocab_to_int_len, src_pad_id, tgt_pad_id, go_id = preprocess(source_path, target_path)
-    max_target_sentence_length = max([len(sentence) for sentence in
-        itertools.chain(source_int_text, target_int_text)])
-    print("End processing data...")
+    #print("Start processing data...")
+    #source_int_text, target_int_text, source_vocab_to_int_len, target_vocab_to_int_len, src_pad_id, tgt_pad_id, go_id = preprocess(source_path, target_path)
+    #max_target_sentence_length = max([len(sentence) for sentence in
+    #    itertools.chain(source_int_text, target_int_text)])
+    #print("End processing data...")
 
-    print("Source vocab length: " + str(source_vocab_to_int_len))
-    print("Target vocab length: " + str(target_vocab_to_int_len))
+    #print("Source vocab length: " + str(source_vocab_to_int_len))
+    #print("Target vocab length: " + str(target_vocab_to_int_len))
     
-    input_data, targets, target_sequence_length, max_target_sequence_length = enc_dec_model_inputs(batch_size)
+    #input_data, targets, target_sequence_length, max_target_sequence_length = enc_dec_model_inputs(batch_size)
     #lr, keep_prob = hyperparam_inputs()
+
+    dataset = TextDataLoader(batch_size, src_vocab, tgt_vocab, src_text,
+            tgt_text)
+    input_data, targets, target_sequence_length = dataset.next_batch()
     
     split_params = {'input_data' : input_data,
                     'target_data' : targets,
@@ -379,7 +383,6 @@ def main():
     unsplit_params = {'keep_prob' : keep_prob,
                       'batch_size' : int(batch_size / num_gpus),
                       'max_target_sentence_length' : max_target_sentence_length,
-                      'max_target_sequence_length' : max_target_sequence_length,
                       'source_vocab_size' : source_vocab_to_int_len,
                       'target_vocab_size' : target_vocab_to_int_len,
                       'enc_embedding_size' : encoding_embedding_size,
@@ -402,25 +405,26 @@ def main():
         train_op = optimizer.apply_gradients(capped_gradients)
 
 
+    train_batches_per_epoch = np.floor(dataset.data_size / batch_size).astype(np.int16)
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
         sess.run(tf.global_variables_initializer())
     
         for epoch_i in range(epochs):
-            for batch_i, (source_batch, target_batch, sources_lengths, targets_lengths) in enumerate(
-                    get_batches(source_int_text, target_int_text, batch_size,
-                                src_pad_id, tgt_pad_id)):
-    
-                _, loss = sess.run(
-                    [train_op, cost],
-                    {input_data: source_batch,
-                     targets: target_batch,
-                     target_sequence_length: targets_lengths})
-    
-    
-                if batch_i % display_step == 0 and batch_i > 0:
-                    print('Epoch {:>3} Batch {:>4}/{} - Loss: '
-                          .format(epoch_i, batch_i, len(source_int_text) // batch_size))
+            step = 0
+            dataset.reset_pointer()
+
+            while True:
+                try:
+                    _, loss = sess.run([train_op, cost])
+                    step += 1
+                except tf.errors.OutOfRangeError:
+                    break
+
+                if step % display_step == 0 and step > 0:
+                    print('Epoch {:>3} Batch {:>4} - Loss: '
+                          .format(epoch_i, step)
                     print(loss)
+
     
 if __name__ == "__main__":
     main()
