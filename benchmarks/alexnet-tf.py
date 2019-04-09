@@ -306,6 +306,8 @@ def main():
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(2)), 
             help="Strategy to use. 0: DataParallel, 1: Optimized. (Default: 0)")
+    parser.add_argument('dataset_dir', type=str, help='Dataset directory')
+    parser.add_argument('labels_filename', type=str, help='Labels filename')
     args = vars(parser.parse_args())
 
     # Input parameters
@@ -324,8 +326,6 @@ def main():
                                                  range(num_gpus))[:-1]
     
     # Initalize the data generator seperately for the training and validation set
-    dataset_dir = "/work/data/image/imagenet/imagenet_1_per_class/"
-    labels_filename = dataset_dir + "train_1_per_class.txt"
     train_generator = ImageDataLoader(batch_size, dataset_dir, labels_filename,
             32, 8)
     

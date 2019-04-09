@@ -1,3 +1,4 @@
+import os
 import tensorflow as tf
 
 
@@ -18,6 +19,8 @@ def parse_image(filename, label):
 class ImageDataLoader():
     def __init__(self, batch_size, dataset_dir, labels_filename,
             num_parallel_calls = 32, prefetches = 8):
+      labels_filename = os.path.join(dataset_dir, labels_filename)
+
       filenames = []
       labels = []
       with open(labels_filename, 'r') as label_file:
