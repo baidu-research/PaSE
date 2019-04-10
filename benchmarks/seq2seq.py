@@ -1,4 +1,5 @@
 import os
+import time
 import sys
 import copy
 import itertools
@@ -30,28 +31,30 @@ def make_data_parallel(fn, num_gpus, split_args, unsplit_args):
 
 def encoding_layer(rnn_inputs, rnn_size, num_layers, keep_prob,
         source_vocab_size, encoding_embedding_size):
-    embed = tf.contrib.layers.embed_sequence(rnn_inputs, 
-                                             vocab_size=source_vocab_size, 
-                                             embed_dim=encoding_embedding_size)
-    
-    stacked_cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.DropoutWrapper(tf.contrib.rnn.LSTMCell(rnn_size),
-        keep_prob) for _ in range(num_layers)])
-    
-    outputs, state = tf.nn.dynamic_rnn(stacked_cells, embed, dtype=tf.float32)
-    return outputs, state
+    with tf.variable_scope("encode", reuse=tf.AUTO_REUSE):
+        embed = tf.contrib.layers.embed_sequence(rnn_inputs, 
+                                                 vocab_size=source_vocab_size, 
+                                                 embed_dim=encoding_embedding_size)
+        
+        stacked_cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.DropoutWrapper(tf.contrib.rnn.LSTMCell(rnn_size),
+            keep_prob) for _ in range(num_layers)])
+        
+        outputs, state = tf.nn.dynamic_rnn(stacked_cells, embed, dtype=tf.float32)
+        return outputs, state
 
 
 def decoding_layer(dec_input, encoder_state,
                    target_sequence_length, rnn_size,
                    num_layers, target_vocab_size, batch_size, keep_prob,
                    decoding_embedding_size):
-    dec_embeddings = tf.Variable(tf.random_uniform([target_vocab_size, decoding_embedding_size]))
-    dec_embed_input = tf.nn.embedding_lookup(dec_embeddings, dec_input)
+    with tf.variable_scope("decode", reuse=tf.AUTO_REUSE):
+        dec_embeddings = tf.Variable(tf.random_uniform([target_vocab_size,
+            decoding_embedding_size]))
+        dec_embed_input = tf.nn.embedding_lookup(dec_embeddings, dec_input)
+        
+        cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.LSTMCell(rnn_size) for _
+            in range(num_layers)])
     
-    cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.LSTMCell(rnn_size) for _
-        in range(num_layers)])
-    
-    with tf.variable_scope("decode"):
         output_layer = None #tf.layers.Dense(target_vocab_size)
         cells = tf.contrib.rnn.DropoutWrapper(cells, output_keep_prob =
                 keep_prob)
@@ -80,11 +83,11 @@ def seq2seq_model(input_data, target_data, keep_prob, batch_size,
                                              source_vocab_size, 
                                              enc_embedding_size)
     
-    decoder_seq_len = tf.size(target_data[0])
-    decoder_seq_lens = tf.tile([decoder_seq_len], [batch_size])
+    max_seq_len = tf.reduce_max(target_sequence_length)
+    target_data = tf.slice(target_data, [0, 0], [batch_size, max_seq_len])
     train_logits = decoding_layer(target_data,
                                   enc_states, 
-                                  decoder_seq_lens, 
+                                  target_sequence_length, 
                                   rnn_size,
                                   num_layers,
                                   target_vocab_size,
@@ -94,9 +97,9 @@ def seq2seq_model(input_data, target_data, keep_prob, batch_size,
     
     training_logits = tf.identity(train_logits.rnn_output, name='logits')
     
-    masks = tf.sequence_mask(target_sequence_length, maxlen = decoder_seq_len,
+    masks = tf.sequence_mask(target_sequence_length, maxlen = max_seq_len,
             dtype=tf.float32, name='masks')
-    
+
     # Loss function - weighted softmax cross entropy
     cost = tf.contrib.seq2seq.sequence_loss(training_logits, target_data, masks,
             average_across_timesteps = True, average_across_batch = True)
@@ -125,7 +128,7 @@ def main():
     parser.add_argument('tgt_text', type=str, help="Target text data file.")
     args = vars(parser.parse_args())
 
-    display_step = 10
+    display_step = 100
     
     epochs = args['epochs']
     batch_size = args['batch']
@@ -178,20 +181,23 @@ def main():
     cost = make_data_parallel(seq2seq_model, num_gpus, split_params, unsplit_params)
     cost = tf.reduce_mean(cost)
     
-    with tf.name_scope("optimization"):
+    with tf.variable_scope("optimization", reuse=tf.AUTO_REUSE):
         # Optimizer
         optimizer = tf.train.AdamOptimizer(lr)
     
         # Gradient Clipping
         gradients = optimizer.compute_gradients(cost,
                 colocate_gradients_with_ops = True)
-        capped_gradients = [(tf.clip_by_value(grad, -1., 1.), var) for grad, var in gradients if grad is not None]
-        train_op = optimizer.apply_gradients(capped_gradients)
+        #gradients = [(tf.clip_by_value(grad, -1., 1.), var) for grad, var in gradients if grad is not None]
+        train_op = optimizer.apply_gradients(gradients)
 
+    tot_time = float(0)
+    cnt = 0
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
         sess.run([tf.global_variables_initializer(),
             tf.initializers.tables_initializer()])
     
+        start = time.time()
         for epoch_i in range(epochs):
             step = 0
             dataset.reset_pointer()
@@ -200,6 +206,7 @@ def main():
                 try:
                     _, loss = sess.run([train_op, cost])
                     step += 1
+                    cnt += 1
                 except tf.errors.OutOfRangeError:
                     break
 
@@ -207,6 +214,12 @@ def main():
                     print('Epoch {:>3} Batch {:>4} - Loss: '.format(epoch_i,
                         step))
                     print(loss)
+
+        end = time.time()
+        tot_time = (end - start)
+
+    samples_per_sec = (batch_size * cnt) / tot_time
+    print("Throughout: " + str(samples_per_sec) + " samples / sec")
 
     
 if __name__ == "__main__":

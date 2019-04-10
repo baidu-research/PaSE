@@ -53,7 +53,6 @@ class ImageDataLoader():
 class TextDataLoader():
     def parse_text(self, sentence, label):
         # Split sentence into words, and convert it into ids
-        #sentences = sentences.map(lambda string: string.lower())
         sentence = tf.string_split([sentence]).values
         sentence = self.words.lookup(sentence)
 
@@ -62,8 +61,8 @@ class TextDataLoader():
         label = self.tags.lookup(label)
 
         # Prepend and append SOS and EOS tokens to label
-        label = tf.concat([[self.tgt_sos_token], label, [self.tgt_eos_token]],
-                0)
+        #label = tf.concat([[self.tgt_sos_token], label, [self.tgt_eos_token]],
+        #        0)
 
         return sentence, label, seq_len
 
@@ -80,12 +79,12 @@ class TextDataLoader():
 
             self.words = words
             self.tags = tags
-            self.src_vocab_size = words.size()
-            self.tgt_vocab_size = tags.size()
-            self.src_sos_token = words.lookup(tf.constant('<s>'))
-            self.tgt_sos_token = tags.lookup(tf.constant('<s>'))
-            self.src_eos_token = words.lookup(tf.constant('</s>'))
-            self.tgt_eos_token = tags.lookup(tf.constant('</s>'))
+            #self.src_vocab_size = words.size()
+            #self.tgt_vocab_size = tags.size()
+            #self.src_sos_token = words.lookup(tf.constant('<s>'))
+            #self.tgt_sos_token = tags.lookup(tf.constant('<s>'))
+            #self.src_eos_token = words.lookup(tf.constant('</s>'))
+            #self.tgt_eos_token = tags.lookup(tf.constant('</s>'))
 
             # Sentences and labels datasets
             sentences = tf.data.TextLineDataset(src_text_filename)
