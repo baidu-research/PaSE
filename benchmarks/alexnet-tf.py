@@ -328,15 +328,12 @@ def main():
     # Initalize the data generator seperately for the training and validation set
     dataset_dir = args['dataset_dir']
     labels_filename = args['labels_filename']
-    train_generator = ImageDataLoader(batch_size, dataset_dir, labels_filename,
-            32, 8)
+    dataset = ImageDataLoader(batch_size, dataset_dir, labels_filename, 32, 8)
     
     # TF placeholder for graph input and output
     #x = tf.placeholder(tf.float32, [batch_size, 227, 227, 3])
     #y = tf.placeholder(tf.float32, [batch_size, num_classes])
-    batch = train_generator.next_batch()
-    x = batch[0]
-    y = batch[1]
+    x, y = dataset.next_batch()
     x.set_shape([batch_size, 227, 227, 3])
     y.set_shape([batch_size])
     keep_prob = tf.placeholder(tf.float32)
@@ -378,7 +375,7 @@ def main():
         writer = tf.summary.FileWriter(filewriter_path)
     
     # Get the number of training/validation steps per epoch
-    train_batches_per_epoch = np.floor(train_generator.data_size / batch_size).astype(np.int16)
+    train_batches_per_epoch = np.floor(dataset.data_size / batch_size).astype(np.int16)
     #val_batches_per_epoch = np.floor(val_generator.data_size / batch_size).astype(np.int16)
 
     tot_time = float(0)
@@ -401,7 +398,7 @@ def main():
       start = time.time()
       for epoch in range(num_epochs):
             # Reset the file pointer of the image data generator
-            train_generator.reset_pointer()
+            dataset.reset_pointer()
             step = 0
 
             while step < train_batches_per_epoch:
@@ -409,14 +406,14 @@ def main():
                                                                     dropout_rate})
                 
                 # Generate summary with the current batch of data and write to file
-                #if step % display_step == 0:
-                #    print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
-                #    if log_summary:
-                #        s = sess.run(merged_summary, feed_dict={x: batch_xs, 
-                #                                                y: batch_ys, 
-                #                                                keep_prob: 1.})
-                #        writer.add_summary(s, epoch*train_batches_per_epoch + step)
-                #    
+                if step % display_step == 0 and step > 0:
+                    print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
+                    if log_summary:
+                        s = sess.run(merged_summary, feed_dict={x: batch_xs, 
+                                                                y: batch_ys, 
+                                                                keep_prob: 1.})
+                        writer.add_summary(s, epoch*train_batches_per_epoch + step)
+                    
                 step += 1
       end = time.time()
       tot_time += (end - start)
@@ -424,7 +421,7 @@ def main():
             
     #avg_time = tot_time / float(cnt - warmup)
     #print("Avg. time: " + str(avg_time) + " s")
-    img_per_sec = (train_generator.data_size * num_epochs) / tot_time
+    img_per_sec = (dataset.data_size * num_epochs) / tot_time
     print("Throughout: " + str(img_per_sec) + " images / sec")
 
 

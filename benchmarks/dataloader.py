@@ -4,7 +4,7 @@ import tensorflow as tf
 
 
 class ImageDataLoader():
-    def parse_image(filename, label):
+    def parse_image(self, filename, label):
         image_string = tf.read_file(filename)
     
         image = tf.image.decode_jpeg(image_string, channels=3)
@@ -18,7 +18,7 @@ class ImageDataLoader():
         return image, label
 
     def __init__(self, batch_size, dataset_dir, labels_filename,
-            num_parallel_calls = 32, prefetches = 8):
+            num_parallel_calls = 64, prefetches = 8):
         with tf.device('/cpu:0'):
             labels_filename = os.path.join(dataset_dir, labels_filename)
 
@@ -41,32 +41,34 @@ class ImageDataLoader():
 
             self.dataset_iterator = dataset.make_initializable_iterator()
             self.initializer = self.dataset_iterator.initializer
+            self.next_element = self.dataset_iterator.get_next()
 
     def next_batch(self):
-        return self.dataset_iterator.get_next()
+        return self.next_element
 
     def reset_pointer(self):
         tf.get_default_session().run(self.initializer)
  
 
 class TextDataLoader():
-    def parse_text(sentence, label):
+    def parse_text(self, sentence, label):
         # Split sentence into words, and convert it into ids
         #sentences = sentences.map(lambda string: string.lower())
-        sentence = tf.string_split(sentence)
-        seq_len = tf.size(sentence)
+        sentence = tf.string_split([sentence]).values
         sentence = self.words.lookup(sentence)
 
-        label = tf.split_string(label)
+        label = tf.string_split([label]).values
+        seq_len = tf.size(label)
         label = self.tags.lookup(label)
 
         # Prepend and append SOS and EOS tokens to label
-        label = tf.concat([self.tgt_sos_token, label, self.tgt_eos_token])
+        label = tf.concat([[self.tgt_sos_token], label, [self.tgt_eos_token]],
+                0)
 
         return sentence, label, seq_len
 
     def __init__(self, batch_size, words_filename, tags_filename,
-            src_text_filename, tgt_text_filename, num_parallel_calls = 32,
+            src_text_filename, tgt_text_filename, num_parallel_calls = 64,
             prefetches = 8):
         with tf.device('/cpu:0'):
             self.batch_size = batch_size
@@ -78,6 +80,8 @@ class TextDataLoader():
 
             self.words = words
             self.tags = tags
+            self.src_vocab_size = words.size()
+            self.tgt_vocab_size = tags.size()
             self.src_sos_token = words.lookup(tf.constant('<s>'))
             self.tgt_sos_token = tags.lookup(tf.constant('<s>'))
             self.src_eos_token = words.lookup(tf.constant('</s>'))
@@ -98,18 +102,20 @@ class TextDataLoader():
             padded_shapes = (tf.TensorShape([None]), tf.TensorShape([None]),
                     tf.TensorShape([]))
             padding_values = (id_pad_word, id_pad_tag, tf.constant(0,
-                dtype=tf.int32)
+                dtype=tf.int32))
 
             #dataset = dataset.shuffle(buffer_size=buffer_size) 
-            dataset = dataset.padded_batch(batch_size, padded_shapes=padded_shapes,
-                    padding_values=padding_values))
+            dataset = dataset.padded_batch(batch_size, padded_shapes =
+                    padded_shapes, padding_values = padding_values,
+                    drop_remainder = True)
             dataset = dataset.prefetch(prefetches)
 
             self.dataset_iterator = dataset.make_initializable_iterator()
             self.initializer = self.dataset_iterator.initializer
+            self.next_element = self.dataset_iterator.get_next()
 
     def next_batch(self):
-        return self.dataset_iterator.get_next()
+        return self.next_element
 
     def reset_pointer(self):
         tf.get_default_session().run(self.initializer)
