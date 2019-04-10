@@ -2,7 +2,6 @@ import os
 import tensorflow as tf
 
 
-
 class ImageDataLoader():
     def parse_image(self, filename, label):
         image_string = tf.read_file(filename)
@@ -18,7 +17,7 @@ class ImageDataLoader():
         return image, label
 
     def __init__(self, batch_size, dataset_dir, labels_filename,
-            num_parallel_calls = 64, prefetches = 8):
+            num_parallel_calls = 32, prefetches = 8):
         with tf.device('/cpu:0'):
             labels_filename = os.path.join(dataset_dir, labels_filename)
 
@@ -67,14 +66,13 @@ class TextDataLoader():
         return sentence, label, seq_len
 
     def __init__(self, batch_size, words_filename, tags_filename,
-            src_text_filename, tgt_text_filename, num_parallel_calls = 64,
+            src_text_filename, tgt_text_filename, num_parallel_calls = 32,
             prefetches = 8):
         with tf.device('/cpu:0'):
             self.batch_size = batch_size
 
             # Vocab to id table
-            words = tf.contrib.lookup.index_table_from_file(words_filename,
-                    num_oov_buckets=1)
+            words = tf.contrib.lookup.index_table_from_file(words_filename)
             tags = tf.contrib.lookup.index_table_from_file(tags_filename)
 
             self.words = words

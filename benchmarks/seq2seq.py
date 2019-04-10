@@ -31,7 +31,7 @@ def make_data_parallel(fn, num_gpus, split_args, unsplit_args):
 
 def encoding_layer(rnn_inputs, rnn_size, num_layers, keep_prob,
         source_vocab_size, encoding_embedding_size):
-    with tf.variable_scope("encode", reuse=tf.AUTO_REUSE):
+    with tf.variable_scope("encode"):
         embed = tf.contrib.layers.embed_sequence(rnn_inputs, 
                                                  vocab_size=source_vocab_size, 
                                                  embed_dim=encoding_embedding_size)
@@ -47,15 +47,15 @@ def decoding_layer(dec_input, encoder_state,
                    target_sequence_length, rnn_size,
                    num_layers, target_vocab_size, batch_size, keep_prob,
                    decoding_embedding_size):
-    with tf.variable_scope("decode", reuse=tf.AUTO_REUSE):
-        dec_embeddings = tf.Variable(tf.random_uniform([target_vocab_size,
-            decoding_embedding_size]))
+    with tf.variable_scope("decode"):
+        dec_embeddings = tf.get_variable('dec_embeddings', [target_vocab_size,
+            decoding_embedding_size])
         dec_embed_input = tf.nn.embedding_lookup(dec_embeddings, dec_input)
         
         cells = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.LSTMCell(rnn_size) for _
             in range(num_layers)])
     
-        output_layer = None #tf.layers.Dense(target_vocab_size)
+        output_layer = tf.layers.Dense(target_vocab_size)
         cells = tf.contrib.rnn.DropoutWrapper(cells, output_keep_prob =
                 keep_prob)
         
@@ -67,44 +67,44 @@ def decoding_layer(dec_input, encoder_state,
                 output_layer)
 
         # unrolling the decoder layer
-        train_output, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder,
+        train_output, _, final_seq_len = tf.contrib.seq2seq.dynamic_decode(decoder,
                 impute_finished=True)
 
-        return train_output
+        return train_output, final_seq_len
 
 
 def seq2seq_model(input_data, target_data, keep_prob, batch_size,
                   target_sequence_length, source_vocab_size, target_vocab_size,
                   enc_embedding_size, dec_embedding_size, rnn_size, num_layers):
-    enc_outputs, enc_states = encoding_layer(input_data, 
-                                             rnn_size, 
-                                             num_layers, 
-                                             keep_prob, 
-                                             source_vocab_size, 
-                                             enc_embedding_size)
-    
-    max_seq_len = tf.reduce_max(target_sequence_length)
-    target_data = tf.slice(target_data, [0, 0], [batch_size, max_seq_len])
-    train_logits = decoding_layer(target_data,
-                                  enc_states, 
-                                  target_sequence_length, 
-                                  rnn_size,
-                                  num_layers,
-                                  target_vocab_size,
-                                  batch_size,
-                                  keep_prob,
-                                  dec_embedding_size)
-    
-    training_logits = tf.identity(train_logits.rnn_output, name='logits')
-    
-    masks = tf.sequence_mask(target_sequence_length, maxlen = max_seq_len,
-            dtype=tf.float32, name='masks')
-
-    # Loss function - weighted softmax cross entropy
-    cost = tf.contrib.seq2seq.sequence_loss(training_logits, target_data, masks,
-            average_across_timesteps = True, average_across_batch = True)
+    with tf.variable_scope('seq2seq'):
+        enc_outputs, enc_states = encoding_layer(input_data, 
+                                                 rnn_size, 
+                                                 num_layers, 
+                                                 keep_prob, 
+                                                 source_vocab_size, 
+                                                 enc_embedding_size)
         
-    return cost
+        max_seq_len = tf.reduce_max(target_sequence_length)
+        target_data = tf.slice(target_data, [0, 0], [batch_size, max_seq_len])
+        train_logits, final_seq_len = decoding_layer(target_data,
+                                      enc_states, 
+                                      target_sequence_length, 
+                                      rnn_size,
+                                      num_layers,
+                                      target_vocab_size,
+                                      batch_size,
+                                      keep_prob,
+                                      dec_embedding_size)
+        
+        training_logits = tf.identity(train_logits.rnn_output, name='logits')
+        
+        masks = tf.sequence_mask(final_seq_len, dtype=tf.float32, name='masks')
+
+        # Loss function - weighted softmax cross entropy
+        cost = tf.contrib.seq2seq.sequence_loss(training_logits, target_data, masks,
+                average_across_timesteps = True, average_across_batch = True)
+            
+        return cost
 
 
 def main():
@@ -190,6 +190,7 @@ def main():
                 colocate_gradients_with_ops = True)
         #gradients = [(tf.clip_by_value(grad, -1., 1.), var) for grad, var in gradients if grad is not None]
         train_op = optimizer.apply_gradients(gradients)
+
 
     tot_time = float(0)
     cnt = 0
