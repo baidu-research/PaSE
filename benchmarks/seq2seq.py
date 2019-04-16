@@ -330,8 +330,8 @@ def seq2seq_opt4(input_data, target_data, keep_prob, batch_size,
             _, enc_states = tf.nn.dynamic_rnn(cell, enc_embed, initial_state =
                     initial_state, dtype=tf.float32)
 
-            with get_gpu_device(0):
-                enc_states = ConcatenateStates(enc_states)
+            #with get_gpu_device(0):
+            #    enc_states = ConcatenateStates(enc_states)
 
         # Decoder
         with tf.variable_scope('decode', reuse = False):
@@ -460,7 +460,8 @@ def main():
 
     tot_time = float(0)
     cnt = 0
-    #with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
+    #with tf.Session(config=tf.ConfigProto(log_device_placement=True,
+    #    allow_soft_placement=True)) as sess:
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
         sess.run([tf.global_variables_initializer(),
             tf.initializers.tables_initializer()])
