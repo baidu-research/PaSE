@@ -222,7 +222,7 @@ class Embedding():
     def __init__(self, b, vocab_size, embed_dim, n_procs):
         self.dom = (b,)
         self.in_tsr = (b, vocab_size)
-        self.out_tsr = (vocab_size, embed_dim)
+        self.out_tsr = (b, embed_dim)
 
         self.dom_config_tuples = GetConfigs(self.dom, n_procs)
         self.dom_configs = np.array(self.dom_config_tuples).reshape(-1,1)
@@ -601,7 +601,7 @@ def Seq2seq(G, b, n_procs):
     unroll = 40
     h = 1024
 
-    vocab_size = 40960
+    vocab_size = 17191
     embed_dim = h
 
     # Encoder + decoder
@@ -626,6 +626,100 @@ def Seq2seq(G, b, n_procs):
         AddEdge(G, l, node_id)
 
     return G
+
+
+class PositionalEncoder():
+    def __init__(self, b, vocab_size, seq_len, embed_dim, n_procs):
+        self.dom = (b,)
+        self.in_tsr = (b * seq_len, vocab_size)
+        self.out_tsr = (b * seq_len, embed_dim)
+
+        self.dom_config_tuples = GetConfigs(self.dom, n_procs)
+        self.dom_configs = np.array(self.dom_config_tuples).reshape(-1,1)
+        rep = np.repeat(1, self.dom_configs.shape[0]).reshape(-1, 1)
+        self.in_tsr_configs = np.concatenate((self.dom_configs, rep), axis=1)
+        self.out_tsr_configs = self.in_tsr_configs
+
+        dom_per_proc = np.ceil(self.dom / self.dom_configs)
+        elems = np.prod(dom_per_proc, axis = 1)
+
+        # Cost of computing and adding positional encoder to embedding matrix
+        self.vert_costs = 2.0 * elems * seq_len * embed_dim
+        self.vert_costs += 4.0
+
+        # Backprop cost of synchronization
+        words = elems
+        procs = self.dom_configs[:,0]
+        words /= procs
+        steps = 2.0 * (procs - 1)
+        self.vert_costs += (bw_to_flop * (words * steps))
+
+    def GetVertexCosts(self):
+        return self.vert_costs
+
+
+def MultiHeadAttn(G, inp_node_id, b, seq_len, hidden_dim, n_heads, n_procs):
+    # Linear layers
+    node_op_q = Gemm((b * seq_len, hidden_dim, hidden_dim), n_procs)
+    node_id_q = AddVertex(G, node_op_q)
+    AddEdge(G, inp_node_id, node_id_q)
+
+    node_op_k = Gemm((b * seq_len, hidden_dim, hidden_dim), n_procs)
+    node_id_k = AddVertex(G, node_op_k)
+    AddEdge(G, inp_node_id, node_id_k)
+
+    node_op_v = Gemm((b * seq_len, hidden_dim, hidden_dim), n_procs)
+    node_id_v = AddVertex(G, node_op_v)
+    AddEdge(G, inp_node_id, node_id_v)
+
+    d_h = hidden_dim / n_heads
+
+    def AddAttentionEdge(G, node_op1, node_id1, node_op2, node_id2):
+        src_tsr = node_op1.out_tsr
+        tgt_tsr = node_op2.in_tsr
+
+        src_cfgs = node_op1.out_tsr_configs
+        tgt_cfgs = node_op2.in_tsr_configs
+
+        src_tsr_per_proc = np.ceil(src_tsr / src_cfgs)
+        tgt_tsr_per_proc = np.ceil(tgt_tsr / tgt_cfgs)
+
+        idx = np.nonzero(src_tsr_per_proc[:, 1] >= d_h)
+        src_tsr_per_proc[idx, 0] *= (src_tsr_per_proc[idx, 1] / d_h)
+        src_tsr_per_proc[idx, 1] /= d_h
+
+        costs = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
+                tgt_procs)
+
+        G.add_edge(node_id1, node_id2, costs=costs)
+
+    # q * k^T - batch matmul
+    node_op = Gemm((b * seq_len * n_heads, b * seq_len * n_heads, d_h), n_procs)
+    node_id = AddVertex(G, node_op)
+    AddAttentionEdge(G, node_op_q, node_id_q, node_op, node_id)
+    AddAttentionEdge(G, node_op_k, node_id_k, node_op, node_id)
+
+    # Softmax 
+    node_op = Softmax(node_op.out_tsr, n_procs)
+    node_id = AddVertex(G, node_op)
+    AddEdge(node_id - 1, node_id)
+
+    # softmax * v
+    node_op = Gemm((b * seq_len * n_heads, b * seq_len * n_heads, d_h), n_procs)
+    node_id = AddVertex(G, node_op)
+
+    return node_id
+
+
+def Transformer(G, b, n_procs):
+    hidden_dim = 1024
+    vocab_size = 17191
+    seq_len = 80
+    n_heads = 8
+
+    # Positional encoder
+    node_op = PositionalEncoder(b, vocab_size, seq_len, hidden_dim, n_procs)
+    node_id = AddVertex(G, node_op)
 
 
 def AlexNet(G, b, n_procs):
