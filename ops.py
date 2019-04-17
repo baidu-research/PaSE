@@ -6,6 +6,10 @@ import itertools
 from functools import reduce
 
 
+class Tensor(tuple):
+    pass
+
+
 # Returns a list of factors of a number 'n'
 def factors(n):
     assert(n > 0)
@@ -40,7 +44,7 @@ def GetConfigs(dom, n_procs, cutoff = 4):
     return configs
 
 
-def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
+def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, bool trainable=True):
     m_idx, n_idx, k_idx = 0, 1, 2
     dom_per_proc = np.ceil(dom / dom_configs)
 
@@ -48,8 +52,9 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
     costs = 3.0 * np.prod(dom_per_proc, axis=1)
 
     # Matrix addition cost for weight update
-    update_cost = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
-    costs += update_cost
+    if trainable:
+        update_cost = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
+        costs += update_cost
 
     # Cost of pointwise op
     if pw_op_cnt > 0:
@@ -70,11 +75,12 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
     
     # Cost for gradient update during bwd phase
     # All-reduce cost = 2*((n*k)/P)*(P-1)
-    words = np.prod(dom_per_proc[:, [n_idx,k_idx]], axis=1)
-    procs = dom_configs[:,m_idx]
-    words /= procs
-    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-    costs += (bw_to_flop * (words * steps))
+    if trainable:
+        words = np.prod(dom_per_proc[:, [n_idx,k_idx]], axis=1)
+        procs = dom_configs[:,m_idx]
+        words /= procs
+        steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
+        costs += (bw_to_flop * (words * steps))
 
     return costs
 
@@ -92,12 +98,15 @@ def GetConvolutedSize(h, w, r, s, stride, pad):
 # Parent operator class
 class Ops():
     def __init__(self, dom, in_tsrs, out_tsrs, n_procs):
-        assert all(hasattr(i, '__len__') for i in self.in_tsrs)
-        assert all(hasattr(i, '__len__') for i in self.out_tsrs)
+        type_check = lambda t: isinstance(t, Tensor) or all([isinstance(e,
+            Tensor) for e in t])
+
+        assert type_check(in_tsrs)
+        assert type_check(out_tsrs)
 
         self.dom = tuple(dom)
-        self.in_tsrs = tuple(in_tsrs)
-        self.out_tsrs = tuple(out_tsrs)
+        self.in_tsrs = in_tsrs
+        self.out_tsrs = out_tsrs
         self.n_procs = n_procs
 
     def ComputeCosts(self):
@@ -116,19 +125,25 @@ class Ops():
             return self.costs
 
 
-# GEMM
-class Gemm(Ops):
-    def __init__(self, dom, n_procs, pw_op_cnt=0):
-        assert len(dom) == 3
+# Pointwise addition
+#class Add(Ops):
+#    def __init__(self, tsr1, tsr2, ):
+
+
+# Fully connected layer
+class FC(Ops):
+    def __init__(self, inp, n_units, n_procs, pw_op_cnt=0):
+        assert len(inp) == 2
 
         self.pw_op_cnt = pw_op_cnt
 
         m_idx, n_idx, k_idx = range(3)
 
         # Domain and input/output tensors
-        in_tsr = (dom[m_idx], dom[k_idx])
-        out_tsr = (dom[m_idx], dom[n_idx])
-        super().__init__(dom, (in_tsr,), (out_tsr,), n_procs)
+        dom = (inp[0], n_units, inp[1])
+        in_tsr = Tensor((dom[m_idx], dom[k_idx]))
+        out_tsr = Tensor((dom[m_idx], dom[n_idx]))
+        super().__init__(dom, in_tsr, out_tsr, n_procs)
 
     def ComputeCosts(self):
         m_idx, n_idx, k_idx = range(3)
@@ -141,6 +156,45 @@ class Gemm(Ops):
 
         # Compute the costs for configs
         self.costs = ComputeGemmCosts(self.dom, self.dom_configs, self.pw_op_cnt)
+
+
+# Standard matmul
+class MatMul(Ops):
+    def __init__(self, tsr1, tsr2, n_procs, pw_op_cnt=0):
+        # Both tensors should be of same rank and >=2, inner most two dimensions
+        # correspond to valid GEMM, and outer dimensions should match.
+        assert len(tsr1) == len(tsr2) >= 2
+        assert tsr1[-1] == tsr2[-2]
+        assert all(t1 == t2 for t1, t2 in zip(tsr1[:-2], tsr2[:-2]))
+
+        self.pw_op_cnt = pw_op_cnt
+        m_idx, n_idx, k_idx = range(3)
+
+        dom = tsr1[:-1] + tsr2[:-2] + (tsr2[-1], tsr2[-2])
+        in_tsrs = (Tensor(tsr1), Tensor(tsr2))
+        out_tsr = Tensor(dom[:-1])
+        super().__init__(dom, in_tsrs, out_tsrs, n_procs)
+
+    def ComputeCosts(self):
+        m_idx, n_idx, k_idx = range(3)
+
+        # Configurations
+        self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
+        self.dom_configs = np.array(self.dom_config_tuples)
+        self.in_tsr_configs = (self.dom_configs[:, (m_idx, k_idx)],
+                self.dom_configs[:, (k_idx, n_idx)])
+        self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
+
+        # Compute the cost for a single GEMM, and multiply it with number of
+        # batches per proc
+        gemm_dom = self.dom[-2:]
+        gemm_dom_configs = self.dom_configs[:, -2:]
+        self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
+                self.pw_op_cnt, trainable=False)
+        batches_per_proc = np.prod(np.ceil(self.dom[:-2] /
+            self.dom_configs[:,:-2]), axis=1)
+        assert batches_per_proc.shape == self.costs.shape
+        self.costs *= batches_per_proc
 
 
 # Convolution
@@ -158,8 +212,9 @@ class Conv(Ops):
 
         # Domain
         dom = (b, c, h_o, w_o, r, s, n)
-        out_tsr = (b, n, h_o, w_o)
-        super().__init__(dom, (img,), (out_tsr,), n_procs)
+        in_tsr = Tensor(img)
+        out_tsr = Tensor((b, n, h_o, w_o))
+        super().__init__(dom, in_tsr, out_tsr, n_procs)
 
     def ConvertToGemmDom(self):
         b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
@@ -234,7 +289,7 @@ class MaxPool(Ops):
         h_o, w_o = GetConvolutedSize(h, w, r, s, stride, pad)
 
         dom = (b, c, h_0, w_o)
-        super().__init__(dom, (img,), (dom,), n_procs)
+        super().__init__(dom, Tensor(img), Tensor(dom), n_procs)
 
     def ComputeCosts(self):
         self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
