@@ -7,6 +7,9 @@ from functools import reduce
 import operator as op
 
 
+exp_cost = 3.0
+
+
 class Tensor(tuple):
     pass
 
@@ -47,7 +50,7 @@ def GetConfigs(dom, n_procs, cutoff = 4):
 
 def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, bool trainable=True):
     m_idx, n_idx, k_idx = 0, 1, 2
-    dom_per_proc = np.ceil(dom / dom_configs)
+    dom_per_proc = dom / dom_configs
 
     # Cost for 1 GEMM in fwd phase + 2 GEMMs in bwd phase
     costs = 3.0 * np.prod(dom_per_proc, axis=1)
@@ -141,21 +144,21 @@ class Elementwise(Ops):
         self.in_tsr_configs = self.dom_configs
         self.out_tsr_configs = self.dom_configs
 
-        dom_per_proc = np.prod(np.ceil(self.dom / self.dom_configs), axis=1)
+        dom_per_proc = np.prod(self.dom / self.dom_configs, axis=1)
         self.costs = (1 + pw_op_cnt) * dom_per_proc
 
 
 # Fully connected layer
 class FC(Ops):
-    def __init__(self, inp, n_units, n_procs, pw_op_cnt=0):
-        assert len(inp) == 2
+    def __init__(self, in_tsr, n_units, n_procs, pw_op_cnt=0):
+        assert len(in_tsr) == 2
 
         self.pw_op_cnt = pw_op_cnt
 
         m_idx, n_idx, k_idx = range(3)
 
         # Domain and input/output tensors
-        dom = (inp[0], n_units, inp[1])
+        dom = (in_tsr[0], n_units, in_tsr[1])
         in_tsr = Tensor((dom[m_idx], dom[k_idx]))
         out_tsr = Tensor((dom[m_idx], dom[n_idx]))
         super().__init__(dom, in_tsr, out_tsr, n_procs)
@@ -204,8 +207,8 @@ class MatMul(Ops):
         gemm_dom_configs = self.dom_configs[:,-2:]
         self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
                 self.pw_op_cnt, trainable=False)
-        batches_per_proc = np.prod(np.ceil(self.dom[:-2] /
-            self.dom_configs[:,:-2]), axis=1)
+        batches_per_proc = np.prod(self.dom[:-2] / self.dom_configs[:,:-2],
+                axis=1)
         assert batches_per_proc.shape == self.costs.shape
         self.costs *= batches_per_proc
 
@@ -235,10 +238,10 @@ class Conv(Ops):
 
         gemm_dom = (b * h_o * w_o, n, c * r * s)
         gemm_m = np.prod(self.dom_configs[:, (b_idx, h_idx, w_idx)],
-                axis=1).reshape(-1, 1)
-        gemm_n = self.dom_configs[:, n_idx].reshape(-1, 1)
+                axis=1, keepdims=True)
+        gemm_n = self.dom_configs[:, n_idx]
         gemm_k = np.prod(self.dom_configs[:, (c_idx, r_idx, s_idx)],
-                axis=1).reshape(-1, 1)
+                axis=1, keepdims=True)
         gemm_configs = np.concatenate((gemm_m, gemm_n, gemm_k), axis=1)
 
         return gemm_dom, gemm_configs
@@ -313,23 +316,22 @@ class MaxPool(Ops):
 
 
 class Concat(Ops):
-    def __init__(self, tsrs, axis, n_procs):
-        tsr0 = tsrs[0]
+    def __init__(self, in_tsrs, axis, n_procs):
+        tsr0 = in_tsrs[0]
         rank = len(tsr0)
-        self.tsrs = tsrs
 
-        assert len(tsrs) >= 2
+        assert len(in_tsrs) >= 2
         # All tensors should be of same rank, and concat axis should be valid
         assert(axis < rank)
-        assert all(len(t) == rank for t in tsrs)
+        assert all(len(t) == rank for t in in_tsrs)
         # All tensors should have same dimensions along non-concatenated axes
-        assert all(t[i] == tsr0[i] for t in tsrs for i in range(rank) if i !=
+        assert all(t[i] == tsr0[i] for t in in_tsrs for i in range(rank) if i !=
                 axis)
 
-        concatenated_size = reduce(op.add, (t[axis] for t in tsrs))
+        concatenated_size = reduce(op.add, (t[axis] for t in in_tsrs))
         dom = list(tsr0)
         dom[axis] = concatentated_size
-        in_tsrs = tuple(Tensor(t) for t in tsrs)
+        in_tsrs = tuple(Tensor(t) for t in in_tsrs)
         super().__init__(dom, in_tsrs, Tensor(dom), n_procs)
 
     def ComputeCosts(self):
@@ -337,13 +339,33 @@ class Concat(Ops):
 
         # Remove configs where distribution of concatenated dimension doesn't
         # align with the tensor boundaries
-        concat_axis_sizes = list(t[axis] for t in self.tsrs)
+        concat_axis_sizes = list(t[axis] for t in self.in_tsrs)
         valid_idx = np.all(list(np.mod(s, self.dom_configs[:, axis]) == 0 for s
             in concat_axis_sizes), axis=0)
         self.dom_configs = self.dom_configs[:, valid_idx]
         self.dom_config_tuples = [tuple(e) for e in self.dom_configs]
 
-        self.in_tsr_configs = (self.dom_configs,) * len(self.tsrs)
+        self.in_tsr_configs = (self.dom_configs,) * len(self.in_tsrs)
         self.out_tsr_configs = self.dom_configs
         self.costs = 0
 
+
+#class Softmax(Ops):
+#    def __init__(self, in_tsr, n_procs):
+#        assert len(in_tsr) == 2
+#        super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
+#
+#    def ComputeCosts(self):
+#        super().ComputeCosts()
+#
+#        self.in_tsr_configs = self.dom_configs
+#        self.out_tsr_configs = self.dom_configs
+#
+#        # Computation costs
+#        dom_per_proc = self.dom / self.dom_per_proc
+#        fwd_cost_coeff = exp_cost + 1
+#        bwd_cost_coeff = 3
+#        coeff = fwd_cost_coeff + bwd_cost_coeff
+#        comp_cost = coeff * np.prod(dom_per_proc, axis=1)
+#
+#        # Communication costs
