@@ -350,22 +350,35 @@ class Concat(Ops):
         self.costs = 0
 
 
-#class Softmax(Ops):
-#    def __init__(self, in_tsr, n_procs):
-#        assert len(in_tsr) == 2
-#        super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
-#
-#    def ComputeCosts(self):
-#        super().ComputeCosts()
-#
-#        self.in_tsr_configs = self.dom_configs
-#        self.out_tsr_configs = self.dom_configs
-#
-#        # Computation costs
-#        dom_per_proc = self.dom / self.dom_per_proc
-#        fwd_cost_coeff = exp_cost + 1
-#        bwd_cost_coeff = 3
-#        coeff = fwd_cost_coeff + bwd_cost_coeff
-#        comp_cost = coeff * np.prod(dom_per_proc, axis=1)
-#
-#        # Communication costs
+class SoftmaxCrossEntropy(Ops):
+    def __init__(self, in_tsr, n_procs):
+        assert len(in_tsr) == 2
+        super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs
+
+        # Softmax computation costs - Taking exponent and summation in forward
+        # pass + cost of performing one subtraction per input in backward pass.
+        dom_per_proc = self.dom / self.dom_per_proc
+        self.costs = (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
+        self.costs += dom_per_proc[:, 0]
+
+        # Cross-entropy computation costs - cost of averaging scalars over batch
+        # dimension in forward pass.
+        self.costs += dom_per_proc[:, 0]
+
+        # Softmax communication costs - Adding partial sums: 1 word per input
+        # per proc => batchsize / proc in forward pass.
+        # Cross-entropy communication costs - Cost of broadcasting
+        # the one label element per input along class dimension. Cost of
+        # averaging partial sums: 1 word per proc along batch dim in forward
+        # pass is ignored.
+        # No communication in backward pass.
+        comm_cost = bw_to_flop * 2.0 * dom_per_proc[:, 0]
+        np.add(self.costs, comm_cost, where=(self.dom_configs[:,1] > 1),
+                out=self.costs)
+
