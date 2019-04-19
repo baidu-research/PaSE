@@ -57,8 +57,7 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, bool trainable=True):
 
     # Matrix addition cost for weight update
     if trainable:
-        update_cost = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
-        costs += update_cost
+        costs += dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
 
     # Cost of pointwise op
     if pw_op_cnt > 0:
@@ -116,6 +115,8 @@ class Ops():
     def ComputeCosts(self):
         self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
         self.dom_configs = np.array(self.dom_config_tuples)
+        assert self.dom_configs.ndim == 2
+
         self.in_tsr_configs = None
         self.out_tsr_configs = None
         self.costs = 0
@@ -382,3 +383,39 @@ class SoftmaxCrossEntropy(Ops):
         np.add(self.costs, comm_cost, where=(self.dom_configs[:,1] > 1),
                 out=self.costs)
 
+
+class Embedding(Ops):
+    def __init__(self, in_tsr, vocab_size, embedding_dim, n_procs):
+        assert len(in_tsr) == 1
+
+        self.embedding_dim = embedding_dim
+
+        dom = (in_tsr[0], vocab_size)
+        out_tsr = Tensor((in_tsr[0], embedding_dim))
+        super().__init__(dom, in_tsr, out_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = self.dom_configs[:, 0]
+        self.out_tsr_configs = np.insert(self.dom_configs[:, 1], 1, 1, axis=1)
+
+        dom_per_proc = self.dom / self.dom_configs
+
+        # Lookup in forward phase may involve a gather operation. We assume an
+        # equal likelihood for each input row to be present in a processor.
+        # p_b: no. of procs along batch dim; p_e: no. of procs along embed dim
+        # Probability of having the row for an input in a processor 'p' is 1/p_e.
+        # Each processor has b/p_b inputs. Hence, b/(p_b*p_e) input rows can be
+        # expected to be present in the current processor, and (b/p_b)*(1-1/p_e)
+        # elements have to be gathered from other processors.
+        self.costs = bw_to_flop * dom_per_proc[:,0] * (1.0 - 1.0 /
+                self.dom_configs[:,1])
+
+        # Gradient update costs
+        words = dom_per_proc[:,1] * self.embedding_dim
+        self.costs += words # Gradient addition
+        procs = dom_per_proc[:,0]
+        words /= procs
+        steps = 2.0 * (procs - 1)
+        self.costs += bw_to_flop * words * steps
