@@ -7,9 +7,6 @@ from functools import reduce
 import operator as op
 
 
-exp_cost = 3.0
-
-
 class Tensor(tuple):
     pass
 
@@ -352,6 +349,29 @@ class Concat(Ops):
         self.costs = 0
 
 
+class BatchNorm(Ops):
+    def __init__(self, in_tsr, n_procs):
+        assert len(in_tsr) > 1
+        super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs
+
+        # Computation cost for fwd phase. Same cost for bwd phase too.
+        dom_per_proc = self.dom / self.dom_configs
+        elems = np.prod(dom_per_proc, axis=1)
+        self.costs = (2 * 7.0) * elems
+
+        # Communication cost for fwd phase: Reduction and broadcast of mean and
+        # variance. 2 reductions for fwd phase, and 4 for bwd phase.
+        self.costs += 6.0 * GetAllReduceCost(elems / dom_per_proc[:, 0],
+                dom_configs[:, 0])
+
+
+
 class SoftmaxCrossEntropy(Ops):
     def __init__(self, in_tsr, n_procs):
         assert len(in_tsr) == 2
@@ -365,7 +385,8 @@ class SoftmaxCrossEntropy(Ops):
 
         # Softmax computation costs - Taking exponent and summation in forward
         # pass + cost of performing one subtraction per input in backward pass.
-        dom_per_proc = self.dom / self.dom_per_proc
+        exp_cost = 3.0 # Cost of computing a single exponent
+        dom_per_proc = self.dom / self.dom_configs
         self.costs = (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
         self.costs += dom_per_proc[:, 0]
 
