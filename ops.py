@@ -176,7 +176,7 @@ class FC(Ops):
         self.costs = ComputeGemmCosts(self.dom, self.dom_configs, self.pw_op_cnt)
 
 
-# Standard matmul
+# Batched matmul
 class MatMul(Ops):
     def __init__(self, tsr1, tsr2, n_procs, pw_op_cnt=0):
         # Both tensors should be of same rank and >=2, inner most two dimensions
@@ -194,10 +194,10 @@ class MatMul(Ops):
         super().__init__(dom, in_tsrs, out_tsrs, n_procs)
 
     def ComputeCosts(self):
+        super().ComputeCosts()
         m_idx, n_idx, k_idx = range(3)
 
         # Configurations
-        super().ComputeCosts()
         self.in_tsr_configs = (self.dom_configs[:, (m_idx, k_idx)],
                 self.dom_configs[:, (k_idx, n_idx)])
         self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
@@ -262,10 +262,11 @@ class Conv(Ops):
         # Compute original configs
         dom_config_tuples = GetConfigs(self.dom, self.n_procs)
         dom_configs = np.array(self.dom_config_tuples)
+
+        # Get configs that intersect with maxpool's configs
         dom_configs = dom_configs[np.all(np.isin(dom_configs[:,:4],
             maxpool_dom_configs), axis=1), :]
 
-        # Get configs that intersect with maxpool's configs
         b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
         self.dom_configs = dom_configs
         self.dom_config_tuples = [tuple(e) for e in dom_configs]
@@ -313,7 +314,7 @@ class MaxPool(Ops):
         self.out_tsr_configs = self.dom_configs
 
         dom_per_proc = self.dom / self.dom_configs
-        self.costs = 3.0 * np.prod(dom_per_proc, axis=1)
+        self.costs = np.prod(dom_per_proc, axis=1)
 
 
 class Concat(Ops):
