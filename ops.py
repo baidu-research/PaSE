@@ -48,16 +48,21 @@ def GetConfigs(dom, n_procs, cutoff = 4):
     return configs
 
 
+def GetAllReduceCost(words, procs):
+    # All-reduce cost = 2*((n*k)/P)*(P-1)
+    chunks = words / procs # The elements are split into 'procs' chunks
+    steps = 2.0 * (procs - 1)
+    costs = bw_to_flop * (words * steps) # When procs = 1, the cost is 0
+
+    return costs
+
+
 def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, bool trainable=True):
     m_idx, n_idx, k_idx = 0, 1, 2
     dom_per_proc = dom / dom_configs
 
     # Cost for 1 GEMM in fwd phase + 2 GEMMs in bwd phase
     costs = 3.0 * np.prod(dom_per_proc, axis=1)
-
-    # Matrix addition cost for weight update
-    if trainable:
-        costs += dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
 
     # Cost of pointwise op
     if pw_op_cnt > 0:
@@ -69,21 +74,16 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, bool trainable=True):
                                          # 1 hadamard product in bwd phase
     
     # Cost for reducing the output during fwd phase
-    # All-reduce cost = 2*((m*n)/P)*(P-1)
     words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
-    procs = dom_configs[:,k_idx]
-    words /= procs
-    steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-    costs += (bw_to_flop * (words * steps))
+    costs += GetAllReduceCost(words, dom_configs[:, k_idx])
     
-    # Cost for gradient update during bwd phase
-    # All-reduce cost = 2*((n*k)/P)*(P-1)
     if trainable:
-        words = np.prod(dom_per_proc[:, [n_idx,k_idx]], axis=1)
-        procs = dom_configs[:,m_idx]
-        words /= procs
-        steps = 2.0 * (procs - 1) # When procs = 1, the cost is 0
-        costs += (bw_to_flop * (words * steps))
+        weights_per_proc = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
+
+        # Matrix addition cost for weight update
+        costs += weights_per_proc
+        # Cost for gradient update during bwd phase
+        costs += GetAllReduceCost(weights_per_proc, dom_configs[:, m_idx])
 
     return costs
 
@@ -413,9 +413,7 @@ class Embedding(Ops):
                 self.dom_configs[:,1])
 
         # Gradient update costs
-        words = dom_per_proc[:,1] * self.embedding_dim
-        self.costs += words # Gradient addition
-        procs = dom_per_proc[:,0]
-        words /= procs
-        steps = 2.0 * (procs - 1)
-        self.costs += bw_to_flop * words * steps
+        weights_per_proc = dom_per_proc[:,1] * self.embedding_dim
+        self.costs += weights_per_proc # Gradient addition
+        self.costs += GetAllReduceCost(weights_per_proc, self.dom_configs[:, 0])
+
