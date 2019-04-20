@@ -11,6 +11,26 @@ class Tensor(tuple):
     pass
 
 
+def BytesToFlops(bytes):
+    try:
+        return BytesToFlops.bw_to_flops * bytes
+    except AttributeError:
+        p100_peak_flop = float(10.6 * 1000) # GFLOPs
+        #p100_bw = float((36.72 * 2) / 8) # NVLink Unidirectional for 2 sublinks per direction.
+        #                                 # GBytes/sec = b/8 GWords/sec
+        p100_bw = float(20.0 / 8.0) # PCIe bidirectional GWords / sec
+        
+        v100_peak_flop = float(15.7 * 1000) # GFLOPs
+        v100_bw = float((47.99 * 3) / 8) # Unidirectional for 3 sublinks per direction.
+                                         # GBytes/sec = b/8 GWords/sec
+        
+        peak_flop = p100_peak_flop
+        bw = p100_bw
+        BytesToFlops.bw_to_flop = float(peak_flop / bw)
+
+        return BytesToFlops.bw_to_flops * bytes
+
+
 # Returns a list of factors of a number 'n'
 def factors(n):
     assert(n > 0)
@@ -49,7 +69,7 @@ def GetAllReduceCost(words, procs):
     # All-reduce cost = 2*((n*k)/P)*(P-1)
     chunks = words / procs # The elements are split into 'procs' chunks
     steps = 2.0 * (procs - 1)
-    costs = bw_to_flop * (words * steps) # When procs = 1, the cost is 0
+    costs = BytesToFlops(words * steps) # When procs = 1, the cost is 0
 
     return costs
 
@@ -97,10 +117,13 @@ def GetConvolutedSize(h, w, r, s, stride, pad):
 
 # Parent operator class
 class Ops():
-    def __init__(self, dom, in_tsrs, out_tsrs, n_procs):
+    default_procs = 0 # Static. Can be set once and reused for the entire graph
+
+    def __init__(self, dom, in_tsrs, out_tsrs, n_procs=default_procs):
         has_right_type = lambda t: isinstance(t, Tensor) or all(isinstance(e,
             Tensor for e in t])
 
+        assert n_procs > 0
         assert has_right_type(in_tsrs)
         assert has_right_type(out_tsrs)
 
@@ -108,6 +131,29 @@ class Ops():
         self.in_tsrs = in_tsrs
         self.out_tsrs = out_tsrs
         self.n_procs = n_procs
+
+        regularize = lambda x: (x,) if isinstance(x, Tensor) else x
+        self.in_tsrs = regularize(self.in_tsrs)
+        self.out_tsrs = regularize(self.out_tsrs)
+
+        self.in_tsrs_cnt = len(in_tsrs)
+        self.out_tsrs_cnt = len(out_tsrs)
+
+    def GetInTensor(idx):
+        assert idx < self.in_tsrs_cnt
+        return self.in_tsrs[idx]
+
+    def GetOutTensor(idx):
+        assert idx < self.out_tsrs_cnt
+        return self.out_tsrs[idx]
+
+    def GetInTensorConfigs(idx):
+        assert idx < self.in_tsrs_cnt
+        return self.in_tsr_configs[idx]
+
+    def GetOutTensorConfigs(idx):
+        assert idx < self.out_tsrs_cnt
+        return self.out_tsr_configs[idx]
 
     def ComputeCosts(self):
         self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
@@ -124,12 +170,20 @@ class Ops():
             return self.costs
         except AttributeError:
             self.ComputeCosts()
+
+            regularize = lambda x: (x,) if isinstance(x, np.ndarray) else x
+            self.in_tsr_configs = regularize(self.in_tsr_configs)
+            self.out_tsr_configs = regularize(self.out_tsr_configs)
+
+            assert len(self.in_tsr_configs) == self.in_tsrs_cnt
+            assert len(self.out_tsr_configs) == self.out_tsrs_cnt
+
             return self.costs
 
 
 # Elementwise ops such as add, mul, etc.,
 class Elementwise(Ops):
-    def __init__(self, tsr1, tsr2, n_procs, pw_op_cnt=0):
+    def __init__(self, tsr1, tsr2, n_procs=self.default_procs, pw_op_cnt=0):
         # Both the inputs should have same rank and shape
         assert len(tsr1) == len(tsr2)
         assert all(t1 == t2 for t1, t2 in zip(tsr1, tsr2))
@@ -148,7 +202,8 @@ class Elementwise(Ops):
 
 # Fully connected layer
 class FC(Ops):
-    def __init__(self, in_tsr, n_units, n_procs, pw_op_cnt=0):
+    def __init__(self, in_tsr, n_units, n_procs=self.default_procs,
+            pw_op_cnt=0):
         assert len(in_tsr) == 2
 
         self.pw_op_cnt = pw_op_cnt
@@ -175,7 +230,7 @@ class FC(Ops):
 
 # Batched matmul
 class MatMul(Ops):
-    def __init__(self, tsr1, tsr2, n_procs, pw_op_cnt=0):
+    def __init__(self, tsr1, tsr2, n_procs=self.default_procs, pw_op_cnt=0):
         # Both tensors should be of same rank and >=2, inner most two dimensions
         # correspond to valid GEMM, and outer dimensions should match.
         assert len(tsr1) == len(tsr2) >= 2
@@ -213,7 +268,8 @@ class MatMul(Ops):
 
 # Convolution
 class Conv(Ops):
-    def __init__(self, img, fltr, n_procs, stride=1, pad=0, pw_op_cnt=0):
+    def __init__(self, img, fltr, stride=1, pad=0, n_procs=self.default_procs,
+            pw_op_cnt=0):
         assert len(img) == 4
         assert len(fltr) == 4
         assert img[1] == fltr[1]
@@ -294,7 +350,7 @@ class Conv(Ops):
 
 # Maxpool
 class MaxPool(Ops):
-    def __init__(self, img, fltr, n_procs, stride=1, pad=0):
+    def __init__(self, img, fltr, stride=1, pad=0, n_procs=self.default_procs):
         assert len(img) == 4
         assert len(fltr) == 2
 
@@ -315,7 +371,7 @@ class MaxPool(Ops):
 
 
 class Concat(Ops):
-    def __init__(self, in_tsrs, axis, n_procs):
+    def __init__(self, in_tsrs, axis, n_procs=self.default_procs):
         tsr0 = in_tsrs[0]
         rank = len(tsr0)
 
@@ -350,7 +406,7 @@ class Concat(Ops):
 
 
 class BatchNorm(Ops):
-    def __init__(self, in_tsr, n_procs):
+    def __init__(self, in_tsr, n_procs=self.default_procs):
         assert len(in_tsr) > 1
         super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
 
@@ -373,7 +429,7 @@ class BatchNorm(Ops):
 
 
 class SoftmaxCrossEntropy(Ops):
-    def __init__(self, in_tsr, n_procs):
+    def __init__(self, in_tsr, n_procs=self.default_procs):
         assert len(in_tsr) == 2
         super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
 
@@ -401,13 +457,14 @@ class SoftmaxCrossEntropy(Ops):
         # averaging partial sums: 1 word per proc along batch dim in forward
         # pass is ignored.
         # No communication in backward pass.
-        comm_cost = bw_to_flop * 2.0 * dom_per_proc[:, 0]
+        comm_cost = BytesToFlops(2.0 * dom_per_proc[:, 0])
         np.add(self.costs, comm_cost, where=(self.dom_configs[:,1] > 1),
                 out=self.costs)
 
 
 class Embedding(Ops):
-    def __init__(self, in_tsr, vocab_size, embedding_dim, n_procs):
+    def __init__(self, in_tsr, vocab_size, embedding_dim,
+            n_procs=self.default_procs):
         assert len(in_tsr) == 1
 
         self.embedding_dim = embedding_dim
@@ -431,8 +488,8 @@ class Embedding(Ops):
         # Each processor has b/p_b inputs. Hence, b/(p_b*p_e) input rows can be
         # expected to be present in the current processor, and (b/p_b)*(1-1/p_e)
         # elements have to be gathered from other processors.
-        self.costs = bw_to_flop * dom_per_proc[:,0] * (1.0 - 1.0 /
-                self.dom_configs[:,1])
+        self.costs = BytesToFlops(dom_per_proc[:,0] * (1.0 - 1.0 /
+            self.dom_configs[:,1]))
 
         # Gradient update costs
         weights_per_proc = dom_per_proc[:,1] * self.embedding_dim
