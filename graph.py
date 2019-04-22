@@ -114,15 +114,13 @@ def AddVertex(G, op):
     return node_id
 
 
-def AddEdge(G, src, tgt, src_tsr_idx=0, tgt_tsr_idx=0, src_op=None, tgt_op=None,
-        reshape=None):
+def AddEdge(G, src, tgt, src_tsr_idx=0, tgt_tsr_idx=0, reshape=None):
     assert(src in G)
     assert(tgt in G)
 
-    if (not src_op) or (not tgt_op):
-        node_ops = G.nodes(data='op')
-        src_op = node_ops[src]
-        tgt_op = node_ops[tgt]
+    node_ops = G.nodes(data='op')
+    src_op = node_ops[src]
+    tgt_op = node_ops[tgt]
 
     src_tsr = src_op.GetOutTensor(src_tsr_idx)
     tgt_tsr = tgt_op.GetInTensor(tgt_tsr_idx)
@@ -145,58 +143,59 @@ def AlexNet(G, b):
     node_id1_0 = AddVertex(G, conv1)
     pool1 = nn_ops.Pooling(conv1.GetOutTensor(0), (3, 3), stride=2)
     node_id1 = AddVertex(G, pool1)
-    AddEdge(G, node_id1_0, node_id1, src_op=conv1, tgt_op=pool1)
+    AddEdge(G, node_id1_0, node_id1)
 
     # Conv2 + relu + maxpool
     conv2 = nn_ops.Conv(pool1.GetOutTensor(0), (256, 96, 5, 5), pad=2,
             pw_op_cnt=1)
     node_id2_0 = AddVertex(G, conv2)
+    AddEdge(G, node_id1, node_id2_0)
     pool2 = nn_ops.Pooling(conv2.GetOutTensor(0), (3, 3), stride=2)
     node_id2 = AddVertex(G, pool2)
-    AddEdge(G, node_id2_0, node_id2, src_op=conv2, tgt_op=pool2)
+    AddEdge(G, node_id2_0, node_id2)
 
     # Conv3 + relu
     conv3 = nn_ops.Conv(pool2.GetOutTensor(0), (384, 256, 3, 3), stride=1,
             pad=1, pw_op_cnt=1)
     node_id3 = AddVertex(G, conv3)
-    AddEdge(G, node_id2, node_id3, src_op=conv2, tgt_op=conv3)
+    AddEdge(G, node_id2, node_id3)
 
     # Conv4 + relu
     conv4 = nn_ops.Conv(conv3.GetOutTensor(0), (384, 384, 3, 3), stride=1,
             pad=1, pw_op_cnt=1)
     node_id4 = AddVertex(G, conv4)
-    AddEdge(G, node_id3, node_id4, src_op=conv3, tgt_op=conv4)
+    AddEdge(G, node_id3, node_id4)
 
     # Conv5 + relu + maxpool
     conv5 = nn_ops.Conv(conv4.GetOutTensor(0), (256, 384, 3, 3), stride=1,
             pad=1, pw_op_cnt=1)
     node_id5_0 = AddVertex(G, conv5)
+    AddEdge(G, node_id4, node_id5_0)
     pool5 = nn_ops.Pooling(conv5.GetOutTensor(0), (3, 3), stride=2)
     node_id5 = AddVertex(G, pool5)
-    AddEdge(G, node_id5_0, node_id5, src_op=conv5, tgt_op=pool5)
+    AddEdge(G, node_id5_0, node_id5)
 
     # FC6 + relu
     tsr = pool5.GetOutTensor(0)
     tsr = (tsr[0], tsr[1] * tsr[2] * tsr[3])
     fc6 = nn_ops.FC(tsr, 4096, pw_op_cnt=1)
     node_id6 = AddVertex(G, fc6)
-    AddEdge(G, node_id5, node_id6, src_op=conv5, tgt_op=fc6, reshape=[(0,),
-        (1,2,3)])
+    AddEdge(G, node_id5, node_id6, reshape=[(0,), (1,2,3)])
 
     # FC7 + relu
     fc7 = nn_ops.FC(fc6.GetOutTensor(0), 4096, pw_op_cnt=1)
     node_id7 = AddVertex(G, fc7)
-    AddEdge(G, node_id6, node_id7, src_op=fc6, tgt_op=fc7)
+    AddEdge(G, node_id6, node_id7)
 
     # FC8
     fc8 = nn_ops.FC(fc7.GetOutTensor(0), 1024)
     node_id8 = AddVertex(G, fc8)
-    AddEdge(G, node_id7, node_id8, src_op=fc7, tgt_op=fc8)
+    AddEdge(G, node_id7, node_id8)
 
     # Softmax + cross-entropy loss
     loss = nn_ops.SoftmaxCrossEntropy(fc8.GetOutTensor(0))
     node_id9 = AddVertex(G, loss)
-    AddEdge(G, node_id8, node_id9, src_op=fc8, tgt_op=loss)
+    AddEdge(G, node_id8, node_id9)
 
     return G
 

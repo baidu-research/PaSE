@@ -201,6 +201,7 @@ class Processor:
         assert(len(tbl.columns) == self.n_nodes + 1)
         return tbl
 
+
 def main():
     parser = ArgumentParser()
     parser.add_argument("-p", "--procs", type=int, required=False, default=8,
