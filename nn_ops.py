@@ -300,25 +300,25 @@ class Conv(Ops):
 
         return gemm_dom, gemm_configs
 
-    # Fuse maxpool
-    def Fuse(self, maxpool, after=True):
-        assert isinstance(maxpool, MaxPool)
+    # Fuse pooling
+    def Fuse(self, pool, after=True):
+        assert isinstance(pool, Pooling)
         # Make sure we haven't computed configs yet
         assert not hasattr(self, 'dom_configs')
 
         try:
-            maxpool_dom_configs = maxpool.dom_configs
+            pool_dom_configs = pool.dom_configs
         except AttributeError:
-            maxpool.ComputeCosts()
-            maxpool_dom_configs = maxpool.dom_configs
+            pool.ComputeCosts()
+            pool_dom_configs = pool.dom_configs
 
         # Compute original configs
         dom_config_tuples = GetConfigs(self.dom, self.n_procs)
         dom_configs = np.array(self.dom_config_tuples)
 
-        # Get configs that intersect with maxpool's configs
+        # Get configs that intersect with pool's configs
         dom_configs = dom_configs[np.all(np.isin(dom_configs[:,:4],
-            maxpool_dom_configs), axis=1), :]
+            pool_dom_configs), axis=1), :]
 
         b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
         self.dom_configs = dom_configs
@@ -330,9 +330,12 @@ class Conv(Ops):
         gemm_dom, gemm_configs = self.ConvertToGemmDom()
         self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, pw_op_cnt)
 
-        # Add maxpool's costs
-        assert self.costs.shape == maxpool.costs.shape
-        self.costs += maxpool.costs
+        # Add pooling costs
+        assert self.costs.shape == pool.costs.shape
+        self.costs += pool.costs
+
+        if after == True:
+            self.out_tsrs = pool.out_tsrs
 
     def ComputeCosts(self):
         b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
@@ -348,8 +351,8 @@ class Conv(Ops):
         self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, pw_op_cnt)
 
 
-# Maxpool
-class MaxPool(Ops):
+# Pooling - Maxpool, Avgpool
+class Pooling(Ops):
     def __init__(self, img, fltr, stride=1, pad=0, n_procs=self.default_procs):
         assert len(img) == 4
         assert len(fltr) == 2
