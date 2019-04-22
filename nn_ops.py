@@ -26,7 +26,7 @@ def BytesToFlops(bytes):
         
         peak_flop = p100_peak_flop
         bw = p100_bw
-        BytesToFlops.bw_to_flop = float(peak_flop / bw)
+        BytesToFlops.bw_to_flops = float(peak_flop / bw)
 
         return BytesToFlops.bw_to_flops * bytes
 
@@ -74,7 +74,7 @@ def GetAllReduceCost(words, procs):
     return costs
 
 
-def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, bool trainable=True):
+def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, trainable=True):
     m_idx, n_idx, k_idx = 0, 1, 2
     dom_per_proc = dom / dom_configs
 
@@ -105,6 +105,35 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, bool trainable=True):
     return costs
 
 
+# Ghost communication costs for convolution, pooling
+def ComputeGhostCommCosts(tsr, configs, r, s):
+    assert len(tsr) == configs.shape[1] == 4
+
+    b_idx, c_idx, h_idx, w_idx = range(4)
+
+    tsr_per_proc = tsr / configs
+    tsr_per_proc_with_ghosts = tsr_per_proc[:, h_idx:w_idx+1]
+
+    # Add ghost elements along h and w dims if the dimension is split among more
+    # than one proc
+    np.add(tsr_per_proc_with_ghosts[:, 0], r, where=(configs[:, h_idx] > 1),
+            out=tsr_per_proc_with_ghosts[:, 0])
+    np.add(tsr_per_proc_with_ghosts[:, 1], s, where=(configs[:, w_idx] > 1),
+            out=tsr_per_proc_with_ghosts[:, 1])
+
+    # Get the ghost element count
+    inner_elems = np.prod(tsr_per_proc[:, h_idx:w_idx+1], axis=1)
+    outer_elems = np.prod(tsr_per_proc_with_ghosts, axis=1)
+    ghost_elems = outer_elems - inner_elems
+
+    # Multiply it by other dimensions
+    ghost_elems *= tsr_per_proc[:, b_idx]
+    ghost_elems *= tsr_per_proc[:, c_idx]
+
+    costs = BytesToFlops(ghost_elems)
+    return costs
+
+
 def GetConvolutedSize(h, w, r, s, stride, pad):
     stride_r, stride_s = MakePair(stride)
     pad_r, pad_s = MakePair(pad)
@@ -117,11 +146,14 @@ def GetConvolutedSize(h, w, r, s, stride, pad):
 
 # Parent operator class
 class Ops():
-    default_procs = 0 # Static. Can be set once and reused for the entire graph
+    default_procs = 0 # Static variable. Can be set once and reused for the
+                      # entire graph.
 
-    def __init__(self, dom, in_tsrs, out_tsrs, n_procs=default_procs):
+    def __init__(self, dom, in_tsrs, out_tsrs, n_procs):
         has_right_type = lambda t: isinstance(t, Tensor) or all(isinstance(e,
-            Tensor for e in t])
+            Tensor) for e in t)
+
+        n_procs = n_procs or self.default_procs
 
         assert n_procs > 0
         assert has_right_type(in_tsrs)
@@ -132,28 +164,21 @@ class Ops():
         self.out_tsrs = out_tsrs
         self.n_procs = n_procs
 
-        regularize = lambda x: (x,) if isinstance(x, Tensor) else x
-        self.in_tsrs = regularize(self.in_tsrs)
-        self.out_tsrs = regularize(self.out_tsrs)
+        regularize_tsrs = lambda x: (x,) if isinstance(x, Tensor) else x
+        regularize_configs = lambda x: (x,) if isinstance(x, np.ndarray) else x
 
-        self.in_tsrs_cnt = len(in_tsrs)
-        self.out_tsrs_cnt = len(out_tsrs)
+        self.in_tsrs = regularize_tsrs(self.in_tsrs)
+        self.out_tsrs = regularize_tsrs(self.out_tsrs)
 
-    def GetInTensor(idx):
-        assert idx < self.in_tsrs_cnt
-        return self.in_tsrs[idx]
+        self.in_tsrs_cnt = len(self.in_tsrs)
+        self.out_tsrs_cnt = len(self.out_tsrs)
 
-    def GetOutTensor(idx):
-        assert idx < self.out_tsrs_cnt
-        return self.out_tsrs[idx]
+        self.ComputeCosts()
+        self.in_tsr_configs = regularize_configs(self.in_tsr_configs)
+        self.out_tsr_configs = regularize_configs(self.out_tsr_configs)
 
-    def GetInTensorConfigs(idx):
-        assert idx < self.in_tsrs_cnt
-        return self.in_tsr_configs[idx]
-
-    def GetOutTensorConfigs(idx):
-        assert idx < self.out_tsrs_cnt
-        return self.out_tsr_configs[idx]
+        assert len(self.in_tsr_configs) == self.in_tsrs_cnt
+        assert len(self.out_tsr_configs) == self.out_tsrs_cnt
 
     def ComputeCosts(self):
         self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
@@ -164,26 +189,30 @@ class Ops():
         self.out_tsr_configs = None
         self.costs = 0
 
+    def GetInTensor(self, idx):
+        assert idx < self.in_tsrs_cnt
+        return self.in_tsrs[idx]
+
+    def GetOutTensor(self, idx):
+        assert idx < self.out_tsrs_cnt
+        return self.out_tsrs[idx]
+
+    def GetInTensorConfigs(self, idx):
+        assert idx < self.in_tsrs_cnt
+        return self.in_tsr_configs[idx]
+
+    def GetOutTensorConfigs(self, idx):
+        assert idx < self.out_tsrs_cnt
+        return self.out_tsr_configs[idx]
+
     # Returns vertex costs for different configs
     def GetCosts(self):
-        try:
-            return self.costs
-        except AttributeError:
-            self.ComputeCosts()
-
-            regularize = lambda x: (x,) if isinstance(x, np.ndarray) else x
-            self.in_tsr_configs = regularize(self.in_tsr_configs)
-            self.out_tsr_configs = regularize(self.out_tsr_configs)
-
-            assert len(self.in_tsr_configs) == self.in_tsrs_cnt
-            assert len(self.out_tsr_configs) == self.out_tsrs_cnt
-
-            return self.costs
+        return self.costs
 
 
 # Elementwise ops such as add, mul, etc.,
 class Elementwise(Ops):
-    def __init__(self, tsr1, tsr2, n_procs=self.default_procs, pw_op_cnt=0):
+    def __init__(self, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
         # Both the inputs should have same rank and shape
         assert len(tsr1) == len(tsr2)
         assert all(t1 == t2 for t1, t2 in zip(tsr1, tsr2))
@@ -197,13 +226,12 @@ class Elementwise(Ops):
         self.out_tsr_configs = self.dom_configs
 
         dom_per_proc = np.prod(self.dom / self.dom_configs, axis=1)
-        self.costs = (1 + pw_op_cnt) * dom_per_proc
+        self.costs = (1 + self.pw_op_cnt) * dom_per_proc
 
 
 # Fully connected layer
 class FC(Ops):
-    def __init__(self, in_tsr, n_units, n_procs=self.default_procs,
-            pw_op_cnt=0):
+    def __init__(self, in_tsr, n_units, n_procs=None, pw_op_cnt=0):
         assert len(in_tsr) == 2
 
         self.pw_op_cnt = pw_op_cnt
@@ -230,7 +258,7 @@ class FC(Ops):
 
 # Batched matmul
 class MatMul(Ops):
-    def __init__(self, tsr1, tsr2, n_procs=self.default_procs, pw_op_cnt=0):
+    def __init__(self, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
         # Both tensors should be of same rank and >=2, inner most two dimensions
         # correspond to valid GEMM, and outer dimensions should match.
         assert len(tsr1) == len(tsr2) >= 2
@@ -268,8 +296,7 @@ class MatMul(Ops):
 
 # Convolution
 class Conv(Ops):
-    def __init__(self, img, fltr, stride=1, pad=0, n_procs=self.default_procs,
-            pw_op_cnt=0):
+    def __init__(self, img, fltr, stride=1, pad=0, n_procs=None, pw_op_cnt=0):
         assert len(img) == 4
         assert len(fltr) == 4
         assert img[1] == fltr[1]
@@ -293,15 +320,16 @@ class Conv(Ops):
         gemm_dom = (b * h_o * w_o, n, c * r * s)
         gemm_m = np.prod(self.dom_configs[:, (b_idx, h_idx, w_idx)],
                 axis=1, keepdims=True)
-        gemm_n = self.dom_configs[:, n_idx]
+        gemm_n = self.dom_configs[:, n_idx].reshape(-1, 1)
         gemm_k = np.prod(self.dom_configs[:, (c_idx, r_idx, s_idx)],
                 axis=1, keepdims=True)
         gemm_configs = np.concatenate((gemm_m, gemm_n, gemm_k), axis=1)
 
         return gemm_dom, gemm_configs
 
+    '''
     # Fuse pooling
-    def Fuse(self, pool, after=True):
+    def Fuse(self, pool):
         assert isinstance(pool, Pooling)
         # Make sure we haven't computed configs yet
         assert not hasattr(self, 'dom_configs')
@@ -314,7 +342,7 @@ class Conv(Ops):
 
         # Compute original configs
         dom_config_tuples = GetConfigs(self.dom, self.n_procs)
-        dom_configs = np.array(self.dom_config_tuples)
+        dom_configs = np.array(dom_config_tuples)
 
         # Get configs that intersect with pool's configs
         dom_configs = dom_configs[np.all(np.isin(dom_configs[:,:4],
@@ -328,14 +356,13 @@ class Conv(Ops):
 
         # Compute costs
         gemm_dom, gemm_configs = self.ConvertToGemmDom()
-        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, pw_op_cnt)
+        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
 
         # Add pooling costs
         assert self.costs.shape == pool.costs.shape
         self.costs += pool.costs
-
-        if after == True:
-            self.out_tsrs = pool.out_tsrs
+        self.out_tsrs = pool.out_tsrs
+    '''
 
     def ComputeCosts(self):
         b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
@@ -348,20 +375,24 @@ class Conv(Ops):
         # Represent convolution as GEMM computation, and compute the cost for
         # GEMM op
         gemm_dom, gemm_configs = self.ConvertToGemmDom()
-        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, pw_op_cnt)
+        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
+
+        # Add costs for ghost communications
+        self.costs += ComputeGhostCommCosts(self.GetInTensor(0),
+                self.in_tsr_configs, self.dom[r_idx], self.dom[s_idx])
 
 
 # Pooling - Maxpool, Avgpool
 class Pooling(Ops):
-    def __init__(self, img, fltr, stride=1, pad=0, n_procs=self.default_procs):
+    def __init__(self, img, fltr, stride=1, pad=0, n_procs=None):
         assert len(img) == 4
         assert len(fltr) == 2
 
         b, c, h, w = img
-        r, s = fltr
-        h_o, w_o = GetConvolutedSize(h, w, r, s, stride, pad)
+        self.r, self.s = fltr
+        h_o, w_o = GetConvolutedSize(h, w, self.r, self.s, stride, pad)
 
-        dom = (b, c, h_0, w_o)
+        dom = (b, c, h_o, w_o)
         super().__init__(dom, Tensor(img), Tensor(dom), n_procs)
 
     def ComputeCosts(self):
@@ -372,9 +403,13 @@ class Pooling(Ops):
         dom_per_proc = self.dom / self.dom_configs
         self.costs = np.prod(dom_per_proc, axis=1)
 
+        # Add costs for ghost communications
+        self.costs += ComputeGhostCommCosts(self.GetInTensor(0),
+                self.in_tsr_configs, self.r, self.s)
+
 
 class Concat(Ops):
-    def __init__(self, in_tsrs, axis, n_procs=self.default_procs):
+    def __init__(self, in_tsrs, axis, n_procs=None):
         tsr0 = in_tsrs[0]
         rank = len(tsr0)
 
@@ -409,7 +444,7 @@ class Concat(Ops):
 
 
 class BatchNorm(Ops):
-    def __init__(self, in_tsr, n_procs=self.default_procs):
+    def __init__(self, in_tsr, n_procs=None):
         assert len(in_tsr) > 1
         super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
 
@@ -432,7 +467,7 @@ class BatchNorm(Ops):
 
 
 class SoftmaxCrossEntropy(Ops):
-    def __init__(self, in_tsr, n_procs=self.default_procs):
+    def __init__(self, in_tsr, n_procs=None):
         assert len(in_tsr) == 2
         super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
 
@@ -466,8 +501,7 @@ class SoftmaxCrossEntropy(Ops):
 
 
 class Embedding(Ops):
-    def __init__(self, in_tsr, vocab_size, embedding_dim,
-            n_procs=self.default_procs):
+    def __init__(self, in_tsr, vocab_size, embedding_dim, n_procs=None):
         assert len(in_tsr) == 1
 
         self.embedding_dim = embedding_dim

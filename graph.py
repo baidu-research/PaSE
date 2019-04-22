@@ -137,26 +137,26 @@ def AddEdge(G, src, tgt, src_tsr_idx=0, tgt_tsr_idx=0, src_op=None, tgt_op=None,
     G.add_edge(src, tgt, costs=costs)
 
 
-def AlexNet(G, b, n_procs):
-    nn_ops.Ops.default_procs = n_procs
+def AlexNet(G, b):
     img = nn_ops.Tensor((b, 3, 227, 227))
 
     # Conv1 + relu + maxpool
     conv1 = nn_ops.Conv(img, (96, 3, 11, 11), stride=4, pw_op_cnt=1)
+    node_id1_0 = AddVertex(G, conv1)
     pool1 = nn_ops.Pooling(conv1.GetOutTensor(0), (3, 3), stride=2)
-    conv1.Fuse(pool1)
-    node_id1 = AddVertex(G, conv1)
+    node_id1 = AddVertex(G, pool1)
+    AddEdge(G, node_id1_0, node_id1, src_op=conv1, tgt_op=pool1)
 
     # Conv2 + relu + maxpool
-    conv2 = nn_ops.Conv(conv1.GetOutTensor(0), (256, 96, 5, 5), pad=2,
+    conv2 = nn_ops.Conv(pool1.GetOutTensor(0), (256, 96, 5, 5), pad=2,
             pw_op_cnt=1)
+    node_id2_0 = AddVertex(G, conv2)
     pool2 = nn_ops.Pooling(conv2.GetOutTensor(0), (3, 3), stride=2)
-    conv2.Fuse(pool2)
-    node_id2 = AddVertex(G, conv2)
-    AddEdge(G, node_id1, node_id2, src_op=conv1, tgt_op=conv2)
+    node_id2 = AddVertex(G, pool2)
+    AddEdge(G, node_id2_0, node_id2, src_op=conv2, tgt_op=pool2)
 
     # Conv3 + relu
-    conv3 = nn_ops.Conv(conv2.GetOutTensor(0), (384, 256, 3, 3), stride=1,
+    conv3 = nn_ops.Conv(pool2.GetOutTensor(0), (384, 256, 3, 3), stride=1,
             pad=1, pw_op_cnt=1)
     node_id3 = AddVertex(G, conv3)
     AddEdge(G, node_id2, node_id3, src_op=conv2, tgt_op=conv3)
@@ -170,13 +170,15 @@ def AlexNet(G, b, n_procs):
     # Conv5 + relu + maxpool
     conv5 = nn_ops.Conv(conv4.GetOutTensor(0), (256, 384, 3, 3), stride=1,
             pad=1, pw_op_cnt=1)
+    node_id5_0 = AddVertex(G, conv5)
     pool5 = nn_ops.Pooling(conv5.GetOutTensor(0), (3, 3), stride=2)
-    conv5.Fuse(pool5)
-    node_id5 = AddVertex(G, conv5)
-    AddEdge(G, node_id4, node_id5, src_op=conv4, tgt_op=conv5)
+    node_id5 = AddVertex(G, pool5)
+    AddEdge(G, node_id5_0, node_id5, src_op=conv5, tgt_op=pool5)
 
     # FC6 + relu
-    fc6 = nn_ops.FC(conv5.GetOutTensor(0), 4096, pw_op_cnt=1)
+    tsr = pool5.GetOutTensor(0)
+    tsr = (tsr[0], tsr[1] * tsr[2] * tsr[3])
+    fc6 = nn_ops.FC(tsr, 4096, pw_op_cnt=1)
     node_id6 = AddVertex(G, fc6)
     AddEdge(G, node_id5, node_id6, src_op=conv5, tgt_op=fc6, reshape=[(0,),
         (1,2,3)])
@@ -186,8 +188,8 @@ def AlexNet(G, b, n_procs):
     node_id7 = AddVertex(G, fc7)
     AddEdge(G, node_id6, node_id7, src_op=fc6, tgt_op=fc7)
 
-    # FC8 + relu
-    fc8 = nn_ops.FC(fc7.GetOutTensor(0), 1024, pw_op_cnt=1)
+    # FC8
+    fc8 = nn_ops.FC(fc7.GetOutTensor(0), 1024)
     node_id8 = AddVertex(G, fc8)
     AddEdge(G, node_id7, node_id8, src_op=fc7, tgt_op=fc8)
 
@@ -198,4 +200,22 @@ def AlexNet(G, b, n_procs):
 
     return G
 
+
+# Creates the graph for the model
+def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
+    G = nx.DiGraph()
+    nn_ops.Ops.default_procs = n_procs
+
+    if graph_type == 'alexnet':
+        G = AlexNet(G, batch_size)
+    elif graph_type == 'resnet101':
+        G = ResNet101(G, batch_size, n_procs).Graph()
+    elif graph_type == 'inception3':
+        G = Inception3(G, batch_size, n_procs).Graph()
+    elif graph_type == 'seq2seq':
+        G = Seq2seq(G, batch_size, n_procs)
+    else:
+        assert(False)
+
+    return G
 

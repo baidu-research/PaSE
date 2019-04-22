@@ -210,7 +210,7 @@ def main():
     parser.add_argument("-m", "--model", type=int, required=False, default=128,
             help="Model size. (Default: 128)")
     parser.add_argument("-g", "--graph", type=str, required=False,
-            choices=['test', 'alexnet', 'resnet101', 'inception3', 'seq2seq'],
+            choices=['alexnet', 'resnet101', 'inception3', 'seq2seq'],
             default='alexnet', help="Neural net graph. (Default: 'alexnet')")
     parser.add_argument("--profile", dest="profile", action='store_true',
             help="Turn on/off profiling.")
