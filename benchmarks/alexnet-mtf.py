@@ -255,7 +255,7 @@ def main():
         with tf.Session() as sess:
             sess.run(tf.global_variables_initializer())
 
-            for i in range(num_epochs):
+            for epoch in range(num_epochs):
                 dataset.reset_pointer()
                 step = 0
 
