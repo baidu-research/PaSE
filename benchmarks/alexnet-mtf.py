@@ -20,26 +20,26 @@ def GetDim(dim, name):
     return dim
 
 
-def GetDim(dim):
+def GetTempDim(dim):
     random_name = ''.join([random.choice(string.ascii_letters + string.digits)
-        for n in xrange(8)])
+        for n in range(8)])
     return GetDim(dim, random_name)
 
 
 class ConvDims():
-    def __init__(self, b, c, h, w, n, r, s, name):
+    def __init__(self, b_, c_, h_, w_, n_, r_, s_, name):
         Dim = lambda suffix, dim : GetDim(dim, '%s_%s_dim' % (name, suffix))
 
-        self.b = Dim('b', b)
-        self.c = Dim('c', c)
-        self.h = Dim('h', h)
-        self.w = Dim('w', w)
-        self.n = Dim('n', n)
-        self.r = Dim('r', r)
-        self.s = Dim('s', s)
+        self.b = Dim('b', b_)
+        self.c = Dim('c', c_)
+        self.h = Dim('h', h_)
+        self.w = Dim('w', w_)
+        self.n = Dim('n', n_)
+        self.r = Dim('r', r_)
+        self.s = Dim('s', s_)
 
-        self.TensorShape = mtf.Shape([self.b, self.h, self.w. self.c])
-        self.KernelShape = mtf.Shape([self.r, self.s, self.c, self.n])
+        self.tensor_shape = mtf.Shape([self.b, self.h, self.w, self.c])
+        self.kernel_shape = mtf.Shape([self.r, self.s, self.c, self.n])
 
 
 class FCDims():
@@ -50,8 +50,42 @@ class FCDims():
         self.n = Dim('n', n)
         self.k = Dim('k', k)
 
-        self.TensorShape = mtf.Shape([self.m, self.k])
-        self.KernelShape = mtf.Shape([self.k, self.n])
+        self.tensor_shape = mtf.Shape([self.m, self.k])
+        self.kernel_shape = mtf.Shape([self.k, self.n])
+
+
+class Conv2dOperation(mtf.Conv2dOperation):
+    def __init__(self, conv_input, conv_filter, strides, padding, name=None):
+        mtf.Operation.__init__(self, [conv_input, conv_filter], name=name or
+                "conv2d")
+        self._padding = padding
+        self._batch_dims = conv_input.shape.dims[:-3]
+        self._in_h_dim, self._in_w_dim, self._in_dim = conv_input.shape.dims[-3:]
+        self._fh_dim, self._fw_dim = conv_filter.shape.dims[:2]
+        f_in_dim, self._out_dim = conv_filter.shape.dims[2:]
+        if f_in_dim != self._in_dim:
+          raise ValueError("Dimensions do not match input=%s filter=%s"
+                           % (conv_input, conv_filter))
+        out_h = self._in_h_dim.size
+        out_w = self._in_w_dim.size
+        if padding == "VALID":
+            out_h -= self._fh_dim.size
+            out_w -= self._fw_dim.size
+
+        self._strides = strides
+        if strides is not None:
+            out_h //= strides[1]
+            out_w //= strides[2]
+
+        if padding == "VALID":
+            out_h += 1
+            out_w += 1
+
+        self._out_h_dim = mtf.Dimension(self._in_h_dim.name, out_h)
+        self._out_w_dim = mtf.Dimension(self._in_w_dim.name, out_w)
+        output_shape = mtf.Shape(
+            self._batch_dims + [self._out_h_dim, self._out_w_dim, self._out_dim])
+        self._outputs = [mtf.Tensor(self, output_shape, conv_input.dtype)]
 
 
 def Conv2d(tsr, filter_h, filter_w, num_filters, stride_h, stride_w, padding,
@@ -64,7 +98,9 @@ def Conv2d(tsr, filter_h, filter_w, num_filters, stride_h, stride_w, padding,
 
         w_shape = mtf.Shape([r_dim, s_dim, c_dim, n_dim])
         w = mtf.get_variable(tsr.mesh, 'weight', w_shape, dtype=tsr.dtype)
-        out = mtf.conv2d(tsr, w, (1, stride_h, stride_w, 1), padding)
+        out = Conv2dOperation(tsr, w, (1, stride_h, stride_w, 1),
+                padding).outputs[0]
+        print(out.shape)
 
         if use_bias:
             b = mtf.get_variable(tsr.mesh, 'bias', mtf.Shape([n_dim]),
@@ -84,7 +120,7 @@ def MaxPool(tsr, filter_h, filter_w, stride_h, stride_w, padding, output_shape, 
                 stride_w, 1], padding)
 
         splittable_dims = [tsr.shape.dims[0], tsr.shape.dims[-1]]
-        out = mtf.slicewise(max_pool, tsr, output_shape, tsr.dtype, splittable_dims)
+        out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype, splittable_dims)
         return out
 
 
@@ -127,7 +163,6 @@ def main():
     
     # Input tensors
     tf_x, tf_y = dataset.next_batch()
-    print(tf_x.shape)
     tf_x.set_shape([batch_size, 227, 227, 3])
     tf_y.set_shape([batch_size])
 
@@ -197,19 +232,19 @@ def main():
     meshes = {mesh1:mesh1_impl, mesh2:mesh2_impl}
 
     # mtf input / output variables
-    mtf_x = mtf.import_tf_tensor(mesh1_impl, mtf.Shape(conv1_dims.TensorShape))
-    mtf_y = mtf.import_tf_tensor(mesh2_impl, mtf.Shape([y_batch_dim, y_class_dim]))
+    mtf_x = mtf.import_tf_tensor(mesh1, tf_x, conv1_dims.tensor_shape)
+    mtf_y = mtf.import_tf_tensor(mesh2, tf_y, mtf.Shape([y_batch_dim]))
 
     # Model
     with tf.variable_scope('alexnet'):
         conv1 = Conv2d(mtf_x, 11, 11, 96, 4, 4, 'VALID', activation=mtf.relu,
                 name='conv1')
-        pool1 = MaxPool(conv1, 3, 3, 2, 2, 'VALID', conv2_dims.TensorShape,
+        pool1 = MaxPool(conv1, 3, 3, 2, 2, 'VALID', conv2_dims.tensor_shape,
                 'pool1')
 
         conv2 = Conv2d(pool1, 5, 5, 256, 1, 1, 'SAME', activation=mtf.relu,
                 name='conv2')
-        pool2 = MaxPool(conv2, 3, 3, 2, 2, 'VALID', conv3_dims.TensorShape,
+        pool2 = MaxPool(conv2, 3, 3, 2, 2, 'VALID', conv3_dims.tensor_shape,
                 'pool2')
 
         conv3 = Conv2d(pool2, 3, 3, 384, 1, 1, 'SAME', activation=mtf.relu,
@@ -220,29 +255,29 @@ def main():
 
         conv5 = Conv2d(conv4, 3, 3, 256, 1, 1, 'SAME', activation=mtf.relu,
                 name='conv5')
-        conv5_out_shape = mtf.Shape([conv5_dims.b, GetDim(6), GetDim(6),
+        conv5_out_shape = mtf.Shape([conv5_dims.b, GetTempDim(6), GetTempDim(6),
             conv5_dims.n])
         pool5 = MaxPool(conv5, 3, 3, 2, 2, 'VALID', conv5_out_shape, 'pool5')
 
         flattened = mtf.reshape(pool5, mtf.Shape([fc6_dims.m, fc6_dims.k]))
-        fc6 = mtf.dropout(mtf.dense(flattened, fc6_dims.n, activation=mtf.relu,
-            name='fc6'), keep_prob)
-        fc7 = mtf.dropout(mtf.dense(fc6, fc7_dims.n, activation=mtf.relu,
+        fc6 = mtf.dropout(mtf.layers.dense(flattened, fc6_dims.n,
+            activation=mtf.relu, name='fc6'), keep_prob)
+        fc7 = mtf.dropout(mtf.layers.dense(fc6, fc7_dims.n, activation=mtf.relu,
             name='fc7'), keep_prob)
-        fc8 = mtf.dropout(mtf.dense(fc7, fc8_dims.n, name='fc8'), keep_prob)
+        fc8 = mtf.dropout(mtf.layers.dense(fc7, fc8_dims.n, name='fc8'), keep_prob)
 
     # Softmax cross-entropy loss
     with tf.variable_scope('loss'):
-        one_hot_labels = mtf.one_hot(labels, y_class_dim)
-        mtf_cross_ent = mtf.softmax_cross_entropy_with_logits(fc8, one_hot_labels,
-                y_class_dim)
+        one_hot_labels = mtf.one_hot(mtf_y, y_class_dim)
+        mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(fc8,
+                one_hot_labels, y_class_dim)
         mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
     # Optimizer
     with tf.variable_scope('optimize'):
         grads = mtf.gradients([mtf_loss], [v.outputs[0] for v in
             graph.trainable_variables])
-        opt = mtf.optimize.SgdOptimizer(lr=lr)
+        opt = mtf.optimize.SgdOptimizer(lr=learning_rate)
         grad_updates = opt.apply_grads(grads, graph.trainable_variables)
 
     # Lowering
