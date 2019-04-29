@@ -14,6 +14,14 @@ import string
 from dataloader import ImageDataLoader
 
 
+def FlattenList(l):
+   return [item for sublist in l for item in sublist]
+
+
+def TransposeLists(l):
+    return [list(x) for x in zip(*l)]
+
+
 def GetDim(dim, name):
     if isinstance(dim, int):
         return mtf.Dimension(name, dim)
@@ -100,7 +108,6 @@ def Conv2d(tsr, filter_h, filter_w, num_filters, stride_h, stride_w, padding,
         w = mtf.get_variable(tsr.mesh, 'weight', w_shape, dtype=tsr.dtype)
         out = Conv2dOperation(tsr, w, (1, stride_h, stride_w, 1),
                 padding).outputs[0]
-        print(out.shape)
 
         if use_bias:
             b = mtf.get_variable(tsr.mesh, 'bias', mtf.Shape([n_dim]),
@@ -189,17 +196,25 @@ def main():
     # Conv layer dimensions
     conv1_dims = ConvDims(x_batch_dim, x_c_dim, x_h_dim, x_w_dim, 96, 4, 4,
             'conv1')
-    conv2_dims = ConvDims(x_batch_dim, conv1_dims.n, 27, 27, 256, 5, 5, 'conv2')
-    conv3_dims = ConvDims(x_batch_dim, conv2_dims.n, 13, 13, 384, 3, 3, 'conv3')
-    conv4_dims = ConvDims(x_batch_dim, conv3_dims.n, conv3_dims.h, conv3_dims.w,
-            384, 3, 3, 'conv4')
-    conv5_dims = ConvDims(x_batch_dim, conv4_dims.n, conv4_dims.h, conv4_dims.w,
-            256, 3, 3, 'conv5')
+    conv2_dims = ConvDims(x_batch_dim, conv1_dims.n.size, GetDim(27,
+        x_h_dim.name), GetDim(27, x_w_dim.name), 256, 5, 5, 'conv2')
+    conv3_dims = ConvDims(x_batch_dim, conv2_dims.n.size, GetDim(13,
+        x_h_dim.name), GetDim(13, x_w_dim.name), 384, 3, 3, 'conv3')
+    conv4_dims = ConvDims(x_batch_dim, conv3_dims.n.size, GetDim(13,
+        x_h_dim.name), GetDim(13, x_w_dim.name), 384, 3, 3, 'conv4')
+    conv5_dims = ConvDims(x_batch_dim, conv4_dims.n.size, GetDim(13,
+        x_h_dim.name), GetDim(13, x_w_dim.name), 256, 3, 3, 'conv5')
+
+    # Flattened dimensions
+    before_flattened_h = GetTempDim(6)
+    before_flattened_w = GetTempDim(6)
+    after_flattened_h = GetTempDim(1)
+    after_flattened_w = GetTempDim(1)
 
     # FC layer dimensions
     fc6_dims = FCDims(y_batch_dim, 4096, 9216, name='fc6')
-    fc7_dims = FCDims(fc6_dims.m, 4096, 4096, name='fc7')
-    fc8_dims = FCDims(fc7_dims.m, y_class_dim, 4096, name='fc8')
+    fc7_dims = FCDims(y_batch_dim, 4096, 4096, name='fc7')
+    fc8_dims = FCDims(y_batch_dim, y_class_dim, 4096, name='fc8')
     softmax_dim = fc8_dims.n
 
     def AssignLayout(ta_axes, mesh_axis):
@@ -210,22 +225,24 @@ def main():
 
     # mtf 1D mesh
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_shape_1d = [('p1', 4),]
+    mesh_shape_1d = [('m1_p1', 4),]
     devices = ['gpu:%d' % i for i in range(4)]
-    layout = [('conv_batch_dim', 'p1')]
+    layout = [('x_batch_dim', 'm1_p1')]
     mesh1_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape_1d,
             layout, devices)
 
     # mtf 2D mesh
     mesh2 = mtf.Mesh(graph, 'mesh2')
-    mesh_shape_2d = [('p1', 4), ('p2', 2)]
+    mesh_shape_2d = [('m2_p1', 4), ('m2_p2', 2), ('m2_h', 1), ('m2_w', 1)]
     devices = ['gpu:%d' % i for i in range(8)]
-    p1_layout = AssignLayout([conv1_dims.b.name, fc6_dims.n.name,
-        fc7_dims.n.name, fc8_dims.n.name], 'p1')
+    p1_layout = AssignLayout([x_batch_dim.name, fc6_dims.n.name,
+        fc7_dims.n.name, fc8_dims.n.name], 'm2_p1')
     p2_layout = AssignLayout([conv2_dims.n.name, conv3_dims.n.name,
-        conv4_dims.n.name, conv5_dims.n.name, fc6_dims.k, fc7_dims.k,
-        fc8_dims.k], 'p2')
-    layout = p1_layout + p2_layout
+        conv4_dims.n.name, conv5_dims.n.name, fc6_dims.k.name, fc7_dims.k.name,
+        fc8_dims.k.name], 'm2_p2')
+    h_layout = AssignLayout([before_flattened_h.name, after_flattened_h.name], 'm2_h')
+    w_layout = AssignLayout([before_flattened_w.name, after_flattened_w.name], 'm2_w')
+    layout = p1_layout + p2_layout + h_layout + w_layout
     mesh2_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape_2d, layout,
             devices)
 
@@ -239,31 +256,65 @@ def main():
     with tf.variable_scope('alexnet'):
         conv1 = Conv2d(mtf_x, 11, 11, 96, 4, 4, 'VALID', activation=mtf.relu,
                 name='conv1')
-        pool1 = MaxPool(conv1, 3, 3, 2, 2, 'VALID', conv2_dims.tensor_shape,
-                'pool1')
+        pool1_shape = mtf.Shape([conv1_dims.b, conv2_dims.h, conv2_dims.w,
+            conv1_dims.n])
+        pool1 = MaxPool(conv1, 3, 3, 2, 2, 'VALID', pool1_shape, 'pool1')
 
-        conv2 = Conv2d(pool1, 5, 5, 256, 1, 1, 'SAME', activation=mtf.relu,
-                name='conv2')
-        pool2 = MaxPool(conv2, 3, 3, 2, 2, 'VALID', conv3_dims.tensor_shape,
-                'pool2')
+        #slice1 = mtf.slice(pool1, 0, 48, conv1_dims.n.name, name='slice1')
+        #slice2 = mtf.slice(pool1, 48, 48, conv1_dims.n.name, name='slice2')
+
+        lowering = mtf.Lowering(graph, meshes)
+        #slice1_all_slices = lowering.tensors[slice1].to_laid_out_tensor().all_slices
+        #slice2_all_slices = lowering.tensors[slice2].to_laid_out_tensor().all_slices
+        #laid_out_pool1 = FlattenList(TransposeLists([slice1_all_slices,
+        #    slice2_all_slices]))
+        #laid_out_pool1 = mesh2_impl.LaidOutTensor(laid_out_pool1)
+        pool1_slices = lowering.tensors[pool1].to_laid_out_tensor().all_slices
+        laid_out_pool1 = \
+                mesh2_impl.LaidOutTensor(FlattenList(TransposeLists([pool1_slices,
+                    pool1_slices])))
+
+        pool1_mesh2 = mtf.import_laid_out_tensor(mesh2, laid_out_pool1,
+                conv2_dims.tensor_shape, name='pool1_mesh2')
+
+        conv2 = Conv2d(pool1_mesh2, 5, 5, 256, 1, 1, 'SAME',
+                activation=mtf.relu, name='conv2')
+        pool2_shape = mtf.Shape([conv2_dims.b, conv3_dims.h, conv3_dims.w,
+            conv2_dims.n])
+        pool2 = MaxPool(conv2, 3, 3, 2, 2, 'VALID', pool2_shape, 'pool2')
+        pool2 = mtf.rename_dimension(pool2, pool2.shape[-1].name,
+                conv3_dims.c.name)
 
         conv3 = Conv2d(pool2, 3, 3, 384, 1, 1, 'SAME', activation=mtf.relu,
                 name='conv3')
+        conv3 = mtf.rename_dimension(conv3, conv3.shape[-1].name,
+                conv4_dims.c.name)
 
         conv4 = Conv2d(conv3, 3, 3, 384, 1, 1, 'SAME', activation=mtf.relu,
                 name='conv4')
+        conv4 = mtf.rename_dimension(conv4, conv4.shape[-1].name,
+                conv5_dims.c.name)
 
         conv5 = Conv2d(conv4, 3, 3, 256, 1, 1, 'SAME', activation=mtf.relu,
                 name='conv5')
-        conv5_out_shape = mtf.Shape([conv5_dims.b, GetTempDim(6), GetTempDim(6),
-            conv5_dims.n])
-        pool5 = MaxPool(conv5, 3, 3, 2, 2, 'VALID', conv5_out_shape, 'pool5')
+        pool5_shape = mtf.Shape([conv5_dims.b, GetDim(6, x_h_dim.name),
+            GetDim(6, x_w_dim.name), conv5_dims.n])
+        pool5 = MaxPool(conv5, 3, 3, 2, 2, 'VALID', pool5_shape, 'pool5')
 
-        flattened = mtf.reshape(pool5, mtf.Shape([fc6_dims.m, fc6_dims.k]))
+        flattened = mtf.reshape(pool5, mtf.Shape([conv5_dims.b,
+            before_flattened_h, before_flattened_w, conv5_dims.n]),
+            name='flattening1')
+        flattened = mtf.reshape(flattened, mtf.Shape([fc6_dims.m, fc6_dims.k,
+            after_flattened_h, after_flattened_w]), name='flattening2')
+        flattened = mtf.reshape(flattened, mtf.Shape([fc6_dims.m, fc6_dims.k]),
+                name='flattening3')
+
         fc6 = mtf.dropout(mtf.layers.dense(flattened, fc6_dims.n,
             activation=mtf.relu, name='fc6'), keep_prob)
+        fc6 = mtf.rename_dimension(fc6, fc6.shape[-1].name, fc7_dims.k.name)
         fc7 = mtf.dropout(mtf.layers.dense(fc6, fc7_dims.n, activation=mtf.relu,
             name='fc7'), keep_prob)
+        fc7 = mtf.rename_dimension(fc7, fc7.shape[-1].name, fc8_dims.k.name)
         fc8 = mtf.dropout(mtf.layers.dense(fc7, fc8_dims.n, name='fc8'), keep_prob)
 
     # Softmax cross-entropy loss
