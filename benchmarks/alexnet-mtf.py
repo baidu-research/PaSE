@@ -333,8 +333,6 @@ def main():
     tf_loss = lowering.export_to_tf_tensor(mtf_loss)
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
-    tf_ops = [lowering.export_to_tf_tensor(conv1)]
-
     # Initializer
     tf_init_vars = \
             FlattenList([lowering.variables[var].laid_out_tensor.all_slices for
@@ -347,18 +345,23 @@ def main():
     # Training
     with tf.name_scope('train'):
         with tf.Session() as sess:
+            dataset.reset_pointer()
             sess.run(init_op)
 
+            start = time.time()
             for epoch in range(num_epochs):
+                for step in range(train_batches_per_epoch):
+                    loss_val, *rem = sess.run([tf_loss] + tf_grad_updates)
+
+                    if step % display_step == 0 and step > 0:
+                        print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
+
                 dataset.reset_pointer()
-                step = 0
+            end = time.time()
+            tot_time += (end - start)
 
-                while step < train_batches_per_epoch:
-                    #loss_val, *rem = sess.run([tf_loss] + tf_grad_updates)
-
-                    #if step % display_step == 0 and step > 0:
-                    #    print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
-                    sess.run(tf_ops)
+    img_per_sec = (dataset.data_size * num_epochs) / tot_time
+    print("Throughout: " + str(img_per_sec) + " images / sec")
 
 
 if __name__ == '__main__':
