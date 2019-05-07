@@ -18,7 +18,7 @@ def BytesToFlops(bytes):
         p100_peak_flop = float(10.6 * 1000) # GFLOPs
         #p100_bw = float((36.72 * 2) / 8) # NVLink Unidirectional for 2 sublinks per direction.
         #                                 # GBytes/sec = b/8 GWords/sec
-        p100_bw = float(20.0 / 8.0) # PCIe bidirectional GWords / sec
+        p100_bw = float(13.0 / 8.0) # PCIe bidirectional GWords / sec
         
         v100_peak_flop = float(15.7 * 1000) # GFLOPs
         v100_bw = float((47.99 * 3) / 8) # Unidirectional for 3 sublinks per direction.
@@ -204,6 +204,20 @@ class Ops():
     def GetOutTensorConfigs(self, idx):
         assert idx < self.out_tsrs_cnt
         return self.out_tsr_configs[idx]
+
+    def GetInTensorConfig(self, idx, dom_config):
+        loc = np.where(self.dom_configs == dom_config)[0]
+        assert len(loc) >= 1
+
+        cfgs = self.GetInTensorConfigs(idx)
+        return cfgs[loc[0]]
+
+    def GetOutTensorConfig(self, idx, dom_config):
+        loc = np.where(self.dom_configs == dom_config)[0]
+        assert len(loc) >= 1
+
+        cfgs = self.GetOutTensorConfigs(idx)
+        return cfgs[loc[0]]
 
     # Returns vertex costs for different configs
     def GetCosts(self):
