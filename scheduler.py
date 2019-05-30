@@ -132,7 +132,7 @@ class Processor:
         return tbl
 
     # Compute costs for sub-strategies in 'tbl'
-    def ComputeCosts(self, tbl, v, p_preds, p_scsrs, up_preds, up_scsrs):
+    def ComputeCosts(self, tbl, v, up_preds, up_scsrs):
         tbl = AddVertexCosts(v, self.vert_costs[v], tbl)
 
         for n in up_preds:
@@ -165,7 +165,7 @@ class Processor:
         # Create the table for 'v' by merging neighbor tables, and compute costs
         # for different sub-strategies
         tbl = self.GenerateTable(v, p_neigh, up_neigh)
-        tbl = self.ComputeCosts(tbl, v, p_preds, p_scsrs, up_preds, up_scsrs)
+        tbl = self.ComputeCosts(tbl, v, up_preds, up_scsrs)
 
         print("Processing vertex " + str(v) + "; Table size: " +
                 str(tbl.shape[0]))

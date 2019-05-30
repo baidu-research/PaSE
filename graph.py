@@ -200,6 +200,11 @@ def AlexNet(G, b):
     return G
 
 
+def InceptionV3(G, b):
+    img = nn_ops.Tensor((b, 3, 299, 299))
+    num_classes = 1000
+
+
 # Creates the graph for the model
 def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
     G = nx.DiGraph()
