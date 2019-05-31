@@ -1,14 +1,19 @@
+import networkx as nx
 import numpy as np
 import pandas as pd
 
-import math
 import itertools
 from functools import reduce
 import operator as op
 
 
+def prod(v):
+    return reduce(op.mul, v, 1)
+
+
 class Tensor(tuple):
-    pass
+    def SetAsInput(self):
+        self.is_input = True
 
 
 def BytesToFlops(bytes):
@@ -60,8 +65,7 @@ def GetConfigs(dom, n_procs, cutoff = 4):
             l = [1]
         proc_set.append(l)
 
-    configs = [c for c in itertools.product(*proc_set) if reduce(op.mul, c, 1)
-        <= n_procs]
+    configs = [c for c in itertools.product(*proc_set) if prod(c) <= n_procs]
     return configs
 
 
@@ -134,6 +138,61 @@ def ComputeGhostCommCosts(tsr, configs, r, s):
     return costs
 
 
+def RowCartesianProd(arr1, arr2):
+    shape1 = arr1.shape[0]
+    shape2 = arr2.shape[0]
+
+    tile_shape = [shape1] + ([1] * (arr2.ndim - 1))
+
+    arr1 = np.repeat(arr1, repeats=shape2, axis=0)
+    arr2 = np.tile(arr2, tile_shape)
+
+    return arr1, arr2
+
+
+def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
+    # Area needed by the target vertex
+    tgt_area = np.prod(tgt_data_sizes, axis=1)
+
+    # Intersection of area computed by source, and needed by target.
+    # If no. of target procs is more than src procs, then at least one proc
+    # contains no source data. So set it to 0.
+    area_intersection = np.where(tgt_procs > src_procs, 0,
+            np.prod(np.minimum(tgt_data_sizes, src_data_sizes), axis=1))
+
+    # Area that needs to be communicated
+    area_needed = tgt_area - area_intersection
+    return area_needed
+
+
+# Returns edge costs for different configs. Edge cost is computed as the
+# difference b/w tensor volume needed per proc by the target vertex and the tensor
+# volume held per proc by the source vertex.
+def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs):
+    # Calculate the domains per processor
+    src_tsr_per_proc = tsr / src_cfgs
+    tgt_tsr_per_proc = tsr / tgt_cfgs
+
+    src_tsr_per_proc, tgt_tsr_per_proc = RowCartesianProd(src_tsr_per_proc,
+            tgt_tsr_per_proc)
+
+    # Get the no. of procs used for each config
+    src_procs = np.prod(src_cfgs, axis=1)
+    tgt_procs = np.prod(tgt_cfgs, axis=1)
+    src_procs, tgt_procs = RowCartesianProd(src_procs, tgt_procs)
+
+    # Cost of communicating input matrix from src to tgt during fwd phase, and
+    # from tgt to src during bwd phase
+    area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
+            tgt_procs)
+    costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
+                                                            # account for fwd
+                                                            # and bwd phases
+    costs = BytesToFlops(costs)
+
+    return costs
+
+
 def GetConvolutedSize(h, w, r, s, stride, pad):
     stride_r, stride_s = MakePair(stride)
     pad_r, pad_s = MakePair(pad)
@@ -146,14 +205,16 @@ def GetConvolutedSize(h, w, r, s, stride, pad):
 
 # Parent operator class
 class Ops():
-    default_procs = 0 # Static variable. Can be set once and reused for the
-                      # entire graph.
+    # Static variables
+    G = None # Default graph
+    default_procs = 0 # Can be set once and reused for the entire graph.
+    tsr_to_node_id = {}
 
     def __init__(self, dom, in_tsrs, out_tsrs, n_procs):
         has_right_type = lambda t: isinstance(t, Tensor) or all(isinstance(e,
             Tensor) for e in t)
 
-        n_procs = n_procs or self.default_procs
+        n_procs = n_procs or Ops.default_procs
 
         assert n_procs > 0
         assert has_right_type(in_tsrs)
@@ -169,6 +230,8 @@ class Ops():
 
         self.in_tsrs = regularize_tsrs(self.in_tsrs)
         self.out_tsrs = regularize_tsrs(self.out_tsrs)
+        self.out_tsrs = tuple(Tensor(t) for t in self.out_tsrs) # Make sure out_tsrs
+                                                                # are fresh copies
 
         self.in_tsrs_cnt = len(self.in_tsrs)
         self.out_tsrs_cnt = len(self.out_tsrs)
@@ -179,6 +242,59 @@ class Ops():
 
         assert len(self.in_tsr_configs) == self.in_tsrs_cnt
         assert len(self.out_tsr_configs) == self.out_tsrs_cnt
+
+        def AddVertex():
+            if Ops.G is None:
+                Ops.G = nx.DiGraph()
+            node_id = Ops.G.number_of_nodes()
+        
+            print("Node: " + str(node_id) + "; Type: " + str(type(self)) + 
+                    "; Configs: " + str(self.dom_configs.shape[0]))
+        
+            costs = self.GetCosts()
+            costs = pd.Series(costs, index=self.dom_config_tuples, name='cost')
+        
+            Ops.G.add_node(node_id, op=self, costs=costs)
+            self.node_id = node_id
+
+            for i, t in enumerate(self.out_tsrs):
+                Ops.tsr_to_node_id[id(t)] = (node_id, i)
+
+        def AddEdge(tsr, idx):
+            try:
+                src, src_tsr_idx = Ops.tsr_to_node_id[id(tsr)]
+            except KeyError:
+                # Source is an input tensor
+                assert tsr.is_input == True
+                return
+
+            tgt = self.node_id
+            tgt_tsr_idx = idx
+
+            assert src in Ops.G
+            assert tgt in Ops.G
+        
+            node_ops = Ops.G.nodes(data='op')
+            src_op = node_ops[src]
+            tgt_op = self
+        
+            src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
+            tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
+        
+            costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs)
+            idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
+                tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
+            costs = pd.Series(costs, index=idx, name='cost')
+        
+            Ops.G.add_edge(src, tgt, costs=costs)
+
+        # Add a vertex to the graph for the current op
+        AddVertex()
+
+        # Add edges to the predecessors
+        for i, t in enumerate(self.in_tsrs):
+            AddEdge(t, i)
+
 
     def ComputeCosts(self):
         self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
@@ -232,7 +348,7 @@ class Elementwise(Ops):
         assert all(t1 == t2 for t1, t2 in zip(tsr1, tsr2))
 
         self.pw_op_cnt = pw_op_cnt
-        super().__init__(tsr1, Tensor(tsr1), Tensor(tsr2), n_procs)
+        super().__init__(tsr1, tsr1, Tensor(tsr2), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
@@ -241,6 +357,73 @@ class Elementwise(Ops):
 
         dom_per_proc = np.prod(self.dom / self.dom_configs, axis=1)
         self.costs = (1 + self.pw_op_cnt) * dom_per_proc
+
+
+class Ravel(Ops):
+    def __init__(self, tsr, n_procs=None):
+        out_tsr = Tensor((prod(tsr), ))
+        super().__init__(tsr, tsr, out_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = np.prod(self.dom_configs, axis=1, keepdims=True)
+
+        tsr_len = len(self.GetInTensor(0))
+        ravelled_configs = np.empty_like(self.in_tsr_configs)
+        cfgs = np.copy(self.out_tsr_configs)
+        for i in range(tsr_len):
+            np.minimum(cfgs[:,0], self.GetInTensor(0)[i],
+                    out=ravelled_configs[:,i])
+            cfgs[:,0] //= ravelled_configs[:,i]
+
+        src_tsr_per_proc = self.GetInTensor(0) / self.in_tsr_configs
+        tgt_tsr_per_proc = self.GetInTensor(0) / ravelled_configs
+
+        src_procs = np.prod(self.in_tsr_configs, axis=1)
+        tgt_procs = self.out_tsr_configs[:,0]
+
+        area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc,
+                src_procs, tgt_procs)
+        costs = 2.0 * np.where(area_needed < 0, 0, area_needed)
+        self.costs = BytesToFlops(costs)
+
+
+class Unravel(Ops):
+    def __init__(self, tsr, shape, n_procs):
+        # Input should be a flattened array
+        assert len(tsr) == 1
+        super().__init__(shape, tsr, Tensor(shape), n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+        self.in_tsr_configs = np.prod(self.dom_configs, axis=1, keepdims=True)
+        self.out_tsr_configs = self.dom_configs
+
+        tsr_len = len(self.GetOutTensor(0))
+        unravelled_configs = np.empty_like(self.out_tsr_configs)
+        cfgs = np.copy(self.in_tsr_configs)
+        for i in range(tsr_len):
+            np.minimum(cfgs[:,0], self.GetOutTensor(0)[i],
+                    out=unravelled_configs[:,i])
+            cfgs[:,0] //= unravelled_configs[:,i]
+
+        src_tsr_per_proc = self.GetOutTensor(0) / unravelled_configs
+        tgt_tsr_per_proc = self.GetOutTensor(0) / self.out_tsr_configs
+
+        src_procs = self.in_tsr_configs[:,0]
+        tgt_procs = np.prod(self.out_tsr_configs, axis=1)
+
+        area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc,
+                src_procs, tgt_procs)
+        costs = 2.0 * np.where(area_needed < 0, 0, area_needed)
+        self.costs = BytesToFlops(costs)
+
+
+def Reshape(tsr, shape, n_procs=None):
+    ravel = Ravel(tsr, n_procs)
+    unravel = Unravel(ravel.GetOutTensor(0), shape, n_procs)
+    return unravel
 
 
 # Fully connected layer
@@ -254,7 +437,6 @@ class FC(Ops):
 
         # Domain and input/output tensors
         dom = (in_tsr[0], n_units, in_tsr[1])
-        in_tsr = Tensor((dom[m_idx], dom[k_idx]))
         out_tsr = Tensor((dom[m_idx], dom[n_idx]))
         super().__init__(dom, in_tsr, out_tsr, n_procs)
 
@@ -283,9 +465,9 @@ class MatMul(Ops):
         m_idx, n_idx, k_idx = range(3)
 
         dom = tsr1[:-1] + tsr2[:-2] + (tsr2[-1], tsr2[-2])
-        in_tsrs = (Tensor(tsr1), Tensor(tsr2))
+        in_tsrs = (tsr1, tsr2)
         out_tsr = Tensor(dom[:-1])
-        super().__init__(dom, in_tsrs, out_tsrs, n_procs)
+        super().__init__(dom, in_tsrs, out_tsr, n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
@@ -323,9 +505,8 @@ class Conv(Ops):
 
         # Domain
         dom = (b, c, h_o, w_o, r, s, n)
-        in_tsr = Tensor(img)
         out_tsr = Tensor((b, n, h_o, w_o))
-        super().__init__(dom, in_tsr, out_tsr, n_procs)
+        super().__init__(dom, img, out_tsr, n_procs)
 
     def ConvertToGemmDom(self):
         b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
@@ -407,7 +588,7 @@ class Pooling(Ops):
         h_o, w_o = GetConvolutedSize(h, w, self.r, self.s, stride, pad)
 
         dom = (b, c, h_o, w_o)
-        super().__init__(dom, Tensor(img), Tensor(dom), n_procs)
+        super().__init__(dom, img, Tensor(dom), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
@@ -438,7 +619,7 @@ class Concat(Ops):
         concatenated_size = reduce(op.add, (t[axis] for t in in_tsrs))
         dom = list(tsr0)
         dom[axis] = concatentated_size
-        in_tsrs = tuple(Tensor(t) for t in in_tsrs)
+        in_tsrs = tuple(t for t in in_tsrs)
         super().__init__(dom, in_tsrs, Tensor(dom), n_procs)
 
     def ComputeCosts(self):
@@ -460,7 +641,7 @@ class Concat(Ops):
 class BatchNorm(Ops):
     def __init__(self, in_tsr, n_procs=None):
         assert len(in_tsr) > 1
-        super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
+        super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
@@ -479,11 +660,10 @@ class BatchNorm(Ops):
                 dom_configs[:, 0])
 
 
-
 class SoftmaxCrossEntropy(Ops):
     def __init__(self, in_tsr, n_procs=None):
         assert len(in_tsr) == 2
-        super().__init__(in_tsr, in_tsr, in_tsr, n_procs)
+        super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
