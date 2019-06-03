@@ -608,6 +608,7 @@ class Concat(Ops):
     def __init__(self, in_tsrs, axis, n_procs=None):
         tsr0 = in_tsrs[0]
         rank = len(tsr0)
+        self.axis = axis
 
         assert len(in_tsrs) >= 2
         # All tensors should be of same rank, and concat axis should be valid
@@ -619,7 +620,7 @@ class Concat(Ops):
 
         concatenated_size = reduce(op.add, (t[axis] for t in in_tsrs))
         dom = list(tsr0)
-        dom[axis] = concatentated_size
+        dom[axis] = concatenated_size
         in_tsrs = tuple(t for t in in_tsrs)
         super().__init__(dom, in_tsrs, Tensor(dom), n_procs)
 
@@ -628,10 +629,10 @@ class Concat(Ops):
 
         # Remove configs where distribution of concatenated dimension doesn't
         # align with the tensor boundaries
-        concat_axis_sizes = list(t[axis] for t in self.in_tsrs)
-        valid_idx = np.all(list(np.mod(s, self.dom_configs[:, axis]) == 0 for s
+        concat_axis_sizes = list(t[self.axis] for t in self.in_tsrs)
+        valid_idx = np.all(list(np.mod(s, self.dom_configs[:, self.axis]) == 0 for s
             in concat_axis_sizes), axis=0)
-        self.dom_configs = self.dom_configs[:, valid_idx]
+        self.dom_configs = self.dom_configs[valid_idx, :]
         self.dom_config_tuples = [tuple(e) for e in self.dom_configs]
 
         self.in_tsr_configs = (self.dom_configs,) * len(self.in_tsrs)
@@ -674,8 +675,9 @@ class ReduceMean(Ops):
         self.keepdims = keepdims
 
         out_tsr = []
+        axis = set(axis)
         for i, t in enumerate(in_tsr):
-            if i != axis:
+            if i not in axis:
                 out_tsr.append(t)
             elif keepdims:
                 out_tsr.append(1)

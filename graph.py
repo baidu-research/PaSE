@@ -104,20 +104,173 @@ def ResNet101(b, n_procs):
     layer4 = MakeLayer(layer3.GetOutTensor(0), 512, layers[3], stride=2)
 
     # Avg pooling + FC
-    mean = nn_ops.ReduceMean(layer4.GetOutTensor(0), axis=[2,3], keepdims=True)
-    tsr = mean.GetOutTensor(0)
-    assert len(tsr) == 4
-    reshape = nn_ops.Reshape(tsr, (tsr[0], tsr[1] * tsr[2] * tsr[3]))
-    fc = nn_ops.FC(reshape.GetOutTensor(0), num_classes)
+    mean = nn_ops.ReduceMean(layer4.GetOutTensor(0), axis=[2,3])
+    fc = nn_ops.FC(mean.GetOutTensor(0), num_classes)
+
+    # Softmax + cross-entropy loss
+    loss = nn_ops.SoftmaxCrossEntropy(fc.GetOutTensor(0))
 
     return nn_ops.Ops.G
 
 
-'''
-def InceptionV3(G, b):
+def Inception3(G, b, aux_logits=False):
     img = nn_ops.Tensor((b, 3, 299, 299))
+    img.SetAsInput()
     num_classes = 1000
-'''
+
+    def AddBasicConv(img, fltr, stride=1, padding=0):
+        conv = nn_ops.Conv(img, fltr, stride, padding)
+        bn = nn_ops.BatchNorm(conv.GetOutTensor(0))
+        return bn
+
+    def AddInceptionA(img, in_channels, pool_features):
+        branch1x1 = AddBasicConv(img, (64, in_channels, 1, 1))
+
+        branch5x5 = AddBasicConv(img, (48, in_channels, 1, 1))
+        branch5x5 = AddBasicConv(branch5x5.GetOutTensor(0), (64, 48, 5, 5),
+                padding=2)
+
+        branch3x3dbl = AddBasicConv(img, (64, in_channels, 1, 1))
+        branch3x3dbl = AddBasicConv(branch3x3dbl.GetOutTensor(0), (96, 64, 3,
+            3), padding=1)
+        branch3x3dbl = AddBasicConv(branch3x3dbl.GetOutTensor(0), (96, 96, 3,
+            3), padding=1)
+
+        branch_pool = nn_ops.Pooling(img, (3, 3), stride=1, pad=1)
+        branch_pool = AddBasicConv(branch_pool.GetOutTensor(0), (pool_features,
+            in_channels, 1, 1))
+
+        outputs = nn_ops.Concat([branch1x1.GetOutTensor(0),
+            branch5x5.GetOutTensor(0), branch3x3dbl.GetOutTensor(0),
+            branch_pool.GetOutTensor(0)], 1)
+        return outputs
+
+    def AddInceptionB(img, in_channels):
+        branch3x3 = AddBasicConv(img, (384, in_channels, 3, 3), stride=2)
+
+        branch3x3dbl = AddBasicConv(img, (64, in_channels, 1, 1))
+        branch3x3dbl = AddBasicConv(branch3x3dbl.GetOutTensor(0), (96, 64, 3, 3), padding=1)
+        branch3x3dbl = AddBasicConv(branch3x3dbl.GetOutTensor(0), (96, 96, 3, 3), stride=2)
+
+        branch_pool = nn_ops.Pooling(img, (3, 3), stride=2)
+
+        outputs = nn_ops.Concat([branch3x3.GetOutTensor(0),
+            branch3x3dbl.GetOutTensor(0), branch_pool.GetOutTensor(0)], 1)
+        return outputs
+
+    def AddInceptionC(img, in_channels, channels_7x7):
+        branch1x1 = AddBasicConv(img, (192, in_channels, 1, 1))
+
+        branch7x7 = AddBasicConv(img, (channels_7x7, in_channels, 1, 1))
+        branch7x7 = AddBasicConv(branch7x7.GetOutTensor(0), (channels_7x7,
+            channels_7x7, 1, 7), padding=(0, 3))
+        branch7x7 = AddBasicConv(branch7x7.GetOutTensor(0), (192, channels_7x7,
+            7, 1), padding=(3, 0))
+
+        branch7x7_dbl = AddBasicConv(img, (channels_7x7, in_channels, 1, 1))
+        branch7x7_dbl = AddBasicConv(branch7x7_dbl.GetOutTensor(0),
+                (channels_7x7, channels_7x7, 7, 1), padding=(3, 0))
+        branch7x7_dbl = AddBasicConv(branch7x7_dbl.GetOutTensor(0),
+                (channels_7x7, channels_7x7, 1, 7), padding=(0, 3))
+        branch7x7_dbl = AddBasicConv(branch7x7_dbl.GetOutTensor(0),
+                (channels_7x7, channels_7x7, 7, 1), padding=(3, 0))
+        branch7x7_dbl = AddBasicConv(branch7x7_dbl.GetOutTensor(0), (192,
+            channels_7x7, 1, 7), padding=(0, 3))
+
+        branch_pool = nn_ops.Pooling(img, (3, 3), stride=1, pad=1)
+        branch_pool = AddBasicConv(branch_pool.GetOutTensor(0), (192,
+            in_channels, 1, 1))
+
+        outputs = nn_ops.Concat([branch1x1.GetOutTensor(0),
+            branch7x7.GetOutTensor(0), branch7x7_dbl.GetOutTensor(0),
+            branch_pool.GetOutTensor(0)], 1)
+        return outputs
+
+    def AddInceptionD(img, in_channels):
+        branch3x3 = AddBasicConv(img, (192, in_channels, 1, 1))
+        branch3x3 = AddBasicConv(branch3x3.GetOutTensor(0), (320, 192, 3, 3), stride=2)
+
+        branch7x7x3 = AddBasicConv(img, (192, in_channels, 1, 1))
+        branch7x7x3 = AddBasicConv(branch7x7x3.GetOutTensor(0), (192, 192, 1,
+            7), padding=(0, 3))
+        branch7x7x3 = AddBasicConv(branch7x7x3.GetOutTensor(0), (192, 192, 7,
+            1), padding=(3, 0))
+        branch7x7x3 = AddBasicConv(branch7x7x3.GetOutTensor(0), (192, 192, 3,
+            3), stride=2)
+
+        branch_pool = nn_ops.Pooling(img, (3, 3), stride=2)
+        outputs = nn_ops.Concat([branch3x3.GetOutTensor(0),
+            branch7x7x3.GetOutTensor(0), branch_pool.GetOutTensor(0)], 1)
+        return outputs
+
+    def AddInceptionE(img, in_channels):
+        branch1x1 = AddBasicConv(img, (320, in_channels, 1, 1))
+
+        branch3x3 = AddBasicConv(img, (384, in_channels, 1, 1))
+        branch3x3_2a = AddBasicConv(branch3x3.GetOutTensor(0), (384, 384, 1, 3),
+                padding=(0, 1))
+        branch3x3_2b = AddBasicConv(branch3x3.GetOutTensor(0), (384, 384, 3, 1),
+                padding=(1, 0))
+        branch3x3 = nn_ops.Concat([branch3x3_2a.GetOutTensor(0),
+            branch3x3_2b.GetOutTensor(0)], 1)
+
+        branch3x3dbl = AddBasicConv(img, (448, in_channels, 1, 1))
+        branch3x3dbl = AddBasicConv(branch3x3dbl.GetOutTensor(0), (384, 448, 3,
+            3), padding=1)
+        branch3x3dbl_3a = AddBasicConv(branch3x3dbl.GetOutTensor(0), (384, 384,
+            1, 3), padding=(0, 1))
+        branch3x3dbl_3b = AddBasicConv(branch3x3dbl.GetOutTensor(0), (384, 384,
+            3, 1), padding=(1, 0))
+        branch3x3dbl = nn_ops.Concat([branch3x3dbl_3a.GetOutTensor(0),
+            branch3x3dbl_3b.GetOutTensor(0)], 1)
+
+        branch_pool = nn_ops.Pooling(img, (3, 3), stride=1, pad=1)
+        branch_pool = AddBasicConv(branch_pool.GetOutTensor(0), (192,
+            in_channels, 1, 1))
+
+        outputs = nn_ops.Concat([branch1x1.GetOutTensor(0),
+            branch3x3.GetOutTensor(0), branch3x3dbl.GetOutTensor(0),
+            branch_pool.GetOutTensor(0)], 1)
+        return outputs
+
+    def AddInceptionAux(img, in_channels, num_classes):
+        pool = nn_ops.Pooling(img, (5, 5), stride=3)
+        conv0 = AddBasicConv(pool.GetOutTensor(0), (128, in_channels, 1, 1))
+        conv1 = AddBasicConv(conv0.GetOutTensor(0), (768, 128, 5, 5))
+        mean = nn_ops.ReduceMean(conv1.GetOutTensor(0), axis=[2,3], keepdims=True)
+        fc = nn_ops.FC(mean.GetOutTensor(0), num_classes)
+        return fc
+
+    conv1a = AddBasicConv(img, (32, 3, 3, 3), stride=2)
+    conv2a = AddBasicConv(conv1a.GetOutTensor(0), (32, 32, 3, 3))
+    conv2b = AddBasicConv(conv2a.GetOutTensor(0), (64, 32, 3, 3), padding=1)
+    pool = nn_ops.Pooling(conv2b.GetOutTensor(0), (3, 3), stride=2)
+
+    conv3b =AddBasicConv(pool.GetOutTensor(0), (80, 64, 1, 1))
+    conv4a = AddBasicConv(conv3b.GetOutTensor(0), (192, 80, 3, 3))
+    pool = nn_ops.Pooling(conv4a.GetOutTensor(0), (3, 3), stride=2)
+
+    mixed5b = AddInceptionA(pool.GetOutTensor(0), 192, 32)
+    mixed5c = AddInceptionA(mixed5b.GetOutTensor(0), 256, 64)
+    mixed5d = AddInceptionA(mixed5c.GetOutTensor(0), 288, 64)
+    mixed6a = AddInceptionB(mixed5d.GetOutTensor(0), 288)
+    mixed6b = AddInceptionC(mixed6a.GetOutTensor(0), 768, 128)
+    mixed6c = AddInceptionC(mixed6b.GetOutTensor(0), 768, 160)
+    mixed6d = AddInceptionC(mixed6c.GetOutTensor(0), 768, 160)
+    mixed6e = AddInceptionC(mixed6d.GetOutTensor(0), 768, 192)
+    #if aux_logits:
+    #    aux = InceptionAux(mixed6e.GetOutTensor(0), 768, num_classes)
+    mixed7a = AddInceptionD(mixed6e.GetOutTensor(0), 768)
+    mixed7b = AddInceptionE(mixed7a.GetOutTensor(0), 1280)
+    mixed7c = AddInceptionE(mixed7b.GetOutTensor(0), 2048)
+
+    mean = nn_ops.ReduceMean(mixed7c.GetOutTensor(0), axis=[2,3])
+    fc = nn_ops.FC(mean.GetOutTensor(0), num_classes)
+
+    # Softmax + cross-entropy loss
+    loss = nn_ops.SoftmaxCrossEntropy(fc.GetOutTensor(0))
+
+    return nn_ops.Ops.G
 
 
 # Creates the graph for the model
@@ -129,7 +282,7 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
     elif graph_type == 'resnet101':
         G = ResNet101(batch_size, n_procs)
     elif graph_type == 'inception3':
-        G = Inception3(batch_size, n_procs).Graph()
+        G = Inception3(batch_size, n_procs)
     elif graph_type == 'seq2seq':
         G = Seq2seq(batch_size, n_procs)
     else:
