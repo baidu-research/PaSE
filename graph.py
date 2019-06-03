@@ -47,26 +47,73 @@ def AlexNet(b):
     return nn_ops.Ops.G
 
 
-'''
-def ResNet101(G, b, n_procs):
+def ResNet101(b, n_procs):
     img = nn_ops.Tensor((b, 3, 227, 227))
-    blocks = (3, 4, 23, 3)
-    planes = (64, 128, 256, 512)
+    img.SetAsInput()
+    layers = (3, 4, 23, 3)
+
     num_classes = 1000
     expansion = 4
+    inplanes = 64
+
+    def Bottleneck(img, inplanes, planes, stride=1, downsample=None):
+        identity = img
+
+        conv1 = nn_ops.Conv(img, (planes, inplanes, 1, 1))
+        bn1 = nn_ops.BatchNorm(conv1.GetOutTensor(0))
+
+        conv2 = nn_ops.Conv(bn1.GetOutTensor(0), (planes, planes, 3, 3),
+                stride=stride, pad=1)
+        bn2 = nn_ops.BatchNorm(conv2.GetOutTensor(0))
+
+        conv3 = nn_ops.Conv(bn2.GetOutTensor(0), (planes * expansion, planes, 1,
+            1))
+        bn3 = nn_ops.BatchNorm(conv3.GetOutTensor(0))
+
+        if downsample is not None:
+            identity = downsample(img)
+
+        out = nn_ops.Elementwise(bn3.GetOutTensor(0), identity, pw_op_cnt=1)
+        return out
+
+    def MakeLayer(img, planes, blocks, stride=1):
+        downsample = None
+        nonlocal inplanes
+
+        if stride != 1 or inplanes != planes * expansion:
+            downsample = lambda x: nn_ops.BatchNorm(nn_ops.Conv(x, (planes *
+                expansion, inplanes, 1, 1),
+                stride=stride).GetOutTensor(0)).GetOutTensor(0)
+
+        layers = Bottleneck(img, inplanes, planes, stride, downsample)
+        inplanes = planes * expansion
+        for _ in range(1, blocks):
+            layers = Bottleneck(layers.GetOutTensor(0), inplanes, planes)
+
+        return layers
 
     # Conv1 + bn + relu + maxpool
     conv1 = nn_ops.Conv(img, (64, 3, 7, 7), stride=2, pad=3)
-    node_id1_0 = AddVertex(G, conv1)
     bn1 = nn_ops.BatchNorm(conv1.GetOutTensor(0))
-    node_id1_1 = AddVertex(G, bn1)
-    AddEdge(G, node_id1_0, node_id1_1)
-    pool1 = nn_ops.Pooling(bn1.GetOutTensor(0), (3, 3)
+    pool1 = nn_ops.Pooling(bn1.GetOutTensor(0), (3, 3), stride=2, pad=1)
+
+    # Layers
+    layer1 = MakeLayer(pool1.GetOutTensor(0), 64, layers[0])
+    layer2 = MakeLayer(layer1.GetOutTensor(0), 128, layers[1], stride=2)
+    layer3 = MakeLayer(layer2.GetOutTensor(0), 256, layers[2], stride=2)
+    layer4 = MakeLayer(layer3.GetOutTensor(0), 512, layers[3], stride=2)
+
+    # Avg pooling + FC
+    mean = nn_ops.ReduceMean(layer4.GetOutTensor(0), axis=[2,3], keepdims=True)
+    tsr = mean.GetOutTensor(0)
+    assert len(tsr) == 4
+    reshape = nn_ops.Reshape(tsr, (tsr[0], tsr[1] * tsr[2] * tsr[3]))
+    fc = nn_ops.FC(reshape.GetOutTensor(0), num_classes)
+
+    return nn_ops.Ops.G
 
 
-    return G
-
-
+'''
 def InceptionV3(G, b):
     img = nn_ops.Tensor((b, 3, 299, 299))
     num_classes = 1000
@@ -80,7 +127,7 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
     if graph_type == 'alexnet':
         G = AlexNet(batch_size)
     elif graph_type == 'resnet101':
-        G = ResNet101(batch_size, n_procs).Graph()
+        G = ResNet101(batch_size, n_procs)
     elif graph_type == 'inception3':
         G = Inception3(batch_size, n_procs).Graph()
     elif graph_type == 'seq2seq':

@@ -348,11 +348,12 @@ class Elementwise(Ops):
         assert all(t1 == t2 for t1, t2 in zip(tsr1, tsr2))
 
         self.pw_op_cnt = pw_op_cnt
-        super().__init__(tsr1, tsr1, Tensor(tsr2), n_procs)
+        out_tsr = Tensor(tsr1)
+        super().__init__(tsr1, (tsr1, tsr2), out_tsr, n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
-        self.in_tsr_configs = self.dom_configs
+        self.in_tsr_configs = (self.dom_configs, self.dom_configs)
         self.out_tsr_configs = self.dom_configs
 
         dom_per_proc = np.prod(self.dom / self.dom_configs, axis=1)
@@ -657,7 +658,55 @@ class BatchNorm(Ops):
         # Communication cost for fwd phase: Reduction and broadcast of mean and
         # variance. 2 reductions for fwd phase, and 4 for bwd phase.
         self.costs += 6.0 * GetAllReduceCost(elems / dom_per_proc[:, 0],
-                dom_configs[:, 0])
+                self.dom_configs[:, 0])
+
+
+class ReduceMean(Ops):
+    def __init__(self, in_tsr, axis=None, keepdims=False, n_procs=None):
+        if axis is None:
+            axis = list(range(len(in_tsr)))
+        elif not hasattr(axis, "__len__"):
+            axis = list(axis)
+
+        assert len(axis) <= len(in_tsr) and all(a < len(in_tsr) for a in axis)
+
+        self.axis = axis
+        self.keepdims = keepdims
+
+        out_tsr = []
+        for i, t in enumerate(in_tsr):
+            if i != axis:
+                out_tsr.append(t)
+            elif keepdims:
+                out_tsr.append(1)
+        if not out_tsr:
+            out_tsr = (1,)
+        super().__init__(in_tsr, in_tsr, Tensor(out_tsr), n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = self.dom_configs
+        cols = list(set(range(len(self.GetInTensorConfigs(0)))) -
+                set(self.axis))
+        if not cols:
+            if self.keepdims == True:
+                self.out_tsr_configs = np.ones(self.dom_configs.shape)
+            else:
+                self.out_tsr_configs = np.ones((self.dom_configs.shape[0], 1))
+        else:
+            if self.keepdims == True:
+                self.out_tsr_configs = np.ones(self.dom_configs.shape)
+                self.out_tsr_configs[:, cols] = self.dom_configs[:, cols]
+            else:
+                self.out_tsr_configs = self.dom_configs[:, cols]
+                if self.out_tsr_configs.ndim == 1:
+                    self.out_tsr_configs = self.out_tsr_configs.reshape((-1,1))
+
+        dom_per_proc = self.dom / self.dom_configs
+        words = np.prod(dom_per_proc, axis=1)
+        procs = np.prod(self.dom_configs[:, self.axis], axis=1)
+        self.costs = GetAllReduceCost(words, procs)
 
 
 class SoftmaxCrossEntropy(Ops):
