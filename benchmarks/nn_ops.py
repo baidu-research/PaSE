@@ -14,8 +14,10 @@ def TransposeLists(l):
 
 
 def Parallelize(fn, *args, **kwargs, devices):
-    assert len(args) == len(devices)
-    assert all(len(v) == len(devices) for v in kwargs.values())
+    n_d = len(devices)
+
+    assert all(len(v) == n_d for v in args)
+    assert all(len(v) == n_d for v in kwargs.values())
 
     ret = []
     for i, d in enumerate(devices):
@@ -125,4 +127,21 @@ def AllConcat(tsrs, devices, axis):
                     parts[target][source] = tf.identity(parts[(target - 1) % n][source])
 
     return Parallelize(tf.concat, parts, axis=[axis] * n)
+
+
+def Conv(img, r, s, n, stride, pad, dev_b, dev_n, name):
+    n_b = len(dev_b)
+    n_n = len(dev_n)
+    c = img.shape[-1]
+
+    img_split = tf.split(img, n_b, axis=0)
+
+    for d_b in dev_b:
+        with tf.variable_scope(name, reuse=tf.AUTO_REUSE) as scope:
+
+    for d_n in dev_n:
+        weights = tf.get_variable('weights_%d' % d_n, shape = [r, s, c, n /
+            len(dev_n)])
+
+        conv = tf.nn.conv2d(img, weights, stride)
 
