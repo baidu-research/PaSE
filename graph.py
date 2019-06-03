@@ -113,7 +113,7 @@ def ResNet101(b, n_procs):
     return nn_ops.Ops.G
 
 
-def Inception3(G, b, aux_logits=False):
+def Inception3(b, aux_logits=False):
     img = nn_ops.Tensor((b, 3, 299, 299))
     img.SetAsInput()
     num_classes = 1000
@@ -280,11 +280,11 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
     if graph_type == 'alexnet':
         G = AlexNet(batch_size)
     elif graph_type == 'resnet101':
-        G = ResNet101(batch_size, n_procs)
+        G = ResNet101(batch_size)
     elif graph_type == 'inception3':
-        G = Inception3(batch_size, n_procs)
+        G = Inception3(batch_size)
     elif graph_type == 'seq2seq':
-        G = Seq2seq(batch_size, n_procs)
+        G = Seq2seq(batch_size)
     else:
         assert(False)
 
