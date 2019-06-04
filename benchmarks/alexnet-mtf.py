@@ -22,46 +22,6 @@ def TransposeLists(l):
     return [list(x) for x in zip(*l)]
 
 
-def GetDim(dim, name):
-    if isinstance(dim, int):
-        return mtf.Dimension(name, dim)
-    return dim
-
-
-def GetTempDim(dim):
-    random_name = ''.join([random.choice(string.ascii_letters + string.digits)
-        for n in range(8)])
-    return GetDim(dim, random_name)
-
-
-class ConvDims():
-    def __init__(self, b_, c_, h_, w_, n_, r_, s_, name):
-        Dim = lambda suffix, dim : GetDim(dim, '%s_%s_dim' % (name, suffix))
-
-        self.b = Dim('b', b_)
-        self.c = Dim('c', c_)
-        self.h = Dim('h', h_)
-        self.w = Dim('w', w_)
-        self.n = Dim('n', n_)
-        self.r = Dim('r', r_)
-        self.s = Dim('s', s_)
-
-        self.tensor_shape = mtf.Shape([self.b, self.h, self.w, self.c])
-        self.kernel_shape = mtf.Shape([self.r, self.s, self.c, self.n])
-
-
-class FCDims():
-    def __init__(self, m, n, k, name):
-        Dim = lambda suffix, dim : GetDim(dim, '%s_%s_dim' % (name, suffix))
-
-        self.m = Dim('m', m)
-        self.n = Dim('n', n)
-        self.k = Dim('k', k)
-
-        self.tensor_shape = mtf.Shape([self.m, self.k])
-        self.kernel_shape = mtf.Shape([self.k, self.n])
-
-
 class Conv2dOperation(mtf.Conv2dOperation):
     def __init__(self, conv_input, conv_filter, strides, padding, name=None):
         mtf.Operation.__init__(self, [conv_input, conv_filter], name=name or
@@ -96,35 +56,46 @@ class Conv2dOperation(mtf.Conv2dOperation):
         self._outputs = [mtf.Tensor(self, output_shape, conv_input.dtype)]
 
 
-def Conv2d(tsr, filter_h, filter_w, num_filters, stride_h, stride_w, padding,
-        use_bias=True, activation=None, name=None):
+def Conv2d(tsr, fltr_shape, stride=(1,1), padding='VALID', use_bias=True,
+        activation=None, name=None):
     with tf.variable_scope(name, default_name='conv2d'):
-        r_dim = mtf.Dimension('%s_r_dim' % name, filter_h)
-        s_dim = mtf.Dimension('%s_s_dim' % name, filter_w)
-        c_dim = tsr.shape.dims[-1]
-        n_dim = mtf.Dimension('%s_n_dim' % name, num_filters)
+        assert tsr.shape[-1] == fltr_shape[-2]
 
-        w_shape = mtf.Shape([r_dim, s_dim, c_dim, n_dim])
-        w = mtf.get_variable(tsr.mesh, 'weight', w_shape, dtype=tsr.dtype)
-        out = Conv2dOperation(tsr, w, (1, stride_h, stride_w, 1),
+        w = mtf.get_variable(tsr.mesh, 'weight', fltr_shape, dtype=tsr.dtype)
+        out = Conv2dOperation(tsr, w, (1, stride[0], stride[1], 1),
                 padding).outputs[0]
 
-        if use_bias:
-            b = mtf.get_variable(tsr.mesh, 'bias', mtf.Shape([n_dim]),
+        if use_bias == True:
+            b = mtf.get_variable(tsr.mesh, 'bias', mtf.Shape([out.shape[-1]]),
                     initializer=tf.zeros_initializer(), dtype=tsr.dtype)
             out += b
 
-        if activation:
+        if activation is not None:
             out = activation(out)
 
         return out
 
 
-def MaxPool(tsr, filter_h, filter_w, stride_h, stride_w, padding, output_shape, name):
-    with tf.variable_scope(name):
+def MaxPool(tsr, fltr, stride=(1,1), padding='VALID', name=None):
+    with tf.variable_scope(name, default_name='pool'):
         def max_pool(x):
-            return tf.nn.max_pool(x, [1, filter_h, filter_w, 1], [1, stride_h,
-                stride_w, 1], padding)
+            return tf.nn.max_pool(x, [1, fltr[0], fltr[1], 1], [1, stride[0],
+                stride[1], 1], padding)
+
+        # Output shape
+        h_o = tsr.shape[1].size
+        w_o = tsr.shape[2].size
+        if padding == 'VALID':
+            h_o -= fltr[0]
+            w_o -= fltr[1]
+        h_o //= stride[0]
+        w_o //= stride[1]
+        if padding == 'VALID':
+            h_o += 1
+            w_o += 1
+
+        output_shape = tsr.shape.resize_dimension(tsr.shape[1].name, h_o)
+        output_shape = output_shape.resize_dimension(tsr.shape[2].name, w_o)
 
         splittable_dims = [tsr.shape.dims[0], tsr.shape.dims[-1]]
         out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype, splittable_dims)
@@ -173,49 +144,12 @@ def main():
     tf_x.set_shape([batch_size, 227, 227, 3])
     tf_y.set_shape([batch_size])
 
-    # mtf graph
-    graph = mtf.Graph()
-
-    def BuildConvDims(b, c, h, w, n, r, s, name):
-        Dim = lambda suffix, dim : GetDim(dim, '%s_%s_dim' % (name, suffix))
-        return {'b':Dim('b', b), 'c':Dim('c', c), 'h':Dim('h', h), 'w':Dim('w',
-            w), 'n':Dim('n', n), 'r':Dim('r', r), 's':Dim('s', s)}
-
-    def BuildFCDims(m, n, k, name):
-        Dim = lambda suffix, dim : GetDim(dim, '%s_%s_dim' % (name, suffix))
-        return {'m':Dim('m', m), 'n':Dim('n', n), 'k':Dim('k', k)}
-
-    # Input dimensions
-    x_batch_dim = mtf.Dimension('x_batch_dim', batch_size)
-    x_c_dim = mtf.Dimension('x_c_dim', 3)
-    x_h_dim = mtf.Dimension('x_h_dim', 227)
-    x_w_dim = mtf.Dimension('x_w_dim', 227)
-    y_batch_dim = mtf.Dimension('y_batch_dim', batch_size)
-    y_class_dim = mtf.Dimension('y_class_dim', num_classes)
-
-    # Conv layer dimensions
-    conv1_dims = ConvDims(x_batch_dim, x_c_dim, x_h_dim, x_w_dim, 96, 4, 4,
-            'conv1')
-    conv2_dims = ConvDims(x_batch_dim, conv1_dims.n.size, GetDim(27,
-        x_h_dim.name), GetDim(27, x_w_dim.name), 256, 5, 5, 'conv2')
-    conv3_dims = ConvDims(x_batch_dim, conv2_dims.n.size, GetDim(13,
-        x_h_dim.name), GetDim(13, x_w_dim.name), 384, 3, 3, 'conv3')
-    conv4_dims = ConvDims(x_batch_dim, conv3_dims.n.size, GetDim(13,
-        x_h_dim.name), GetDim(13, x_w_dim.name), 384, 3, 3, 'conv4')
-    conv5_dims = ConvDims(x_batch_dim, conv4_dims.n.size, GetDim(13,
-        x_h_dim.name), GetDim(13, x_w_dim.name), 256, 3, 3, 'conv5')
-
-    # Flattened dimensions
-    before_flattened_h = GetTempDim(6)
-    before_flattened_w = GetTempDim(6)
-    after_flattened_h = GetTempDim(1)
-    after_flattened_w = GetTempDim(1)
-
-    # FC layer dimensions
-    fc6_dims = FCDims(y_batch_dim, 4096, 9216, name='fc6')
-    fc7_dims = FCDims(y_batch_dim, 4096, 4096, name='fc7')
-    fc8_dims = FCDims(y_batch_dim, y_class_dim, 4096, name='fc8')
-    softmax_dim = fc8_dims.n
+    # mtf dimensions
+    batch_dim = mtf.Dimension('batch_dim', batch_size)
+    in_ch_dim = mtf.Dimension('in_ch_dim', 3)
+    h_dim = mtf.Dimension('h_dim', 227)
+    w_dim = mtf.Dimension('w_dim', 227)
+    fc_batch_dim = mtf.Dimension('fc_batch_dim', batch_size)
 
     def AssignLayout(ta_axes, mesh_axis):
         layout = []
@@ -223,112 +157,117 @@ def main():
             layout.append((a, mesh_axis))
         return layout
 
-    ## mtf 1D mesh
-    #mesh1 = mtf.Mesh(graph, 'mesh1')
-    #mesh_shape_1d = [('m1_p1', 4),]
-    #devices = ['gpu:%d' % i for i in range(4)]
-    #layout = [('x_batch_dim', 'm1_p1')]
-    #mesh1_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape_1d,
-    #        layout, devices)
+    # mtf graph
+    graph = mtf.Graph()
+
+    # mtf 1D mesh
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_shape_1d = [('m1_p1', 4),]
+    devices = ['gpu:%d' % i for i in range(4)]
+    layout = AssignLayout([batch_dim.name], 'm1_p1')
+    mesh1_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape_1d,
+            layout, devices)
 
     # mtf 2D mesh
     mesh2 = mtf.Mesh(graph, 'mesh2')
     mesh_shape_2d = [('m2_p1', 4), ('m2_p2', 2)]
     devices = ['gpu:%d' % i for i in range(8)]
-    p1_layout = AssignLayout([x_batch_dim.name, fc6_dims.n.name,
-        fc7_dims.n.name, fc8_dims.n.name], 'm2_p1')
-    p2_layout = AssignLayout([conv1_dims.n.name, conv2_dims.n.name, conv3_dims.n.name,
-        conv4_dims.n.name, conv5_dims.n.name, fc6_dims.k.name, fc7_dims.k.name,
-        fc8_dims.k.name], 'm2_p2')
+    p1_layout = AssignLayout([batch_dim.name, 'fc_n_dim'], 'm2_p1')
+    p2_layout = AssignLayout(['n_dim', 'fc_k_dim'], 'm2_p2')
     layout = p1_layout + p2_layout
     mesh2_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape_2d, layout,
             devices)
 
-    #meshes = {mesh1:mesh1_impl, mesh2:mesh2_impl}
-    meshes = {mesh2:mesh2_impl}
+    meshes = {mesh1:mesh1_impl, mesh2:mesh2_impl}
 
     # mtf input / output variables
-    mtf_x = mtf.import_tf_tensor(mesh2, tf_x, conv1_dims.tensor_shape)
-    mtf_y = mtf.import_tf_tensor(mesh2, tf_y, mtf.Shape([y_batch_dim]))
+    mtf_x = mtf.import_tf_tensor(mesh1, tf_x, mtf.Shape([batch_dim, h_dim,
+        w_dim, in_ch_dim]))
+    mtf_y = mtf.import_tf_tensor(mesh2, tf_y, mtf.Shape([fc_batch_dim]))
 
-    # Model
     with tf.variable_scope('alexnet'):
-        conv1 = Conv2d(mtf_x, 11, 11, 96, 4, 4, 'VALID', activation=mtf.relu,
-                name='conv1')
-        pool1_shape = mtf.Shape([conv1_dims.b, conv2_dims.h, conv2_dims.w,
-            conv1_dims.n])
-        pool1 = MaxPool(conv1, 3, 3, 2, 2, 'VALID', pool1_shape, 'pool1')
-        pool1 = mtf.rename_dimension(pool1, pool1.shape[-1].name,
-                conv2_dims.c.name)
+        ConvRename = lambda x: mtf.rename_dimension(x, x.shape[-1].name,
+                in_ch_dim.name)
+        FCRename = lambda x: mtf.rename_dimension(x, x.shape[-1].name,
+                'fc_k_dim')
+        FltrShape = lambda f: (mtf.Dimension('r_dim', f[0]),
+                mtf.Dimension('s_dim', f[1]), mtf.Dimension('in_ch_dim', f[2]),
+                mtf.Dimension('n_dim', f[3]))
 
-        #lowering = mtf.Lowering(graph, meshes)
-        ##slice1_all_slices = lowering.tensors[slice1].to_laid_out_tensor().all_slices
-        ##slice2_all_slices = lowering.tensors[slice2].to_laid_out_tensor().all_slices
-        ##laid_out_pool1 = FlattenList(TransposeLists([slice1_all_slices,
-        ##    slice2_all_slices]))
-        ##laid_out_pool1 = mesh2_impl.LaidOutTensor(laid_out_pool1)
-        #pool1_slices = lowering.tensors[pool1].to_laid_out_tensor().all_slices
-        #laid_out_pool1 = \
-        #        mesh2_impl.LaidOutTensor(FlattenList(TransposeLists([pool1_slices,
-        #            pool1_slices])))
+        # Conv1 + ReLU + maxpool1
+        conv1 = Conv2d(mtf_x, FltrShape((11, 11, 3, 96)), (4, 4), 'VALID',
+                activation=mtf.relu, name='conv1')
+        pool1_mesh1 = MaxPool(conv1, (3, 3), (2, 2), 'VALID', name='pool1')
+        pool1_mesh1 = ConvRename(pool1_mesh1)
 
-        #pool1_mesh2 = mtf.import_laid_out_tensor(mesh2, laid_out_pool1,
-        #        conv2_dims.tensor_shape, name='pool1_mesh2')
+        # Import pool1 to mesh2
+        pool1_replica = mtf.add(pool1_mesh1, mtf.zeros(mesh1, pool1_mesh1.shape,
+            pool1_mesh1.dtype), name='pool1_replica')
 
-        #pool1_mesh2 = mtf.zeros(mesh2, conv2_dims.tensor_shape)
-        #pool1_mesh2 += pool1
+        lowering = mtf.Lowering(graph, meshes)
+        pool1_mesh1_slices = lowering.tensors[pool1_mesh1].tensor_list
+        pool1_replica_slices = lowering.tensors[pool1_replica].tensor_list
+        assert len(pool1_mesh1_slices) == len(pool1_replica_slices)
 
-        conv2 = Conv2d(pool1, 5, 5, 256, 1, 1, 'SAME', activation=mtf.relu,
-                name='conv2')
-        pool2_shape = mtf.Shape([conv2_dims.b, conv3_dims.h, conv3_dims.w,
-            conv2_dims.n])
-        pool2 = MaxPool(conv2, 3, 3, 2, 2, 'VALID', pool2_shape, 'pool2')
-        pool2 = mtf.rename_dimension(pool2, pool2.shape[-1].name,
-                conv3_dims.c.name)
+        pool1_mesh2_slices = []
+        for t1, t2 in zip(pool1_mesh1_slices, pool1_replica_slices):
+            pool1_mesh2_slices.append([t1, t2])
+        pool1_mesh2_slices = FlattenList(TransposeLists(pool1_mesh2_slices))
 
-        conv3 = Conv2d(pool2, 3, 3, 384, 1, 1, 'SAME', activation=mtf.relu,
-                name='conv3')
-        conv3 = mtf.rename_dimension(conv3, conv3.shape[-1].name,
-                conv4_dims.c.name)
+        pool1_mesh2 = mesh2_impl.LaidOutTensor.from_tensor_list(pool1_mesh2_slices)
+        pool1_mesh2 = mtf.import_laid_out_tensor(mesh2, pool1_mesh2,
+                pool1_mesh1.shape, name='pool1_mesh2')
 
-        conv4 = Conv2d(conv3, 3, 3, 384, 1, 1, 'SAME', activation=mtf.relu,
-                name='conv4')
-        conv4 = mtf.rename_dimension(conv4, conv4.shape[-1].name,
-                conv5_dims.c.name)
+        # Conv2 + ReLU + maxpool2
+        conv2 = Conv2d(pool1_mesh2, FltrShape((5, 5, 96, 256)), (1, 1), 'SAME',
+                activation=mtf.relu, name='conv2')
+        pool2 = MaxPool(conv2, (3, 3), (2, 2), name='pool2')
+        pool2 = ConvRename(pool2)
 
-        conv5 = Conv2d(conv4, 3, 3, 256, 1, 1, 'SAME', activation=mtf.relu,
-                name='conv5')
-        pool5_shape = mtf.Shape([conv5_dims.b, GetDim(6, x_h_dim.name),
-            GetDim(6, x_w_dim.name), conv5_dims.n])
-        pool5 = MaxPool(conv5, 3, 3, 2, 2, 'VALID', pool5_shape, 'pool5')
+        # Conv3 + ReLU
+        conv3 = Conv2d(pool2, FltrShape((3, 3, 256, 384)), padding='SAME',
+                activation=mtf.relu, name='conv3')
+        conv3 = ConvRename(conv3)
+
+        # Conv4 + ReLU
+        conv4 = Conv2d(conv3, FltrShape((3, 3, 384, 384)), padding='SAME',
+                activation=mtf.relu, name='conv4')
+        conv4 = ConvRename(conv4)
+
+        # Conv5 + ReLU + maxpool5
+        conv5 = Conv2d(conv4, FltrShape((3, 3, 384, 256)), padding='SAME',
+                activation=mtf.relu, name='conv4')
+        pool5 = MaxPool(conv5, (3, 3), (2, 2), name='pool5')
+
+        # Rename dims
         pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name,
-                fc6_dims.m.name)
+                fc_batch_dim.name)
 
+        # FC + ReLU + dropout
         fc_activation = lambda x: mtf.dropout(mtf.relu(x), keep_prob)
+        fc6 = mtf.layers.dense(pool5, mtf.Dimension('fc_n_dim', 4096),
+                activation=fc_activation, reduced_dims=pool5.shape[1:],
+                name='fc6')
+        fc6 = FCRename(fc6)
+        fc7 = mtf.layers.dense(fc6, mtf.Dimension('fc_n_dim', 4096),
+                activation=fc_activation, name='fc7')
+        fc7 = FCRename(fc7)
+        fc8 = mtf.layers.dense(fc7, mtf.Dimension('fc_n_dim', num_classes),
+                name='fc8')
+        fc8 = mtf.dropout(fc8, keep_prob)
 
-        fc6 = mtf.layers.dense(pool5, fc6_dims.n, activation=fc_activation,
-                reduced_dims=pool5.shape[1:], name='fc6')
-        fc6 = mtf.rename_dimension(fc6, fc6.shape[-1].name, fc7_dims.k.name)
-        fc7 = mtf.layers.dense(fc6, fc7_dims.n, activation=fc_activation,
-                name='fc7')
-        fc7 = mtf.rename_dimension(fc7, fc7.shape[-1].name, fc8_dims.k.name)
-        fc8 = mtf.dropout(mtf.layers.dense(fc7, fc8_dims.n, name='fc8'), keep_prob)
-
-    # Softmax cross-entropy loss
     with tf.variable_scope('loss'):
-        one_hot_labels = mtf.one_hot(mtf_y, softmax_dim)
+        one_hot_labels = mtf.one_hot(mtf_y, fc8.shape[-1])
         mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(fc8,
-                one_hot_labels, softmax_dim)
+                one_hot_labels, fc8.shape[-1])
         mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
-    # Optimizer
     with tf.variable_scope('optimize'):
         grads = mtf.gradients([mtf_loss], [v.outputs[0] for v in
             graph.trainable_variables])
-        opt = mtf.optimize.SgdOptimizer(lr=learning_rate)
+        opt = mtf.optimize.SgdOptimizer(learning_rate)
         grad_updates = opt.apply_grads(grads, graph.trainable_variables)
 
-    # Lowering
     lowering = mtf.Lowering(graph, meshes)
     tf_loss = lowering.export_to_tf_tensor(mtf_loss)
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
@@ -348,6 +287,7 @@ def main():
             dataset.reset_pointer()
             sess.run(init_op)
 
+            tot_time = float(0)
             start = time.time()
             for epoch in range(num_epochs):
                 for step in range(train_batches_per_epoch):
