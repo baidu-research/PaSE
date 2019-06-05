@@ -76,6 +76,56 @@ def Conv2d(tsr, fltr_shape, stride=(1,1), padding='VALID', use_bias=True,
         return out
 
 
+class ImportToMeshBackpropOperation(mtf.Operation):
+    def __init__(self, mesh, input, name=None):
+        super().__init__([input], mesh=mesh, name=name or
+                'import_to_mesh_backprop')
+        self._outputs = [mtf.Tensor(self, input.shape, input.dtype)]
+
+    def lower(self, lowering):
+        input_slices = \
+                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
+        n_slices = len(input_slices)
+        assert n_slices % 2 == 0
+        n_slices_by_2 = int(n_slices / 2)
+
+        output_slices = []
+        for t1, t2 in zip(input_slices, input_slices[n_slices_by_2:]):
+            with tf.device(t1.device):
+                output_slices.append(t1 + t2)
+
+        laid_out_tensor = \
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+
+class ImportToMeshOperation(mtf.Operation):
+    def __init__(self, mesh, input, name=None):
+        super().__init__([input], mesh=mesh, name=name or 'import_to_mesh')
+        self.old_mesh = input.mesh
+        self._outputs = [mtf.Tensor(self, input.shape, input.dtype)]
+
+    def gradient(self, grad_ys):
+        dy = grad_ys[0]
+        return ImportToMeshBackpropOperation(self.old_mesh, dy).outputs
+
+    def lower(self, lowering):
+        input_slices = \
+                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
+        output_slices = []
+        for t in input_slices:
+            output_slices.append([t, t])
+        output_slices = FlattenList(TransposeLists(output_slices))
+
+        laid_out_tensor = \
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+
+def import_to_mesh(mesh, tsr, name):
+    return ImportToMeshOperation(mesh, tsr, name).outputs[0]
+
+
 def MaxPool(tsr, fltr, stride=(1,1), padding='VALID', name=None):
     with tf.variable_scope(name, default_name='pool'):
         def max_pool(x):
@@ -201,22 +251,7 @@ def main():
         pool1_mesh1 = ConvRename(pool1_mesh1)
 
         # Import pool1 to mesh2
-        pool1_replica = mtf.add(pool1_mesh1, mtf.zeros(mesh1, pool1_mesh1.shape,
-            pool1_mesh1.dtype), name='pool1_replica')
-
-        lowering = mtf.Lowering(graph, meshes)
-        pool1_mesh1_slices = lowering.tensors[pool1_mesh1].tensor_list
-        pool1_replica_slices = lowering.tensors[pool1_replica].tensor_list
-        assert len(pool1_mesh1_slices) == len(pool1_replica_slices)
-
-        pool1_mesh2_slices = []
-        for t1, t2 in zip(pool1_mesh1_slices, pool1_replica_slices):
-            pool1_mesh2_slices.append([t1, t2])
-        pool1_mesh2_slices = FlattenList(TransposeLists(pool1_mesh2_slices))
-
-        pool1_mesh2 = mesh2_impl.LaidOutTensor.from_tensor_list(pool1_mesh2_slices)
-        pool1_mesh2 = mtf.import_laid_out_tensor(mesh2, pool1_mesh2,
-                pool1_mesh1.shape, name='pool1_mesh2')
+        pool1_mesh2 = import_to_mesh(mesh2, pool1_mesh1, name='import_to_mesh2')
 
         # Conv2 + ReLU + maxpool2
         conv2 = Conv2d(pool1_mesh2, FltrShape((5, 5, 96, 256)), (1, 1), 'SAME',
