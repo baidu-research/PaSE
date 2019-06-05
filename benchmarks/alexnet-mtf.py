@@ -163,8 +163,11 @@ def main():
     parser.add_argument('-d', '--dropout', type=float, required=False,
             default=0.5, help="keep_prob value for dropout layers. (Default: 0.5)")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
-            choices=list(range(2)), 
-            help="Strategy to use. 0: DataParallel, 1: Optimized. (Default: 0)")
+            choices=list(range(3)), 
+            help="Strategy to use. 0: DataParallel, \
+                    1: Optimized for 1080Ti, \
+                    2: Optimized for DGX. \
+                    (Default: 0) ")
     parser.add_argument('dataset_dir', type=str, help='Dataset directory')
     parser.add_argument('labels_filename', type=str, help='Labels filename')
     args = vars(parser.parse_args())
@@ -179,6 +182,10 @@ def main():
     learning_rate = 0.01
     display_step = 10
     warmup = 10
+
+    if num_gpus != 8 and strategy > 0:
+        raise NotImplementedError('Current implementation only handles 8 GPUs \
+                for model parallel strategies.')
 
     os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
                                                  range(num_gpus))[:-1]
@@ -210,30 +217,60 @@ def main():
     # mtf graph
     graph = mtf.Graph()
 
-    # mtf 1D mesh
-    mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_shape_1d = [('m1_p1', 4),]
-    devices = ['gpu:%d' % i for i in range(4)]
-    layout = AssignLayout([batch_dim.name], 'm1_p1')
-    mesh1_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape_1d,
-            layout, devices)
+    # mtf mesh layouts for different strategies
+    if strategy == 0:
+        mesh = mtf.Mesh(graph, 'mesh')
+        mesh_shape = [('p1', num_gpus)]
+        devices = ['gpu:%d' %i for i in range(num_gpus)]
+        layout = AssignLayout([batch_dim.name, fc_batch_dim.name], 'p1')
+        mesh_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape,
+                layout, devices)
 
-    # mtf 2D mesh
-    mesh2 = mtf.Mesh(graph, 'mesh2')
-    mesh_shape_2d = [('m2_p1', 4), ('m2_p2', 2)]
-    devices = ['gpu:%d' % i for i in range(8)]
-    p1_layout = AssignLayout([batch_dim.name, 'fc_n_dim'], 'm2_p1')
-    p2_layout = AssignLayout(['n_dim', 'fc_k_dim'], 'm2_p2')
-    layout = p1_layout + p2_layout
-    mesh2_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape_2d, layout,
-            devices)
+        meshes = {mesh:mesh_impl}
 
-    meshes = {mesh1:mesh1_impl, mesh2:mesh2_impl}
+        mtf_x = mtf.import_tf_tensor(mesh, tf_x, mtf.Shape([batch_dim, h_dim,
+            w_dim, in_ch_dim]))
+        mtf_y = mtf.import_tf_tensor(mesh, tf_y, mtf.Shape([fc_batch_dim]))
+    elif strategy == 1:
+        # mtf 1D mesh
+        mesh1 = mtf.Mesh(graph, 'mesh1')
+        mesh_shape = [('m1_p1', 4),]
+        devices = ['gpu:%d' % i for i in range(4)]
+        layout = AssignLayout([batch_dim.name], 'm1_p1')
+        mesh1_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape,
+                layout, devices)
 
-    # mtf input / output variables
-    mtf_x = mtf.import_tf_tensor(mesh1, tf_x, mtf.Shape([batch_dim, h_dim,
-        w_dim, in_ch_dim]))
-    mtf_y = mtf.import_tf_tensor(mesh2, tf_y, mtf.Shape([fc_batch_dim]))
+        # mtf 2D mesh
+        mesh2 = mtf.Mesh(graph, 'mesh2')
+        mesh_shape = [('m2_p1', 4), ('m2_p2', 2)]
+        devices = ['gpu:%d' % i for i in range(8)]
+        p1_layout = AssignLayout([batch_dim.name, 'fc_n_dim'], 'm2_p1')
+        p2_layout = AssignLayout(['n_dim', 'fc_k_dim'], 'm2_p2')
+        layout = p1_layout + p2_layout
+        mesh2_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape, layout,
+                devices)
+
+        meshes = {mesh1:mesh1_impl, mesh2:mesh2_impl}
+
+        # mtf input / output variables
+        mtf_x = mtf.import_tf_tensor(mesh1, tf_x, mtf.Shape([batch_dim, h_dim,
+            w_dim, in_ch_dim]))
+        mtf_y = mtf.import_tf_tensor(mesh2, tf_y, mtf.Shape([fc_batch_dim]))
+    else:
+        mesh = mtf.Mesh(graph, 'mesh')
+        mesh_shape = [('p1', 4), ('p2', 2)]
+        devices = ['gpu:%d' %i for i in range(num_gpus)]
+        p1_layout = AssignLayout([batch_dim.name, 'fc_n_dim'], 'p1')
+        p2_layout = AssignLayout(['n_dim', 'fc_k_dim'], 'p2')
+        layout = p1_layout + p2_layout
+        mesh_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape,
+                layout, devices)
+
+        meshes = {mesh:mesh_impl}
+
+        mtf_x = mtf.import_tf_tensor(mesh, tf_x, mtf.Shape([batch_dim, h_dim,
+            w_dim, in_ch_dim]))
+        mtf_y = mtf.import_tf_tensor(mesh, tf_y, mtf.Shape([fc_batch_dim]))
 
     with tf.variable_scope('alexnet'):
         ConvRename = lambda x: mtf.rename_dimension(x, x.shape[-1].name,
@@ -247,14 +284,15 @@ def main():
         # Conv1 + ReLU + maxpool1
         conv1 = Conv2d(mtf_x, FltrShape((11, 11, 3, 96)), (4, 4), 'VALID',
                 activation=mtf.relu, name='conv1')
-        pool1_mesh1 = MaxPool(conv1, (3, 3), (2, 2), 'VALID', name='pool1')
-        pool1_mesh1 = ConvRename(pool1_mesh1)
+        pool1 = MaxPool(conv1, (3, 3), (2, 2), 'VALID', name='pool1')
+        pool1 = ConvRename(pool1)
 
         # Import pool1 to mesh2
-        pool1_mesh2 = import_to_mesh(mesh2, pool1_mesh1, name='import_to_mesh2')
+        if strategy == 1:
+            pool1 = import_to_mesh(mesh2, pool1, name='import_to_mesh2')
 
         # Conv2 + ReLU + maxpool2
-        conv2 = Conv2d(pool1_mesh2, FltrShape((5, 5, 96, 256)), (1, 1), 'SAME',
+        conv2 = Conv2d(pool1, FltrShape((5, 5, 96, 256)), (1, 1), 'SAME',
                 activation=mtf.relu, name='conv2')
         pool2 = MaxPool(conv2, (3, 3), (2, 2), name='pool2')
         pool2 = ConvRename(pool2)
