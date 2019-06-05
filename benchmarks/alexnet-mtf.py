@@ -328,8 +328,8 @@ def main():
                 for step in range(train_batches_per_epoch):
                     loss_val, *rem = sess.run([tf_loss] + tf_grad_updates)
 
-                    if step % display_step == 0 and step > 0:
-                        print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
+                if epoch % display_step == 0 and epoch > 0:
+                    print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
 
                 dataset.reset_pointer()
             end = time.time()
