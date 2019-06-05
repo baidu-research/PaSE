@@ -195,6 +195,7 @@ def main():
     labels_filename = args['labels_filename']
     dataset = ImageDataLoader(batch_size, dataset_dir, labels_filename, 32, 8)
     train_batches_per_epoch = np.floor(dataset.data_size / batch_size).astype(np.int16)
+    assert train_batches_per_epoch > 0
     
     # Input tensors
     tf_x, tf_y = dataset.next_batch()
