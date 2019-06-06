@@ -276,9 +276,9 @@ def Inception3(b, aux_logits=False):
 def Transformer(b):
     max_seq_len = 80
     vocab_size = 40960
-    embed_dim = 512
-    heads = 8
-    ff_dim = 2048
+    embed_dim = 1024
+    heads = 32
+    ff_dim = heads * 1024
     nx = 6
 
     enc_inp_tsr = nn_ops.Tensor((b * max_seq_len,))
