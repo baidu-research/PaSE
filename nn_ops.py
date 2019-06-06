@@ -427,6 +427,21 @@ def Reshape(tsr, shape, n_procs=None):
     return unravel
 
 
+class Transpose(Ops):
+    def __init__(self, in_tsr, perm, n_procs=None):
+        assert len(in_tsr) == len(perm)
+        self.perm = perm
+
+        out_tsr = Tensor(tuple(in_tsr[p] for p in perm))
+        super().__init__(in_tsr, in_tsr, out_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs[:, tuple(p for p in self.perm)]
+        self.costs = 0
+
+
 # Fully connected layer
 class FC(Ops):
     def __init__(self, in_tsr, n_units, n_procs=None, pw_op_cnt=0):
@@ -640,9 +655,11 @@ class Concat(Ops):
         self.costs = 0
 
 
-class BatchNorm(Ops):
-    def __init__(self, in_tsr, n_procs=None):
+class Norm(Ops):
+    def __init__(self, in_tsr, axis, n_procs=None):
         assert len(in_tsr) > 1
+        assert axis < len(in_tsr)
+        self.axis = axis
         super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
     def ComputeCosts(self):
@@ -658,8 +675,12 @@ class BatchNorm(Ops):
 
         # Communication cost for fwd phase: Reduction and broadcast of mean and
         # variance. 2 reductions for fwd phase, and 4 for bwd phase.
-        self.costs += 6.0 * GetAllReduceCost(elems / dom_per_proc[:, 0],
-                self.dom_configs[:, 0])
+        self.costs += 6.0 * GetAllReduceCost(elems / dom_per_proc[:, self.axis],
+                self.dom_configs[:, self.axis])
+
+
+def BatchNorm(in_tsr, n_procs=None):
+    return Norm(in_tsr, 0, n_procs)
 
 
 class ReduceMean(Ops):
@@ -709,6 +730,32 @@ class ReduceMean(Ops):
         words = np.prod(dom_per_proc, axis=1)
         procs = np.prod(self.dom_configs[:, self.axis], axis=1)
         self.costs = GetAllReduceCost(words, procs)
+
+
+class Softmax(ops):
+    def __init__(self, in_tsr, n_procs=None):
+        assert len(in_tsr) == 2
+        super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs
+
+        # Softmax computation costs - Taking exponent and summation in forward
+        # pass + cost of performing N multiplications per input in backward pass.
+        exp_cost = 3.0 # Cost of computing a single exponent
+        dom_per_proc = self.dom / self.dom_configs
+        self.costs = (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
+        self.costs += np.prod(dom_per_proc, axis=1) * dom[1]
+
+        # Softmax communication costs - Adding partial sums: 1 word per input
+        # per proc => batchsize / proc in forward pass.
+        # Cost of gathering the rows in backward pass.
+        self.costs = BytesToFlops(2.0 * dom_per_proc[:, 0])
+        self.costs = GetAllReduceCost(dom_per_proc[:, 0] * dom[1],
+                dom_per_proc[:, 1])
 
 
 class SoftmaxCrossEntropy(Ops):
