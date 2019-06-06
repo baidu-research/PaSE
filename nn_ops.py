@@ -391,7 +391,7 @@ class Ravel(Ops):
 
 
 class Unravel(Ops):
-    def __init__(self, tsr, shape, n_procs):
+    def __init__(self, tsr, shape, n_procs=None):
         # Input should be a flattened array
         assert len(tsr) == 1
         super().__init__(shape, tsr, Tensor(shape), n_procs)
@@ -476,31 +476,30 @@ class MatMul(Ops):
         assert len(tsr1) == len(tsr2) >= 2
         assert tsr1[-1] == tsr2[-2]
         assert all(t1 == t2 for t1, t2 in zip(tsr1[:-2], tsr2[:-2]))
-
         self.pw_op_cnt = pw_op_cnt
-        m_idx, n_idx, k_idx = range(3)
 
-        dom = tsr1[:-1] + tsr2[:-2] + (tsr2[-1], tsr2[-2])
+        dom = tsr1[:-1] + (tsr2[-1], tsr2[-2])
         in_tsrs = (tsr1, tsr2)
         out_tsr = Tensor(dom[:-1])
         super().__init__(dom, in_tsrs, out_tsr, n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
-        m_idx, n_idx, k_idx = range(3)
 
         # Configurations
-        self.in_tsr_configs = (self.dom_configs[:, (m_idx, k_idx)],
-                self.dom_configs[:, (k_idx, n_idx)])
-        self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
+        m_idx, n_idx, k_idx = -3, -2, -1
+        batch_dims = list(range(self.dom_configs.shape[1] - 3))
+        self.in_tsr_configs = (self.dom_configs[:, batch_dims + [m_idx, k_idx]],
+                self.dom_configs[:, batch_dims + [k_idx, n_idx]])
+        self.out_tsr_configs = self.dom_configs[:, :-1]
 
         # Compute the cost for a single GEMM, and multiply it with the number of
         # batches per proc
-        gemm_dom = self.dom[-2:]
-        gemm_dom_configs = self.dom_configs[:,-2:]
+        gemm_dom = self.dom[-3:]
+        gemm_dom_configs = self.dom_configs[:,-3:]
         self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
                 self.pw_op_cnt, trainable=False)
-        batches_per_proc = np.prod(self.dom[:-2] / self.dom_configs[:,:-2],
+        batches_per_proc = np.prod(self.dom[:-3] / self.dom_configs[:,:-3],
                 axis=1)
         assert batches_per_proc.shape == self.costs.shape
         self.costs *= batches_per_proc
@@ -732,9 +731,10 @@ class ReduceMean(Ops):
         self.costs = GetAllReduceCost(words, procs)
 
 
-class Softmax(ops):
-    def __init__(self, in_tsr, n_procs=None):
-        assert len(in_tsr) == 2
+class Softmax(Ops):
+    def __init__(self, in_tsr, axis=1, n_procs=None):
+        assert axis < len(in_tsr)
+        self.axis = axis
         super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
     def ComputeCosts(self):
@@ -748,14 +748,15 @@ class Softmax(ops):
         exp_cost = 3.0 # Cost of computing a single exponent
         dom_per_proc = self.dom / self.dom_configs
         self.costs = (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
-        self.costs += np.prod(dom_per_proc, axis=1) * dom[1]
+        self.costs += np.prod(dom_per_proc, axis=1) * self.dom[self.axis]
 
         # Softmax communication costs - Adding partial sums: 1 word per input
         # per proc => batchsize / proc in forward pass.
         # Cost of gathering the rows in backward pass.
-        self.costs = BytesToFlops(2.0 * dom_per_proc[:, 0])
-        self.costs = GetAllReduceCost(dom_per_proc[:, 0] * dom[1],
-                dom_per_proc[:, 1])
+        elems = np.prod(np.delete(dom_per_proc, self.axis, 1), axis=1)
+        self.costs = BytesToFlops(2.0 * elems)
+        self.costs += GetAllReduceCost(elems * self.dom[self.axis],
+                dom_per_proc[:, self.axis])
 
 
 class SoftmaxCrossEntropy(Ops):
@@ -806,7 +807,8 @@ class Embedding(Ops):
         super().ComputeCosts()
 
         self.in_tsr_configs = self.dom_configs[:, 0]
-        self.out_tsr_configs = np.insert(self.dom_configs[:, 1], 1, 1, axis=1)
+        self.out_tsr_configs = np.insert(self.dom_configs[:, 1].reshape(-1, 1),
+                1, 1, axis=1)
 
         dom_per_proc = self.dom / self.dom_configs
 

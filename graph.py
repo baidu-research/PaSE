@@ -310,7 +310,7 @@ def Transformer(b):
         # Attention
         k_t = nn_ops.Transpose(k.GetOutTensor(0), (0, 1, 3, 2))
         qk = nn_ops.MatMul(q.GetOutTensor(0), k_t.GetOutTensor(0))
-        smax = nn_ops.Softmax(qk.GetOutTensor(0))
+        smax = nn_ops.Softmax(qk.GetOutTensor(0), axis=3)
         scores = nn_ops.MatMul(smax.GetOutTensor(0), v.GetOutTensor(0))
 
         # Multi-head final linear layer
@@ -364,7 +364,7 @@ def Transformer(b):
     x = pe
     for _ in range(nx):
         x = Encoder(x.GetOutTensor(0))
-    enc = nn_ops.Norm(x, 1)
+    enc = nn_ops.Norm(x.GetOutTensor(0), 1)
 
     # Decoder
     embed = nn_ops.Embedding(dec_inp_tsr, vocab_size, embed_dim)
@@ -372,7 +372,7 @@ def Transformer(b):
     x = pe
     for _ in range(nx):
         x = Decoder(x.GetOutTensor(0), enc.GetOutTensor(0))
-    dec = nn_ops.Norm(x, 1)
+    dec = nn_ops.Norm(x.GetOutTensor(0), 1)
 
     # Softmax + cross-entropy loss
     loss = nn_ops.SoftmaxCrossEntropy(dec.GetOutTensor(0))
@@ -391,8 +391,10 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
         G = Inception3(batch_size)
     elif graph_type == 'seq2seq':
         G = Seq2seq(batch_size)
+    elif graph_type == 'transformer':
+        G = Transformer(batch_size)
     else:
-        assert(False)
+        assert False
 
     return G
 
