@@ -248,8 +248,9 @@ class Ops():
                 Ops.G = nx.DiGraph()
             node_id = Ops.G.number_of_nodes()
         
-            print("Node: " + str(node_id) + "; Type: " + str(type(self)) + 
-                    "; Configs: " + str(self.dom_configs.shape[0]))
+            print("Node: " + str(node_id) + "; Type: " +
+                    str(self.__class__.__name__) + "; Configs: " +
+                    str(self.dom_configs.shape[0]))
         
             costs = self.GetCosts()
             costs = pd.Series(costs, index=self.dom_config_tuples, name='cost')
