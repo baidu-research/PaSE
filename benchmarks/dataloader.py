@@ -53,36 +53,36 @@ class TextDataLoader():
     def parse_text(self, sentence, label):
         # Split sentence into words, and convert it into ids
         sentence = tf.string_split([sentence]).values
-        sentence = self.words.lookup(sentence)
+        src_seq_len = tf.size(sentence)
+        if self.max_seq_len is not None:
+            assert src_seq_len <= self.max_seq_len
+        sentence = self.src_vocab.lookup(sentence)
 
         label = tf.string_split([label]).values
-        seq_len = tf.size(label)
-        label = self.tags.lookup(label)
+        tgt_seq_len = tf.size(label)
+        if self.max_seq_len is not None:
+            assert tgt_seq_len <= self.max_seq_len
+        label = self.tgt_vocab.lookup(label)
 
         # Prepend and append SOS and EOS tokens to label
         #label = tf.concat([[self.tgt_sos_token], label, [self.tgt_eos_token]],
         #        0)
 
-        return sentence, label, seq_len
+        return sentence, label, src_seq_len, tgt_seq_len
 
-    def __init__(self, batch_size, words_filename, tags_filename,
-            src_text_filename, tgt_text_filename, num_parallel_calls = 32,
-            prefetches = 8):
+    def __init__(self, batch_size, src_vocab_filename, tgt_vocab_filename,
+            src_text_filename, tgt_text_filename, max_seq_len=None,
+            num_parallel_calls = 32, prefetches = 8):
         with tf.device('/cpu:0'):
             self.batch_size = batch_size
+            self.max_seq_len = max_seq_len
 
             # Vocab to id table
-            words = tf.contrib.lookup.index_table_from_file(words_filename)
-            tags = tf.contrib.lookup.index_table_from_file(tags_filename)
+            src_vocab = tf.contrib.lookup.index_table_from_file(src_vocab_filename)
+            tgt_vocab = tf.contrib.lookup.index_table_from_file(tgt_vocab_filename)
 
-            self.words = words
-            self.tags = tags
-            #self.src_vocab_size = words.size()
-            #self.tgt_vocab_size = tags.size()
-            #self.src_sos_token = words.lookup(tf.constant('<s>'))
-            #self.tgt_sos_token = tags.lookup(tf.constant('<s>'))
-            #self.src_eos_token = words.lookup(tf.constant('</s>'))
-            #self.tgt_eos_token = tags.lookup(tf.constant('</s>'))
+            self.src_vocab = src_vocab
+            self.tgt_vocab = tgt_vocab
 
             # Sentences and labels datasets
             sentences = tf.data.TextLineDataset(src_text_filename)
@@ -92,14 +92,18 @@ class TextDataLoader():
             dataset = dataset.map(self.parse_text, num_parallel_calls =
                     num_parallel_calls)
 
-            id_pad_word = words.lookup(tf.constant('<pad>'))
-            id_pad_tag = tags.lookup(tf.constant('<pad>'))
+            try:
+                self.src_pad_id = src_vocab.lookup(tf.constant('<pad>'))
+                self.tgt_pad_id = tgt_vocab.lookup(tf.constant('<pad>'))
+            except ValueError:
+                raise ValueError("<pad> token is missing in the vocabulary.")
 
-            # Shape: sentence, label, seq_len
-            padded_shapes = (tf.TensorShape([None]), tf.TensorShape([None]),
+            # Shape: sentence, label, src_seq_len, tgt_seq_len
+            padded_shapes = (tf.TensorShape([max_seq_len]),
+                    tf.TensorShape([max_seq_len]), tf.TensorShape([]),
                     tf.TensorShape([]))
-            padding_values = (id_pad_word, id_pad_tag, tf.constant(0,
-                dtype=tf.int32))
+            padding_values = (self.src_pad_id, self.tgt_pad_id, tf.constant(0,
+                dtype=tf.int32), tf.constant(0, dtype=tf.int32))
 
             #dataset = dataset.shuffle(buffer_size=buffer_size) 
             dataset = dataset.padded_batch(batch_size, padded_shapes =
