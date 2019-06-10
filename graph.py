@@ -374,7 +374,8 @@ def Transformer(b):
         x = Decoder(x.GetOutTensor(0), enc.GetOutTensor(0))
     dec = nn_ops.Norm(x.GetOutTensor(0), 1)
 
-    # Softmax + cross-entropy loss
+    # Linear + Softmax + cross-entropy loss
+    dec = nn_ops.FC(dec.GetOutTensor(0), vocab_size)
     loss = nn_ops.SoftmaxCrossEntropy(dec.GetOutTensor(0))
     return nn_ops.Ops.G
 

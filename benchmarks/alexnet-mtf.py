@@ -5,11 +5,7 @@ import mesh_tensorflow as mtf
 import sys
 import time
 import os
-from datetime import datetime
 from argparse import ArgumentParser
-import functools
-import random
-import string
 
 from dataloader import ImageDataLoader
 

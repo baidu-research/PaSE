@@ -506,6 +506,44 @@ class MatMul(Ops):
         self.costs *= batches_per_proc
 
 
+'''
+def Einsum(eq, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
+    tsr1_dims, rem_dims = eq.split(',')
+    tsr2_dims, out_dims = rem_dims.split('->')
+
+    tsr1_dim_set = set(tsr1_dims)
+    tsr2_dim_set = set(tsr2_dims)
+    out_dim_set = set(out_dims)
+    red_dim_set = (tsr1_dim_set | tsr2_dim_set) - out_dim_set
+
+    dim1 = (tsr1_dim_set - red_dim_set)
+    dim2 = (tsr2_dim_set - red_dim_set)
+    tsr1_batch_set = dim1 & tsr2_dim_set
+    tsr2_batch_set = dim2 & tsr2_dim_set
+
+    m_dim = dim1 - tsr1_batch_set
+    n_dim = dim2 - tsr2_batch_set
+
+    assert len(m_dim) <= 1
+    assert len(n_dim) <= 1
+
+    tsr1_batch_dims = [d for d in tsr1_dims if d in tsr1_batch_set]
+    tsr2_batch_dims = [d for d in tsr2_dims if d in tsr2_batch_set]
+
+    assert len(tsr1_dims) == len(tsr1)
+    assert len(tsr2_dims) == len(tsr2)
+
+    tsr1_red_axis = [i for i, d in enumerate(tsr1_dims) if d in red_dims]
+    tsr2_red_axis = [i for i, d in enumerate(tsr2_dims) if d in red_dims]
+
+    assert len(tsr1_red_axis) == len(tsr2_red_axis)
+
+    assert all(tsr1[i] == tsr2[i] for 
+
+    assert all(a < len(tsr1) and a < len(tsr2) for a in reduction_axis)
+'''
+
+
 # Convolution
 class Conv(Ops):
     def __init__(self, img, fltr, stride=1, pad=0, n_procs=None, pw_op_cnt=0):
