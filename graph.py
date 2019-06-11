@@ -275,7 +275,7 @@ def Inception3(b, aux_logits=False):
 
 def Transformer(b):
     max_seq_len = 256
-    vocab_size = 40960
+    vocab_size = 50000
     embed_dim = 1024
     heads = 32
     ff_dim = heads * 1024

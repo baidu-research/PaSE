@@ -9,7 +9,7 @@ import os
 from argparse import ArgumentParser
 from collections import namedtuple
 
-from dataloader import ImageDataLoader
+from dataloader import TextDataLoader
 
 
 def AssignLayout(ta_axes, mesh_axis):
@@ -19,10 +19,13 @@ def AssignLayout(ta_axes, mesh_axis):
     return layout
 
 
-def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
+def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
     # Parameters
     nx = 6
     max_seq_len = 256
+    d_model = 1024
+    heads = 32
+    d_ff = heads * 1024
     r = 2
     c = 4
 
@@ -31,17 +34,29 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
             tgt_text)
     src_pad_id = dataset.src_pad_id
     enc_inputs, dec_inputs, _, _ = dataset.next_batch()
-    print("Source vocab size: " + str(dataset.src_vocab.size))
-    print("Target vocab size: " + str(dataset.tgt_vocab.size))
-    
+
+    with open(src_vocab) as f:
+        for src_vocab_size, _ in enumerate(f):
+            pass
+    with open(tgt_vocab) as f:
+        for tgt_vocab_size, _ in enumerate(f):
+            pass
+    print("Source vocab size: %d" % src_vocab_size)
+    print("Target vocab size: %d" % tgt_vocab_size)
+
+    # Make the vocabulary size a multiple of mesh size
+    src_vocab_size = int(math.ceil(src_vocab_size / c)) * int(c)
+    tgt_vocab_size = int(math.ceil(tgt_vocab_size / c)) * int(c)
+
     # mtf dimensions
-    mtf_batch = mtf.Dimension('batch', batch)
+    mtf_batch = mtf.Dimension('batch', batch_size)
+    mtf_d_model = mtf.Dimension('d_model', d_model)
     mtf_seq_len = mtf.Dimension('length_dim', max_seq_len)
-    mtf_src_vocab_dim = mtf.Dimension('vocab_dim', src_vocab_dim)
-    mtf_tgt_vocab_dim = mtf.Dimension('vocab_dim', tgt_vocab_dim)
+    mtf_src_vocab_dim = mtf.Dimension('vocab_dim', src_vocab_size)
+    mtf_tgt_vocab_dim = mtf.Dimension('vocab_dim', tgt_vocab_size)
     mtf_heads = mtf.Dimension('heads', heads)
     mtf_d_k = mtf.Dimension('d_k', d_model // heads)
-    #mtf_memory_len_dim = mtf.Dimension('memory_len_dim', max_seq_len)
+    mtf_memory_len_dim = mtf.Dimension('memory_len_dim', max_seq_len)
     mtf_d_ff = mtf.Dimension('d_ff', d_ff)
 
     # Mesh
@@ -52,6 +67,7 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
     row_layout = AssignLayout([mtf_batch.name], 'rows')
     col_layout = AssignLayout([mtf_src_vocab_dim.name, mtf_d_ff.name,
         mtf_heads.name], 'cols')
+    layout = row_layout + col_layout
     mesh_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape, layout,
             devices)
     mesh_to_impl = {mesh:mesh_impl}
@@ -59,25 +75,25 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
     # Layers
     def MultiheadAttention(q, k, mask, dropout_rate=0.5,
             name='multihead_attention'):
-        #k = mtf.rename_dimension(k, mtf_seq_len.name, mtf_memory_len_dim.name)
-        out = mtf.layers.multihead_attention(q, k, mask, mtf_d_k.size, mtf_heads,
+        k = mtf.rename_dimension(k, mtf_seq_len.name, mtf_memory_len_dim.name)
+        out = mtf.layers.multihead_attention(q, k, mask, mtf_d_k, mtf_heads,
                 dropout_rate, name=name)
         return out
 
         #d_model = mtf_d_model.size
     
-        #k = mtf.layers.Dense(k, mtf.Dimension('heads', d_model), use_bias=False,
+        #k = mtf.layers.dense(k, mtf.Dimension('heads', d_model), use_bias=False,
         #        name='linear_k')
         #k = mtf.replace_dimensions(k, k.shape[-1], [mtf_heads, mtf_d_k])
         #k = mtf.replace_dimensions(k, k.shape[0], [mtf_batch, mtf_seq_len])
     
-        #v = mtf.layers.Dense(v, mtf.Dimension('heads', d_model), use_bias=False,
+        #v = mtf.layers.dense(v, mtf.Dimension('heads', d_model), use_bias=False,
         #        name='linear_v')
         #v = mtf.replace_dimensions(v, v.shape[-1], [mtf_heads, mtf_d_k])
         #v = mtf.replace_dimensions(v, v.shape[0], [mtf_batch, mtf_seq_len])
         #v = mtf.rename_dimension(v, mtf_seq_len.name, mtf_memory_len_dim.name)
     
-        #q = mtf.layers.Dense(q, mtf.Dimension('heads', d_model), use_bias=False,
+        #q = mtf.layers.dense(q, mtf.Dimension('heads', d_model), use_bias=False,
         #        name='linear_k')
         #q = mtf.replace_dimensions(q, q.shape[-1], [mtf_heads, mtf_d_k])
         #q = mtf.replace_dimensions(q, q.shape[0], [mtf_batch, mtf_seq_len])
@@ -103,24 +119,24 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
     
     def FeedFwd(x, dropout_rate=0.5, name='transformer_ff'):
         return mtf.layers.dense_relu_dense(x, mtf_d_ff, dropout_rate, name=name)
-        #x = mtf.layers.Dense(x, mtf_d_ff, use_bias=False, activation=mtf.relu,
+        #x = mtf.layers.dense(x, mtf_d_ff, use_bias=False, activation=mtf.relu,
         #        name='linear_ff1')
         #x = mtf.dropout(x, dropout_rate, noise_shape=x.shape - mtf_seq_len,
         #        name='ff_dropout')
-        #x = mtf.layers.Dense(x, mtf_d_model, use_bias=False, name='linear_ff2')
+        #x = mtf.layers.dense(x, mtf_d_model, use_bias=False, name='linear_ff2')
         #return x
     
     
     def EncoderLayer(x, seq_ids, dropout_rate=0.5):
-        mask = mtf.cast(mtf.not_equal(seq_ids, src_pad_id), dtype=tf.int32)
+        mask = mtf.cast(mtf.not_equal(seq_ids, src_pad_id), dtype=tf.float32)
         assert mask.shape == mtf.Shape([mtf_batch, mtf_seq_len])
 
-        norm1 = mtf.layer_norm(x, dim=x.shape[-1], name='enc_norm1')
+        norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm1')
         att = MultiheadAttention(norm1, norm1, mask,
                 name='enc_multihead_attention')
         x += mtf.dropout(att, dropout_rate)
     
-        norm2 = mtf.layer_norm(x, dim=x.shape[-1], name='enc_norm2')
+        norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm2')
         ff = FeedFwd(norm2, dropout_rate, name='enc_ff')
         x += mtf.dropout(ff, dropout_rate)
     
@@ -129,19 +145,19 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
     
     def DecoderLayer(x, enc_out, dropout_rate=0.5):
         mask = mtf.layers.attention_bias_local_block(x.mesh, mtf_seq_len,
-                mtf_seq_len)
+                mtf_memory_len_dim)
 
-        norm1 = mtf.layer_norm(x, dim=x.shape[-1], name='dec_norm1')
+        norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm1')
         att = MultiheadAttention(norm1, norm1, mask,
                 name='dec_multihead_attention1')
         x += mtf.dropout(att, dropout_rate)
     
-        norm2 = mtf.layer_norm(x, dim=x.shape[-1], name='dec_norm2')
+        norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm2')
         att = MultiheadAttention(norm2, enc_out, mask,
                 name='dec_multihead_attention2')
         x += mtf.dropout(att, dropout_rate)
     
-        norm3 = mtf.layer_norm(x, dim=x.shape[-1], name='dec_norm3')
+        norm3 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm3')
         ff = FeedFwd(norm3, dropout_rate, name='dec_ff')
         x += mtf.dropout(ff, dropout_rate)
     
@@ -154,27 +170,32 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
                 mtf.Shape([mtf_batch, mtf_seq_len]))
 
         embed = mtf.layers.embedding(mtf_enc_inputs, mtf_src_vocab_dim,
-                mtf_d_model, mtf_enc_inputs.dtype, name='enc_embedding')
+                mtf_d_model, tf.float32, name='enc_embedding')
         assert embed.shape == mtf.Shape([mtf_batch, mtf_seq_len, mtf_d_model])
 
         # Values for positional encoder
-        pos = np.array(tuple(range(length_dim))).reshape(-1, 1)
-        val = np.power(10000, ((2 * np.array(tuple(range(d_model)))) / d_model))
-        pos_enc_values = pos / val
-        np.sin(pos_enc_values[:,::2], out=pos_enc_values[:,::2])
-        np.cos(pos_enc_values[:,1::2], out=pos_enc_values[:,1::2])
+        pos = np.array(tuple(range(max_seq_len))).reshape(-1, 1)
+        val = np.power(10000, ((2 * np.array(tuple(range(d_model))))
+            / d_model), dtype=float)
+        pos_enc_values = np.divide(pos, val, dtype=np.float32)
+        np.sin(pos_enc_values[:,::2], out=pos_enc_values[:,::2],
+                dtype=np.float32)
+        np.cos(pos_enc_values[:,1::2], out=pos_enc_values[:,1::2],
+                dtype=np.float32)
         
         # positional encoder
-        pos_enc = mtf.get_variable(mesh, 'pos_enc', shape=mtf.Shape([mtf_seq_len,
-            mtf_d_model]), dtype=tf.float32, initializer=pos_enc_values,
-            trainable=False)
+        pos_enc = mtf.get_variable(mesh, 'pos_enc',
+                shape=mtf.Shape([mtf_seq_len, mtf_d_model]), dtype=tf.float32,
+                initializer=tf.constant_initializer(pos_enc_values),
+                trainable=False)
         x = (embed * math.sqrt(mtf_d_model.size)) + pos_enc
 
         # Encoder
         for i in range(nx):
             with tf.variable_scope('enc_layer_%d' % i):
                 x = EncoderLayer(x, mtf_enc_inputs)
-        enc_output = mtf.layer_norm(x, name='enc_final_norm')
+        enc_output = mtf.layers.layer_norm(x, dim=x.shape[-1],
+                name='enc_final_norm')
         assert enc_output.shape == mtf.Shape([mtf_batch, mtf_seq_len,
             mtf_d_model])
 
@@ -184,7 +205,7 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
                 mtf.Shape([mtf_batch, mtf_seq_len]))
 
         embed = mtf.layers.embedding(mtf_dec_inputs, mtf_tgt_vocab_dim,
-                mtf_d_model, mtf_dec_inputs.dtype, name='dec_embedding')
+                mtf_d_model, tf.float32, name='dec_embedding')
 
         # positional encoder
         x = (embed * math.sqrt(mtf_d_model.size)) + pos_enc
@@ -193,26 +214,28 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text):
         for i in range(nx):
             with tf.variable_scope('dec_layer_%d' % i):
                 x = DecoderLayer(x, enc_output)
-        dec_output = mtf.layer_norm(x, name='dec_final_norm')
+        dec_output = mtf.layers.layer_norm(x, dim=x.shape[-1],
+                name='dec_final_norm')
         assert dec_output.shape == mtf.Shape([mtf_batch, mtf_seq_len,
             mtf_d_model])
 
     # Linear + softmax + cross-entropy
     with tf.variable_scope('loss'):
-        out = mtf.layers.Dense(dec_output, mtf_tgt_vocab_dim,
+        out = mtf.layers.dense(dec_output, mtf_tgt_vocab_dim,
                 name='final_projection')
-        one_hot_labels = mtf.one_hot(mtf_labels, out.shape[-1])
+        labels = mtf.cast(mtf_dec_inputs, tf.int32)
+        one_hot_labels = mtf.one_hot(labels, out.shape[-1], dtype=out.dtype)
         out = mtf.layers.softmax_cross_entropy_with_logits(out, one_hot_labels,
                 out.shape[-1])
         mtf_loss = mtf.reduce_mean(out)
 
     with tf.variable_scope('optimize'):
-        grads = mtf.gradient([mtf_loss], [v.outputs[0] for v in
+        grads = mtf.gradients([mtf_loss], [v.outputs[0] for v in
             graph.trainable_variables])
-        opt = mtf.optimize.SgdOptimizer(learning_rate)
+        opt = mtf.optimize.SgdOptimizer(lr)
         grad_updates = opt.apply_grads(grads, graph.trainable_variables)
 
-    lowering = mtf.Lowering(graph, meshes)
+    lowering = mtf.Lowering(graph, mesh_to_impl)
     tf_loss = lowering.export_to_tf_tensor(mtf_loss)
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
@@ -271,10 +294,10 @@ def main():
                     1: Optimized for 1080Ti, \
                     2: Optimized for DGX. \
                     (Default: 0) ")
-    parser.add_argument('src_vocab', type=str, help="Source vocab data file.")
-    parser.add_argument('tgt_vocab', type=str, help="Target vocab data file.")
-    parser.add_argument('src_text', type=str, help="Source text data file.")
-    parser.add_argument('tgt_text', type=str, help="Target text data file.")
+    parser.add_argument('--src_vocab', type=str, help="Source vocab data file.")
+    parser.add_argument('--tgt_vocab', type=str, help="Target vocab data file.")
+    parser.add_argument('--src_text', type=str, help="Source text data file.")
+    parser.add_argument('--tgt_text', type=str, help="Target text data file.")
     args = vars(parser.parse_args())
 
     # Input parameters
@@ -298,7 +321,8 @@ def main():
     os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
                                                  range(num_gpus))[:-1]
             
-    Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text)
+    Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text,
+            lr=learning_rate)
     
 
 if __name__ == '__main__':
