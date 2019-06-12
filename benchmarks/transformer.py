@@ -12,6 +12,10 @@ from collections import namedtuple
 from dataloader import TextDataLoader
 
 
+def FlattenList(l):
+   return [item for sublist in l for item in sublist]
+
+
 def AssignLayout(ta_axes, mesh_axis):
     layout = []
     for a in ta_axes:
@@ -19,26 +23,30 @@ def AssignLayout(ta_axes, mesh_axis):
     return layout
 
 
-def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
+def Transformer(args):
     # Parameters
-    nx = 6
-    max_seq_len = 256
-    d_model = 1024
-    heads = 32
-    d_ff = heads * 1024
     r = 2
     c = 4
+    nx = 6
+    max_seq_len = 256
+    d_model = 512
+    heads = 32
+    d_ff = heads * 1024
+    #max_seq_len = 64
+    #d_model = 64
+    #heads = 8
+    #d_ff = heads * 64
 
     # Dataset
-    dataset = TextDataLoader(batch_size, src_vocab, tgt_vocab, src_text,
-            tgt_text)
-    src_pad_id = dataset.src_pad_id
+    dataset = TextDataLoader(args['batch'], args['src_vocab'],
+            args['tgt_vocab'], args['src_text'], args['tgt_text'])
+    src_pad_id = tf.cast(dataset.src_pad_id, tf.int32)
     enc_inputs, dec_inputs, _, _ = dataset.next_batch()
 
-    with open(src_vocab) as f:
+    with open(args['src_vocab']) as f:
         for src_vocab_size, _ in enumerate(f):
             pass
-    with open(tgt_vocab) as f:
+    with open(args['tgt_vocab']) as f:
         for tgt_vocab_size, _ in enumerate(f):
             pass
     print("Source vocab size: %d" % src_vocab_size)
@@ -49,7 +57,7 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
     tgt_vocab_size = int(math.ceil(tgt_vocab_size / c)) * int(c)
 
     # mtf dimensions
-    mtf_batch = mtf.Dimension('batch', batch_size)
+    mtf_batch = mtf.Dimension('batch', args['batch'])
     mtf_d_model = mtf.Dimension('d_model', d_model)
     mtf_seq_len = mtf.Dimension('length_dim', max_seq_len)
     mtf_src_vocab_dim = mtf.Dimension('vocab_dim', src_vocab_size)
@@ -166,8 +174,8 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
 
     # Model - Encoder embedding
     with tf.variable_scope('encoder'):
-        mtf_enc_inputs = mtf.import_tf_tensor(mesh, enc_inputs,
-                mtf.Shape([mtf_batch, mtf_seq_len]))
+        mtf_enc_inputs = mtf.cast(mtf.import_tf_tensor(mesh, enc_inputs,
+            mtf.Shape([mtf_batch, mtf_seq_len])), tf.int32)
 
         embed = mtf.layers.embedding(mtf_enc_inputs, mtf_src_vocab_dim,
                 mtf_d_model, tf.float32, name='enc_embedding')
@@ -201,8 +209,8 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
 
     # Decoder embedding
     with tf.variable_scope('decoder'):
-        mtf_dec_inputs = mtf.import_tf_tensor(mesh, dec_inputs,
-                mtf.Shape([mtf_batch, mtf_seq_len]))
+        mtf_dec_inputs = mtf.cast(mtf.import_tf_tensor(mesh, dec_inputs,
+            mtf.Shape([mtf_batch, mtf_seq_len])), tf.int32)
 
         embed = mtf.layers.embedding(mtf_dec_inputs, mtf_tgt_vocab_dim,
                 mtf_d_model, tf.float32, name='dec_embedding')
@@ -223,8 +231,7 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
     with tf.variable_scope('loss'):
         out = mtf.layers.dense(dec_output, mtf_tgt_vocab_dim,
                 name='final_projection')
-        labels = mtf.cast(mtf_dec_inputs, tf.int32)
-        one_hot_labels = mtf.one_hot(labels, out.shape[-1], dtype=out.dtype)
+        one_hot_labels = mtf.one_hot(mtf_dec_inputs, out.shape[-1], dtype=out.dtype)
         out = mtf.layers.softmax_cross_entropy_with_logits(out, one_hot_labels,
                 out.shape[-1])
         mtf_loss = mtf.reduce_mean(out)
@@ -232,10 +239,13 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
     with tf.variable_scope('optimize'):
         grads = mtf.gradients([mtf_loss], [v.outputs[0] for v in
             graph.trainable_variables])
+        lr = 0.01
         opt = mtf.optimize.SgdOptimizer(lr)
         grad_updates = opt.apply_grads(grads, graph.trainable_variables)
 
+    print('Lowering mtf ops...', flush=True)
     lowering = mtf.Lowering(graph, mesh_to_impl)
+    print('Finished lowering.', flush=True)
     tf_loss = lowering.export_to_tf_tensor(mtf_loss)
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
@@ -243,21 +253,25 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
     tf_init_vars = \
             FlattenList([lowering.variables[var].laid_out_tensor.all_slices for
                 var in graph.trainable_variables])
+    tf_init_vars += lowering.variables[pos_enc.operation].laid_out_tensor.all_slices
     init_op = []
     for v in tf_init_vars:
         with tf.device(v.device):
             init_op.append(v.initializer)
 
     # Training
+    display_step = 1
     cnt = 0
+    config = tf.ConfigProto()
+    config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
     with tf.variable_scope('train'):
-        with tf.Session() as sess:
+        with tf.Session(config=config) as sess:
             dataset.reset_pointer()
             sess.run(init_op)
 
             tot_time = float(0)
             start = time.time()
-            for epoch in range(num_epochs):
+            for epoch in range(args['epochs']):
                 step = 0
 
                 while True:
@@ -275,7 +289,7 @@ def Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text, lr=0.01):
             end = time.time()
             tot_time += (end - start)
 
-    samples_per_sec = (batch_size * cnt) / tot_time
+    samples_per_sec = (args['batch'] * cnt) / tot_time
     print("Throughout: " + str(samples_per_sec) + " samples / sec")
 
 
@@ -286,7 +300,7 @@ def main():
             help="Batch size. (Default: 64)")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors. (Default: 8)")
-    parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
+    parser.add_argument('-t', '--epochs', type=int, required=False, default=1,
             help="No. of epochs")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(3)), 
@@ -300,29 +314,14 @@ def main():
     parser.add_argument('--tgt_text', type=str, help="Target text data file.")
     args = vars(parser.parse_args())
 
-    # Input parameters
-    num_gpus = args['procs']
-    batch_size = args['batch']
-    num_epochs = args['epochs']
-    strategy = args['strategy']
-    num_classes = 1000
-    learning_rate = 0.01
-    display_step = 10
-    warmup = 10
-    src_vocab = args['src_vocab']
-    tgt_vocab = args['tgt_vocab']
-    src_text = args['src_text']
-    tgt_text = args['tgt_text']
-
-    if num_gpus != 8 and strategy > 0:
+    if args['procs'] != 8 and strategy > 0:
         raise NotImplementedError('Current implementation only handles 8 GPUs \
                 for model parallel strategies.')
 
     os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
-                                                 range(num_gpus))[:-1]
+                                                 range(args['procs']))[:-1]
             
-    Transformer(batch_size, src_vocab, tgt_vocab, src_text, tgt_text,
-            lr=learning_rate)
+    Transformer(args)
     
 
 if __name__ == '__main__':
