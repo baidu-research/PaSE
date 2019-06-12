@@ -40,10 +40,9 @@ class ImageDataLoader():
 
             self.dataset_iterator = dataset.make_initializable_iterator()
             self.initializer = self.dataset_iterator.initializer
-            self.next_element = self.dataset_iterator.get_next()
 
     def next_batch(self):
-        return self.next_element
+        return self.dataset_iterator.get_next()
 
     def reset_pointer(self):
         tf.get_default_session().run(self.initializer)
@@ -92,11 +91,8 @@ class TextDataLoader():
             dataset = dataset.map(self.parse_text, num_parallel_calls =
                     num_parallel_calls)
 
-            try:
-                self.src_pad_id = src_vocab.lookup(tf.constant('<pad>'))
-                self.tgt_pad_id = tgt_vocab.lookup(tf.constant('<pad>'))
-            except ValueError:
-                raise ValueError("<pad> token is missing in the vocabulary.")
+            self.src_pad_id = src_vocab.lookup(tf.constant('<pad>'))
+            self.tgt_pad_id = tgt_vocab.lookup(tf.constant('<pad>'))
 
             # Shape: sentence, label, src_seq_len, tgt_seq_len
             padded_shapes = (tf.TensorShape([max_seq_len]),
@@ -113,12 +109,12 @@ class TextDataLoader():
 
             self.dataset_iterator = dataset.make_initializable_iterator()
             self.initializer = self.dataset_iterator.initializer
-            self.next_element = self.dataset_iterator.get_next()
 
     def next_batch(self):
-        return self.next_element
+        return self.dataset_iterator.get_next()
 
     def reset_pointer(self):
-        tf.get_default_session().run(self.initializer)
- 
+        sess = tf.get_default_session()
+        sess.run(tf.tables_initializer())
+        sess.run(self.initializer)
 
