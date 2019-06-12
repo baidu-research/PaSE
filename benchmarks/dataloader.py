@@ -16,25 +16,40 @@ class ImageDataLoader():
     
         return image, label
 
-    def __init__(self, batch_size, dataset_dir, labels_filename,
-            num_parallel_calls = 32, prefetches = 8):
+    def __init__(self, batch_size, data_size=1000, dataset_dir=None,
+            labels_filename=None, synthetic=False, num_parallel_calls = 32,
+            prefetches = 8):
         with tf.device('/cpu:0'):
-            labels_filename = os.path.join(dataset_dir, labels_filename)
+            if synthetic:
+                self.data_size = data_size
+                num_classes = 1000
+                features = tf.random_uniform([data_size, 227, 227, 3], minval=0,
+                        maxval=1, dtype=tf.float32)
+                classes = tf.random_uniform([data_size], minval=0,
+                        maxval=num_classes, dtype=tf.int32)
+                dataset = tf.data.Dataset.from_tensor_slices((features,
+                    classes))
+            else:
+                assert dataset_dir is not None
+                assert labels_filename is not None
 
-            filenames = []
-            labels = []
-            with open(labels_filename, 'r') as label_file:
-              for line in label_file:
-                s = line.split(' ')
-                filenames.append(dataset_dir + '/train/' + s[0])
-                labels.append(s[1])
+                labels_filename = os.path.join(dataset_dir, labels_filename)
 
-            self.data_size = len(labels)
+                filenames = []
+                labels = []
+                with open(labels_filename, 'r') as label_file:
+                  for line in label_file:
+                    s = line.split(' ')
+                    filenames.append(dataset_dir + '/train/' + s[0])
+                    labels.append(s[1])
 
-            dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
-            #dataset = dataset.shuffle(len(filenames))
-            dataset = dataset.map(self.parse_image, num_parallel_calls =
-                    num_parallel_calls)
+                self.data_size = len(labels)
+
+                dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
+                #dataset = dataset.shuffle(len(filenames))
+                dataset = dataset.map(self.parse_image, num_parallel_calls =
+                        num_parallel_calls)
+
             dataset = dataset.batch(batch_size)
             dataset = dataset.prefetch(prefetches)
 

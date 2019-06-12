@@ -29,8 +29,8 @@ def BytesToFlops(bytes):
         v100_bw = float((47.99 * 3) / 8) # Unidirectional for 3 sublinks per direction.
                                          # GBytes/sec = b/8 GWords/sec
         
-        peak_flop = p100_peak_flop
-        bw = p100_bw
+        peak_flop = v100_peak_flop
+        bw = v100_bw
         BytesToFlops.bw_to_flops = float(peak_flop / bw)
 
         return BytesToFlops.bw_to_flops * bytes
