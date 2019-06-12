@@ -16,16 +16,16 @@ class ImageDataLoader():
     
         return image, label
 
-    def __init__(self, batch_size, data_size=1000, dataset_dir=None,
+    def __init__(self, batch_size, dataset_size=1000, dataset_dir=None,
             labels_filename=None, synthetic=False, num_parallel_calls = 32,
             prefetches = 8):
         with tf.device('/cpu:0'):
             if synthetic:
-                self.data_size = data_size
+                self.dataset_size = dataset_size
                 num_classes = 1000
-                features = tf.random_uniform([data_size, 227, 227, 3], minval=0,
-                        maxval=1, dtype=tf.float32)
-                classes = tf.random_uniform([data_size], minval=0,
+                features = tf.random_uniform([dataset_size, 227, 227, 3],
+                        minval=0, maxval=1, dtype=tf.float32)
+                classes = tf.random_uniform([dataset_size], minval=0,
                         maxval=num_classes, dtype=tf.int32)
                 dataset = tf.data.Dataset.from_tensor_slices((features,
                     classes))
@@ -43,7 +43,7 @@ class ImageDataLoader():
                     filenames.append(dataset_dir + '/train/' + s[0])
                     labels.append(s[1])
 
-                self.data_size = len(labels)
+                self.dataset_size = len(labels)
 
                 dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
                 #dataset = dataset.shuffle(len(filenames))

@@ -156,6 +156,8 @@ def main():
             help="No. of processors. (Default: 8)")
     parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
             help="No. of epochs")
+    parser.add_argument('--display_steps', type=int, required=False, default=10,
+            help="No. of epochs")
     parser.add_argument('-d', '--dropout', type=float, required=False,
             default=0.5, help="keep_prob value for dropout layers. (Default: 0.5)")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
@@ -164,8 +166,12 @@ def main():
                     1: Optimized for 1080Ti, \
                     2: Optimized for DGX. \
                     (Default: 0) ")
-    parser.add_argument('dataset_dir', type=str, help='Dataset directory')
-    parser.add_argument('labels_filename', type=str, help='Labels filename')
+    parser.add_argument('--dataset_dir', type=str, required=False, default=None,
+            help='Dataset directory')
+    parser.add_argument('--labels_filename', type=str, required=False,
+            default=None, help='Labels filename')
+    parser.add_argument('--dataset_size', type=int, required=False,
+            default=1000, help='Labels filename')
     args = vars(parser.parse_args())
 
     # Input parameters
@@ -176,7 +182,7 @@ def main():
     strategy = args['strategy']
     num_classes = 1000
     learning_rate = 0.01
-    display_step = 10
+    display_step = args['display_steps']
     warmup = 10
 
     if num_gpus != 8 and strategy > 0:
@@ -189,8 +195,14 @@ def main():
     # Initalize the data generator seperately for the training and validation set
     dataset_dir = args['dataset_dir']
     labels_filename = args['labels_filename']
-    dataset = ImageDataLoader(batch_size, dataset_dir, labels_filename, 32, 8)
-    train_batches_per_epoch = np.floor(dataset.data_size / batch_size).astype(np.int16)
+    dataset_size = args['dataset_size']
+    if dataset_dir is None or labels_filename is None:
+        dataset = ImageDataLoader(batch_size, dataset_size=dataset_size,
+                synthetic=True)
+    else:
+        dataset = ImageDataLoader(batch_size, dataset_dir=dataset_dir,
+                labels_filename=labels_filename, synthetic=False)
+    train_batches_per_epoch = np.floor(dataset.dataset_size / batch_size).astype(np.int16)
     assert train_batches_per_epoch > 0
     
     # Input tensors
@@ -370,7 +382,7 @@ def main():
             end = time.time()
             tot_time += (end - start)
 
-    img_per_sec = (dataset.data_size * num_epochs) / tot_time
+    img_per_sec = (dataset.dataset_size * num_epochs) / tot_time
     print("Throughout: " + str(img_per_sec) + " images / sec")
 
 
