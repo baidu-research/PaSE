@@ -32,14 +32,16 @@ def Transformer(args):
     d_model = 512
     heads = 32
     d_ff = heads * 1024
-    #max_seq_len = 64
+    #nx = 2
+    #max_seq_len = 1024
     #d_model = 64
-    #heads = 8
+    #heads = 4
     #d_ff = heads * 64
 
     # Dataset
     dataset = TextDataLoader(args['batch'], args['src_vocab'],
-            args['tgt_vocab'], args['src_text'], args['tgt_text'])
+            args['tgt_vocab'], args['src_text'], args['tgt_text'], max_seq_len =
+            max_seq_len)
     src_pad_id = tf.cast(dataset.src_pad_id, tf.int32)
     enc_inputs, dec_inputs, _, _ = dataset.next_batch()
 
@@ -87,86 +89,35 @@ def Transformer(args):
         out = mtf.layers.multihead_attention(q, k, mask, mtf_d_k, mtf_heads,
                 dropout_rate, name=name)
         return out
-
-        #d_model = mtf_d_model.size
-    
-        #k = mtf.layers.dense(k, mtf.Dimension('heads', d_model), use_bias=False,
-        #        name='linear_k')
-        #k = mtf.replace_dimensions(k, k.shape[-1], [mtf_heads, mtf_d_k])
-        #k = mtf.replace_dimensions(k, k.shape[0], [mtf_batch, mtf_seq_len])
-    
-        #v = mtf.layers.dense(v, mtf.Dimension('heads', d_model), use_bias=False,
-        #        name='linear_v')
-        #v = mtf.replace_dimensions(v, v.shape[-1], [mtf_heads, mtf_d_k])
-        #v = mtf.replace_dimensions(v, v.shape[0], [mtf_batch, mtf_seq_len])
-        #v = mtf.rename_dimension(v, mtf_seq_len.name, mtf_memory_len_dim.name)
-    
-        #q = mtf.layers.dense(q, mtf.Dimension('heads', d_model), use_bias=False,
-        #        name='linear_k')
-        #q = mtf.replace_dimensions(q, q.shape[-1], [mtf_heads, mtf_d_k])
-        #q = mtf.replace_dimensions(q, q.shape[0], [mtf_batch, mtf_seq_len])
-    
-        #assert q.shape == k.shape == mtf.Shape([mtf_batch, mtf_seq_len,
-        #    mtf_heads, mtf_d_k])
-        #k = mtf.rename_dimension(k, mtf_seq_len.name, mtf_memory_len_dim.name)
-    
-        #qk = mtf.einsum([q, k], reduced_dims=[mtf_d_k], name='attention_qk')
-        #qk /= math.sqrt(mtf_d_k.size)
-        #assert qk.shape == mtf.Shape([mtf_batch, mtf_seq_len, mtf_heads,
-        #    mtf_memory_len_dim)])
-    
-        #weights = mtf.softmax(qk, mtf_memory_len_dim)
-        #weights = mtf.dropout(weights, dropout_rate, noise_shape=weights.shape -
-        #        mtf_seq_len, name='weights_dropout')
-    
-        #outputs = mtf.einsum([weights, v], reduced_dims=[mtf_memory_len_dim])
-    
-        #assert outputs.shape == q.shape
-        #return outputs
     
     
-    def FeedFwd(x, dropout_rate=0.5, name='transformer_ff'):
-        return mtf.layers.dense_relu_dense(x, mtf_d_ff, dropout_rate, name=name)
-        #x = mtf.layers.dense(x, mtf_d_ff, use_bias=False, activation=mtf.relu,
-        #        name='linear_ff1')
-        #x = mtf.dropout(x, dropout_rate, noise_shape=x.shape - mtf_seq_len,
-        #        name='ff_dropout')
-        #x = mtf.layers.dense(x, mtf_d_model, use_bias=False, name='linear_ff2')
-        #return x
-    
-    
-    def EncoderLayer(x, seq_ids, dropout_rate=0.5):
-        mask = mtf.cast(mtf.not_equal(seq_ids, src_pad_id), dtype=tf.float32)
-        assert mask.shape == mtf.Shape([mtf_batch, mtf_seq_len])
-
+    def EncoderLayer(x, mask, dropout_rate=0.5):
         norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm1')
-        att = MultiheadAttention(norm1, norm1, mask,
-                name='enc_multihead_attention')
+        att = MultiheadAttention(norm1, norm1, mask, name='enc_multihead_att')
         x += mtf.dropout(att, dropout_rate)
     
         norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm2')
-        ff = FeedFwd(norm2, dropout_rate, name='enc_ff')
+        ff = mtf.layers.dense_relu_dense(norm2, mtf_d_ff, dropout_rate,
+                name='enc_ff')
         x += mtf.dropout(ff, dropout_rate)
     
         return x
     
     
-    def DecoderLayer(x, enc_out, dropout_rate=0.5):
-        mask = mtf.layers.attention_bias_local_block(x.mesh, mtf_seq_len,
-                mtf_memory_len_dim)
-
+    def DecoderLayer(x, enc_out, enc_mask, dec_mask, dropout_rate=0.5):
         norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm1')
-        att = MultiheadAttention(norm1, norm1, mask,
-                name='dec_multihead_attention1')
+        att = MultiheadAttention(norm1, norm1, dec_mask,
+                name='dec_multihead_att1')
         x += mtf.dropout(att, dropout_rate)
     
         norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm2')
-        att = MultiheadAttention(norm2, enc_out, mask,
-                name='dec_multihead_attention2')
+        att = MultiheadAttention(norm2, enc_out, enc_mask,
+                name='dec_multihead_att2')
         x += mtf.dropout(att, dropout_rate)
     
         norm3 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm3')
-        ff = FeedFwd(norm3, dropout_rate, name='dec_ff')
+        ff = mtf.layers.dense_relu_dense(norm3, mtf_d_ff, dropout_rate,
+                name='dec_ff')
         x += mtf.dropout(ff, dropout_rate)
     
         return x
@@ -198,10 +149,15 @@ def Transformer(args):
                 trainable=False)
         x = (embed * math.sqrt(mtf_d_model.size)) + pos_enc
 
+        # Mask
+        #enc_mask = mtf.cast(mtf.equal(mtf_enc_inputs, src_pad_id),
+        #        dtype=tf.float32) * -1e9
+        enc_mask = None
+
         # Encoder
         for i in range(nx):
             with tf.variable_scope('enc_layer_%d' % i):
-                x = EncoderLayer(x, mtf_enc_inputs)
+                x = EncoderLayer(x, enc_mask)
         enc_output = mtf.layers.layer_norm(x, dim=x.shape[-1],
                 name='enc_final_norm')
         assert enc_output.shape == mtf.Shape([mtf_batch, mtf_seq_len,
@@ -218,10 +174,13 @@ def Transformer(args):
         # positional encoder
         x = (embed * math.sqrt(mtf_d_model.size)) + pos_enc
 
+        # mask
+        dec_mask = None
+
         # Decoder
         for i in range(nx):
             with tf.variable_scope('dec_layer_%d' % i):
-                x = DecoderLayer(x, enc_output)
+                x = DecoderLayer(x, enc_output, enc_mask, dec_mask)
         dec_output = mtf.layers.layer_norm(x, dim=x.shape[-1],
                 name='dec_final_norm')
         assert dec_output.shape == mtf.Shape([mtf_batch, mtf_seq_len,
@@ -263,7 +222,7 @@ def Transformer(args):
     display_step = 1
     cnt = 0
     config = tf.ConfigProto()
-    config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
+    #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
     with tf.variable_scope('train'):
         with tf.Session(config=config) as sess:
             dataset.reset_pointer()
