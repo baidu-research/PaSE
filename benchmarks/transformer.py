@@ -27,16 +27,16 @@ def Transformer(args):
     # Parameters
     r = 2
     c = 4
-    nx = 6
-    max_seq_len = 256
-    d_model = 512
-    heads = 32
-    d_ff = heads * 1024
-    #nx = 2
+    #nx = 6
     #max_seq_len = 1024
-    #d_model = 64
-    #heads = 4
-    #d_ff = heads * 64
+    #d_model = 1024
+    #heads = 8
+    #d_ff = heads * 512
+    nx = 6
+    max_seq_len = 1024
+    d_model = 512
+    heads = 4
+    d_ff = 2048
 
     # Dataset
     dataset = TextDataLoader(args['batch'], args['src_vocab'],
@@ -219,7 +219,6 @@ def Transformer(args):
             init_op.append(v.initializer)
 
     # Training
-    display_step = 1
     cnt = 0
     config = tf.ConfigProto()
     #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
@@ -241,7 +240,7 @@ def Transformer(args):
                     except tf.errors.OutOfRangeError:
                         break
 
-                    if step % display_step == 0 and step > 0:
+                    if step % args['display_steps'] == 0 and step > 0:
                         print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
 
                 dataset.reset_pointer()
@@ -256,10 +255,12 @@ def main():
     parser = ArgumentParser()
 
     parser.add_argument('-b', '--batch', type=int, required=False, default=256,
-            help="Batch size. (Default: 64)")
+            help="Batch size. (Default: 32)")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors. (Default: 8)")
-    parser.add_argument('-t', '--epochs', type=int, required=False, default=1,
+    parser.add_argument('-t', '--epochs', type=int, required=False, default=3,
+            help="No. of epochs")
+    parser.add_argument('--display_steps', type=int, required=False, default=10,
             help="No. of epochs")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(3)), 
