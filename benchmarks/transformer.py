@@ -254,7 +254,7 @@ def Transformer(args):
 def main():
     parser = ArgumentParser()
 
-    parser.add_argument('-b', '--batch', type=int, required=False, default=256,
+    parser.add_argument('-b', '--batch', type=int, required=False, default=32,
             help="Batch size. (Default: 32)")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors. (Default: 8)")
