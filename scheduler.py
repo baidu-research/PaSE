@@ -254,13 +254,15 @@ def main():
         pr.print_stats(sort='cumtime')
 
     # Convert 'g_tbl' into Series from DataFrame
-    assert(g_tbl.shape[0] == 1)
+    assert g_tbl.shape[0] == 1
     cols = []
+    cost = 0
     for c in g_tbl.columns:
         try:
             cols.append(int(c))
         except ValueError:
-            assert(c.startswith('costs_'))
+            assert c.startswith('costs_')
+            cost = g_tbl.iloc[0][c]
             g_tbl.drop(c, 1, inplace=True)
     g_tbl.columns = cols
     g_tbl = g_tbl.iloc[0].sort_index()
@@ -269,6 +271,7 @@ def main():
     print("=====")
     print(g_tbl.to_string())
     print("=====")
+    print("Total cost: %0.2f" % cost)
 
 
 if __name__ == "__main__":

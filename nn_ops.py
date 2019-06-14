@@ -298,7 +298,8 @@ class Ops():
 
 
     def ComputeCosts(self):
-        self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
+        if not hasattr(self, 'dom_config_tuples'):
+            self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
         self.dom_configs = np.array(self.dom_config_tuples)
         assert self.dom_configs.ndim == 2
 
@@ -576,47 +577,16 @@ class Conv(Ops):
 
         return gemm_dom, gemm_configs
 
-    '''
-    # Fuse pooling
-    def Fuse(self, pool):
-        assert isinstance(pool, Pooling)
-        # Make sure we haven't computed configs yet
-        assert not hasattr(self, 'dom_configs')
-
-        try:
-            pool_dom_configs = pool.dom_configs
-        except AttributeError:
-            pool.ComputeCosts()
-            pool_dom_configs = pool.dom_configs
-
-        # Compute original configs
-        dom_config_tuples = GetConfigs(self.dom, self.n_procs)
-        dom_configs = np.array(dom_config_tuples)
-
-        # Get configs that intersect with pool's configs
-        dom_configs = dom_configs[np.all(np.isin(dom_configs[:,:4],
-            pool_dom_configs), axis=1), :]
-
-        b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
-        self.dom_configs = dom_configs
-        self.dom_config_tuples = [tuple(e) for e in dom_configs]
-        self.in_tsr_configs = self.dom_configs[:, b_idx:w_idx+1]
-        self.out_tsr_configs = self.dom_configs[:, (b_idx, n_idx, h_idx, w_idx)]
-
-        # Compute costs
-        gemm_dom, gemm_configs = self.ConvertToGemmDom()
-        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
-
-        # Add pooling costs
-        assert self.costs.shape == pool.costs.shape
-        self.costs += pool.costs
-        self.out_tsrs = pool.out_tsrs
-    '''
-
     def ComputeCosts(self):
         b_idx, c_idx, h_idx, w_idx, r_idx, s_idx, n_idx = range(7)
 
         # Configurations
+        no_halo_exchange = True
+        if no_halo_exchange:
+            config_dom = list(self.dom)
+            config_dom[h_idx] = 1
+            config_dom[w_idx] = 1
+            self.dom_config_tuples = GetConfigs(config_dom, self.n_procs)
         super().ComputeCosts()
         self.in_tsr_configs = self.dom_configs[:, b_idx:w_idx+1]
         self.out_tsr_configs = self.dom_configs[:, (b_idx, n_idx, h_idx, w_idx)]
