@@ -26,8 +26,7 @@ def BytesToFlops(bytes):
         p100_bw = float(13.0 / 8.0) # PCIe bidirectional GWords / sec
         
         v100_peak_flop = float(15.7 * 1000) # GFLOPs
-        v100_bw = float((47.99 * 3) / 8) # Unidirectional for 3 sublinks per direction.
-                                         # GBytes/sec = b/8 GWords/sec
+        v100_bw = float(47.99 / 8.0) # NVLink unidirectional GWords/sec
         
         peak_flop = v100_peak_flop
         bw = v100_bw
