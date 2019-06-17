@@ -89,11 +89,12 @@ def Conv2d(tsr, fltr_shape, stride=(1,1), padding='VALID', use_bias=True,
         return out
 
 
-def MaxPool(tsr, fltr, stride=(1,1), padding='VALID', name=None):
+def Pooling(tsr, fltr, stride=(1,1), padding='VALID', pooling_fn=tf.nn.max_pool,
+        name=None):
     stride, padding = NormalizeStrideAndPad(stride, padding)
     with tf.variable_scope(name, default_name='pool'):
         def max_pool(x):
-            return tf.nn.max_pool(x, [1, fltr[0], fltr[1], 1], [1, stride[0],
+            return pooling_fn(x, [1, fltr[0], fltr[1], 1], [1, stride[0],
                 stride[1], 1], padding)
 
         # Output shape
@@ -115,4 +116,11 @@ def MaxPool(tsr, fltr, stride=(1,1), padding='VALID', name=None):
         out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype, splittable_dims)
         return out
 
+
+def MaxPool(*args, **kwargs):
+    return Pooling(*args, pooling_fn=tf.nn.max_pool, **kwargs)
+
+
+def AvgPool(*args, **kwargs):
+    return Pooling(*args, pooling_fn=tf.nn.avg_pool, **kwargs)
 

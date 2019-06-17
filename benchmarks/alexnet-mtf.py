@@ -82,7 +82,7 @@ def main():
     parser.add_argument('--dataset_dir', type=str, required=False, default=None,
             help='Dataset directory')
     parser.add_argument('--labels_filename', type=str, required=False,
-            default=None, help='Labels filename')
+            default='labels.txt', help='Labels filename')
     parser.add_argument('--dataset_size', type=int, required=False,
             default=1000, help='Labels filename')
     args = vars(parser.parse_args())
@@ -109,12 +109,8 @@ def main():
     dataset_dir = args['dataset_dir']
     labels_filename = args['labels_filename']
     dataset_size = args['dataset_size']
-    if dataset_dir is None or labels_filename is None:
-        dataset = ImageDataLoader(batch_size, dataset_size=dataset_size,
-                synthetic=True)
-    else:
-        dataset = ImageDataLoader(batch_size, dataset_dir=dataset_dir,
-                labels_filename=labels_filename, synthetic=False)
+    dataset = ImageDataLoader(batch_size, (227, 227), dataset_size=dataset_size,
+            dataset_dir=dataset_dir, labels_filename=labels_filename)
     train_batches_per_epoch = np.floor(dataset.dataset_size / batch_size).astype(np.int16)
     assert train_batches_per_epoch > 0
     
@@ -269,8 +265,8 @@ def main():
 
     # Initializer
     tf_init_vars = \
-            FlattenList([lowering.variables[var].laid_out_tensor.all_slices for
-                var in graph.trainable_variables])
+            utils.FlattenList([lowering.variables[var].laid_out_tensor.all_slices
+                for var in graph.trainable_variables])
     init_op = []
     for v in tf_init_vars:
         with tf.device(v.device):

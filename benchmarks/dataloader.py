@@ -11,19 +11,23 @@ class ImageDataLoader():
         # This will convert to float values in [0, 1]
         image = tf.image.convert_image_dtype(image, tf.float32)
     
-        image = tf.image.resize_images(image, [227, 227])
+        image = tf.image.resize_images(image, [self.img_size[0],
+            self.img_size[1]])
         label = tf.strings.to_number(label, out_type=tf.int32)
     
         return image, label
 
-    def __init__(self, batch_size, dataset_size=1000, dataset_dir=None,
-            labels_filename=None, synthetic=False, num_parallel_calls = 32,
+    def __init__(self, batch_size, img_size, dataset_size=1000,
+            dataset_dir=None, labels_filename=None, num_parallel_calls = 32,
             prefetches = 8):
-        if synthetic:
+        assert len(img_size) == 2
+        self.img_size = img_size
+
+        if dataset_dir is None:
             self.dataset_size = dataset_size
             num_classes = 1000
-            features = tf.random_uniform([dataset_size, 227, 227, 3],
-                    minval=0, maxval=1, dtype=tf.float32)
+            features = tf.random_uniform([dataset_size, img_size[0],
+                img_size[0], 3], minval=0, maxval=1, dtype=tf.float32)
             classes = tf.random_uniform([dataset_size], minval=0,
                     maxval=num_classes, dtype=tf.int32)
             dataset = tf.data.Dataset.from_tensor_slices((features,
@@ -31,7 +35,6 @@ class ImageDataLoader():
         else:
             assert dataset_dir is not None
             assert labels_filename is not None
-
             labels_filename = os.path.join(dataset_dir, labels_filename)
 
             filenames = []
