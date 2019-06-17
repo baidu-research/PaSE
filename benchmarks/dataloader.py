@@ -27,7 +27,7 @@ class ImageDataLoader():
             self.dataset_size = dataset_size
             num_classes = 1000
             features = tf.random_uniform([dataset_size, img_size[0],
-                img_size[0], 3], minval=0, maxval=1, dtype=tf.float32)
+                img_size[1], 3], minval=0, maxval=1, dtype=tf.float32)
             classes = tf.random_uniform([dataset_size], minval=0,
                     maxval=num_classes, dtype=tf.int32)
             dataset = tf.data.Dataset.from_tensor_slices((features,
