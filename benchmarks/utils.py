@@ -1,6 +1,41 @@
+from operator import mul
+
 import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf
+
+
+def Prod(lst):
+    return reduce(mul, lst, 1)
+
+
+def GetDeviceList(num_gpus):
+    return ['gpu:%d' %i for i in range(num_gpus)]
+
+
+def AssignLayout(ta_axes, mesh_axis):
+    layout = []
+    for a in ta_axes:
+        a = a.name if isinstance(a, mtf.Dimension) else a
+        layout.append((a, mesh_axis))
+    return layout
+
+
+def GetMeshImpl(devices, layout=None):
+    layout = layout or [['ma%d' % i] for i in range(len(devices))]
+    assert len(devices) == len(layout)
+
+    mesh_shape = []
+    layout_rules = []
+    for i, d, ls in enumerate(zip(devices, layout)):
+        p_name = 'p%d' % i
+        mesh_shape.append((p_name, d))
+        for l in ls:
+            layout_rules.append((p_name, l))
+
+    devices = GetDeviceList(Prod(devices))
+    return mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape, layout_rules,
+            devices)
 
 
 # Converts 'v' into a tuple (v, v) if 'v' is a scalar

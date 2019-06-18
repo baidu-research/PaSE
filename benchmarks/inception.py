@@ -2,27 +2,29 @@ import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf
 
-import sys
-import time
-import os
+import sys, time, os
+import string, random
 from argparse import ArgumentParser
 
 from dataloader import ImageDataLoader
+from utils import GetMeshImpl
 import utils
 
 
-def AssignLayout(ta_axes, mesh_axis):
-    layout = []
-    for a in ta_axes:
-        layout.append((a, mesh_axis))
-    return layout
+def RandName(k=5):
+    return ''.join(random.choices(string.ascii_letters + string.digits +
+        string.ascii_uppercase, k=k))
 
 
-def Concat(tsr_lst, name=None):
-    assert all(tsr_lst[0].shape[:-1] == t.shape[:-1] for t in tsr_lst[1:])
-    assert all(tsr_lst[0].shape[-1].name == t.shape[-1].name for t in
-            tsr_lst[1:])
-    return mtf.concat(tsr_lst, tsr_lst[0].shape[-1].name, name)
+def GetShape(dims):
+    sh = []
+    for d in dims:
+        if isinstance(d, int):
+            sh.append((RandName(), d))
+        else:
+            sh.append(d)
+
+    return mtf.Shape(sh)
 
 
 def GetFilterShape(dims, dim_names):
@@ -33,9 +35,16 @@ def GetFilterShape(dims, dim_names):
     return sh
 
 
+def Concat(tsr_lst, name=None):
+    assert all(tsr_lst[0].shape[:-1] == t.shape[:-1] for t in tsr_lst[1:])
+    assert all(tsr_lst[0].shape[-1].name == t.shape[-1].name for t in
+            tsr_lst[1:])
+    return mtf.concat(tsr_lst, tsr_lst[0].shape[-1].name, name)
+
+
 def AddBasicConv(img, fltr, stride=(1,1), padding='VALID', dim_name=None,
         rename_dim = True, name=None):
-    dim_names = img.shape.dimension_names[1:] + [dim_name or 'n_dim']
+    dim_names = img.shape.dimension_names[1:] + [dim_name or RandName()]
     in_ch_dim_name = dim_names[-2]
 
     with tf.variable_scope(name, default_name='basic_conv'):
@@ -170,33 +179,50 @@ def AddInceptionE(img, in_channels, dim_name=None, name=None):
                 name='concat3')
 
 
-def Inception(img, labels, args):
-    num_classes = 1000
+def CreateMeshes(strategy, img, labels, batch_size):
+    h, w, ch = 229, 229, 3
+    meshes = {}
 
-    # mtf dimensions
-    conv_batch_dim = mtf.Dimension('conv_batch_dim', args.batch_size)
-    fc_batch_dim = mtf.Dimension('fc_batch_dim', args.batch_size)
-    c_dim = mtf.Dimension('c_dim', 3)
-    h_dim = mtf.Dimension('h_dim', 299)
-    w_dim = mtf.Dimension('w_dim', 299)
-    num_classes_dim = mtf.Dimension('num_classes_dim', num_classes)
+    if strategy == 0:
+        mesh = mtf.Mesh(graph, 'mesh')
+        meshes[mesh] = GetMeshImpl([8])
 
-    graph = mtf.Graph()
-    if args.strategy == 0:
-        mesh = mtf.Mesh(graph, 'mesh1')
-        mesh_shape = [('p1', args.procs)]
-        devices = ['gpu:%d' %i for i in range(args.procs)]
-        layout = AssignLayout([conv_batch_dim.name, fc_batch_dim.name], 'p1')
-        mesh_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape,
-                layout, devices)
+        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('ma1', batch_size),
+            h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([('ma1',
+            batch_size)]))
 
-        meshes = {mesh:mesh_impl}
+    elif strategy == 1:
+        mesh1 = mtf.Mesh(graph, 'mesh1')
+        meshes[mesh1] = GetMeshImpl([2])
 
-        mtf_img = mtf.import_tf_tensor(mesh, img, mtf.Shape([conv_batch_dim,
-            h_dim, w_dim, c_dim]))
-        mtf_labels = mtf.import_tf_tensor(mesh, labels, mtf.Shape([fc_batch_dim]))
+        mesh2 = mtf.Mesh(graph, 'mesh2')
+        meshes[mesh2] = GetMeshImpl([2, 4])
+
+        mesh3 = mtf.Mesh(graph, 'mesh3')
+        meshes[mesh3] = GetMeshImpl([4])
+
+        mesh4 = mtf.Mesh(graph, 'mesh4')
+        meshes[mesh4] = GetMeshImpl([2, 2])
+
+        mesh5 = mtf.Mesh(graph, 'mesh5')
+        meshes[mesh5] = GetMeshImpl([2, 2, 2])
+
+        mtf_img = mtf.import_tf_tensor(mesh1, img, GetShape([('ma1',
+            batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(mesh3, labels, GetShape([batch_size]))
+
     else:
         assert False
+
+    return meshes, mtf_img, mtf_labels
+
+
+def Inception(img, labels, args):
+    num_classes = 1000
+    graph = mtf.Graph()
+    meshes, mtf_img, mtf_labels = CreateMeshes(args.strategy, img, labels,
+        args.batch_size)
 
     with tf.variable_scope('inception'):
         conv1a = AddBasicConv(mtf_img, (3, 3, 3, 32), stride=2, name='conv1a')
@@ -222,8 +248,7 @@ def Inception(img, labels, args):
         mixed7c = AddInceptionE(mixed7b, 2048, name='mixed7c')
         mean = mtf.reduce_mean(mixed7c, output_shape =
                 mtf.Shape([mixed7c.shape[0], mixed7c.shape[-1]]))
-        mean = mtf.rename_dimension(mean, mean.shape[0].name, fc_batch_dim.name)
-        fc = mtf.layers.dense(mean, num_classes_dim)
+        fc = mtf.layers.dense(mean, GetShape([num_classes]))
 
         with tf.variable_scope('loss'):
             one_hot_labels = mtf.one_hot(mtf_labels, fc.shape[-1])
@@ -256,21 +281,19 @@ def Inception(img, labels, args):
 
 
 def main():
-    parser = ArgumentParser()
+    parser = \
+            ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
-            help="Batch size. (Default: 256)")
+            help="Batch size.")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
-            help="No. of processors. (Default: 8)")
+            help="No. of processors.")
     parser.add_argument('-t', '--epochs', type=int, required=False, default=50,
             help="No. of epochs")
     parser.add_argument('--display_steps', type=int, required=False, default=10,
             help="Steps to pass before displaying intermediate results")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(3)), 
-            help="Strategy to use. 0: DataParallel, \
-                    1: Optimized for 1080Ti, \
-                    2: Optimized for DGX. \
-                    (Default: 0) ")
+            help="Strategy to use. 0: DataParallel, 1: Optimized.")
     parser.add_argument('--dataset_dir', type=str, required=False, default=None,
             help='Dataset directory')
     parser.add_argument('--labels_filename', type=str, required=False,
