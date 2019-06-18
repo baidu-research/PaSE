@@ -272,6 +272,8 @@ def main():
     # Training
     with tf.name_scope('train'):
         with tf.Session() as sess:
+            #tf.train.write_graph(sess.graph_def, '/mnt/home/venmugil/tmp',
+            #        'alexnet-mtf.pbtxt')
             dataset.reset_pointer()
             sess.run(init_op)
 

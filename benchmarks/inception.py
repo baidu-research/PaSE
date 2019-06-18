@@ -4,7 +4,7 @@ import mesh_tensorflow as mtf
 
 import sys, time, os
 import string, random
-from argparse import ArgumentParser
+import argparse
 
 from dataloader import ImageDataLoader
 from utils import GetMeshImpl
@@ -12,19 +12,21 @@ import utils
 
 
 def RandName(k=5):
-    return ''.join(random.choices(string.ascii_letters + string.digits +
-        string.ascii_uppercase, k=k))
+    return ''.join(random.choices(string.ascii_letters + string.ascii_uppercase
+        + string.digits, k=k))
 
 
 def GetShape(dims):
     sh = []
     for d in dims:
-        if isinstance(d, int):
-            sh.append((RandName(), d))
-        else:
-            sh.append(d)
+        try:
+            name, size = d
+        except (TypeError, ValueError):
+            name, size = RandName(), d
+        sh.append(mtf.Dimension(name, size))
 
-    return mtf.Shape(sh)
+    sh = mtf.Shape(sh)
+    return sh
 
 
 def GetFilterShape(dims, dim_names):
@@ -180,7 +182,8 @@ def AddInceptionE(img, in_channels, dim_name=None, name=None):
 
 
 def CreateMeshes(strategy, img, labels, batch_size):
-    h, w, ch = 229, 229, 3
+    h, w, ch = 299, 299, 3
+    graph = mtf.Graph()
     meshes = {}
 
     if strategy == 0:
@@ -215,14 +218,13 @@ def CreateMeshes(strategy, img, labels, batch_size):
     else:
         assert False
 
-    return meshes, mtf_img, mtf_labels
+    return graph, meshes, mtf_img, mtf_labels
 
 
 def Inception(img, labels, args):
     num_classes = 1000
-    graph = mtf.Graph()
-    meshes, mtf_img, mtf_labels = CreateMeshes(args.strategy, img, labels,
-        args.batch_size)
+    graph, meshes, mtf_img, mtf_labels = CreateMeshes(args.strategy, img,
+            labels, args.batch_size)
 
     with tf.variable_scope('inception'):
         conv1a = AddBasicConv(mtf_img, (3, 3, 3, 32), stride=2, name='conv1a')
@@ -248,7 +250,7 @@ def Inception(img, labels, args):
         mixed7c = AddInceptionE(mixed7b, 2048, name='mixed7c')
         mean = mtf.reduce_mean(mixed7c, output_shape =
                 mtf.Shape([mixed7c.shape[0], mixed7c.shape[-1]]))
-        fc = mtf.layers.dense(mean, GetShape([num_classes]))
+        fc = mtf.layers.dense(mean, mtf.Dimension(RandName(), num_classes))
 
         with tf.variable_scope('loss'):
             one_hot_labels = mtf.one_hot(mtf_labels, fc.shape[-1])
@@ -281,8 +283,8 @@ def Inception(img, labels, args):
 
 
 def main():
-    parser = \
-            ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(formatter_class =
+            argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
             help="Batch size.")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,

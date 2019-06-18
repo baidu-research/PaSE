@@ -1,4 +1,5 @@
 from operator import mul
+from functools import reduce
 
 import numpy as np
 import tensorflow as tf
@@ -27,7 +28,7 @@ def GetMeshImpl(devices, layout=None):
 
     mesh_shape = []
     layout_rules = []
-    for i, d, ls in enumerate(zip(devices, layout)):
+    for i, (d, ls) in enumerate(zip(devices, layout)):
         p_name = 'p%d' % i
         mesh_shape.append((p_name, d))
         for l in ls:
