@@ -287,12 +287,12 @@ def main():
             help="Batch size.")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors.")
-    parser.add_argument('-t', '--epochs', type=int, required=False, default=50,
+    parser.add_argument('-t', '--epochs', type=int, required=False, default=10,
             help="No. of epochs")
     parser.add_argument('--display_steps', type=int, required=False, default=10,
             help="Steps to pass before displaying intermediate results")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
-            choices=list(range(3)), 
+            choices=list(range(2)), 
             help="Strategy to use. 0: DataParallel, 1: Optimized.")
     parser.add_argument('--dataset_dir', type=str, required=False, default=None,
             help='Dataset directory')
