@@ -34,6 +34,31 @@ def NormalizeStrideAndPad(stride, padding):
     return stride, padding
 
 
+# Fixes a bug in mesh-tensorflow. To be used as gradient function for slicewise
+# op. Uncomment this part if needed later.
+'''
+class GenericGradOp(mtf.GenericGradOperation):
+    def lower(self, lowering):
+        # lists of lists of tf.Tensor
+        all_ys = mtf.transpose_list_of_lists(
+            [lowering.tensors[y].to_laid_out_tensor().tensor_list for y in self._forward_op.outputs])
+        all_xs = mtf.transpose_list_of_lists(
+            [lowering.tensors[x].to_laid_out_tensor().tensor_list for x in self._forward_op.inputs])
+        all_grad_ys = mtf.transpose_list_of_lists(
+            [lowering.tensors[dy].to_laid_out_tensor().tensor_list for dy in self._grad_ys])
+        all_grad_xs = [tf.gradients(ys=ys, xs=xs, grad_ys=grad_ys) for
+                       ys, xs, grad_ys in zip(all_ys, all_xs, all_grad_ys)]
+        grad_xs = mtf.transpose_list_of_lists(all_grad_xs)
+        for out, grad_x in zip(self.outputs, grad_xs):
+            lowering.set_tensor_lowering( out,
+                    lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(grad_x))
+
+
+def GenericGradFn(forward_op, grad_y):
+    return GenericGradOp(forward_op, [grad_y]).outputs
+'''
+
+
 class Conv2dOperation(mtf.Conv2dOperation):
     def __init__(self, conv_input, conv_filter, strides, padding, name=None):
         mtf.Operation.__init__(self, [conv_input, conv_filter], name=name or
@@ -113,7 +138,10 @@ def Pooling(tsr, fltr, stride=(1,1), padding='VALID', pooling_fn=tf.nn.max_pool,
         output_shape = output_shape.resize_dimension(tsr.shape[2].name, w_o)
 
         splittable_dims = [tsr.shape.dims[0], tsr.shape.dims[-1]]
-        out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype, splittable_dims)
+        #out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype,
+        #        splittable_dims, grad_function=GenericGradFn)
+        out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype,
+                splittable_dims)
         return out
 
 

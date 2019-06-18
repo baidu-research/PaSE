@@ -22,12 +22,7 @@ class ImportToMeshBackpropOperation(mtf.Operation):
                 lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
         n_slices = len(input_slices)
         assert n_slices % 2 == 0
-        n_slices_by_2 = int(n_slices / 2)
-
-        output_slices = []
-        for t1, t2 in zip(input_slices, input_slices[n_slices_by_2:]):
-            with tf.device(t1.device):
-                output_slices.append(t1 + t2)
+        output_slices = [t for t in input_slices[:int(n_slices/2)]]
 
         laid_out_tensor = \
                 lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
