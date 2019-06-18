@@ -71,8 +71,7 @@ def main():
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(3)), 
             help="Strategy to use. 0: DataParallel, \
-                    1: Optimized for 1080Ti, \
-                    2: Optimized for DGX. \
+                    1: Optimized. \
                     (Default: 0) ")
     parser.add_argument('--dataset_dir', type=str, required=False, default=None,
             help='Dataset directory')
@@ -170,6 +169,8 @@ def main():
             w_dim, in_ch_dim]))
         mtf_y = mtf.import_tf_tensor(mesh2, tf_y, mtf.Shape([fc_batch_dim]))
     else:
+        assert False
+        '''
         mesh = mtf.Mesh(graph, 'mesh')
         mesh_shape = [('p1', 4), ('p2', 2)]
         devices = ['gpu:%d' %i for i in range(num_gpus)]
@@ -184,6 +185,7 @@ def main():
         mtf_x = mtf.import_tf_tensor(mesh, tf_x, mtf.Shape([batch_dim, h_dim,
             w_dim, in_ch_dim]))
         mtf_y = mtf.import_tf_tensor(mesh, tf_y, mtf.Shape([fc_batch_dim]))
+        '''
 
     with tf.variable_scope('alexnet'):
         ConvRename = lambda x: mtf.rename_dimension(x, x.shape[-1].name,
