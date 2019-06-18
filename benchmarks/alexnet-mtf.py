@@ -11,6 +11,7 @@ from dataloader import ImageDataLoader
 import utils
 
 
+'''
 class ImportToMeshBackpropOperation(mtf.Operation):
     def __init__(self, mesh, input, name=None):
         super().__init__([input], mesh=mesh, name=name or
@@ -54,6 +55,7 @@ class ImportToMeshOperation(mtf.Operation):
 
 def import_to_mesh(mesh, tsr, name):
     return ImportToMeshOperation(mesh, tsr, name).outputs[0]
+'''
 
 
 def main():
@@ -204,7 +206,8 @@ def main():
 
         # Import pool1 to mesh2
         if strategy == 1:
-            pool1 = import_to_mesh(mesh2, pool1, name='import_to_mesh2')
+            pool1 = ReplaceMeshWithReplication(mesh2, pool1,
+                    mesh2_impl.shape[1], name='import_to_mesh2')
 
         # Conv2 + ReLU + maxpool2
         conv2 = utils.Conv2d(pool1, FltrShape((5, 5, 96, 256)), (1, 1), 'SAME',

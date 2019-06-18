@@ -44,6 +44,46 @@ def Concat(tsr_lst, name=None):
     return mtf.concat(tsr_lst, tsr_lst[0].shape[-1].name, name)
 
 
+def CreateMeshes(strategy, img, labels, batch_size):
+    h, w, ch = 299, 299, 3
+    graph = mtf.Graph()
+    meshes = {}
+
+    if strategy == 0:
+        mesh = mtf.Mesh(graph, 'mesh')
+        meshes[mesh] = GetMeshImpl([8])
+
+        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('ma1', batch_size),
+            h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([('ma1',
+            batch_size)]))
+
+    elif strategy == 1:
+        mesh1 = mtf.Mesh(graph, 'mesh1')
+        meshes[mesh1] = GetMeshImpl([2])
+
+        mesh2 = mtf.Mesh(graph, 'mesh2')
+        meshes[mesh2] = GetMeshImpl([2, 4])
+
+        mesh3 = mtf.Mesh(graph, 'mesh3')
+        meshes[mesh3] = GetMeshImpl([4])
+
+        mesh4 = mtf.Mesh(graph, 'mesh4')
+        meshes[mesh4] = GetMeshImpl([2, 2])
+
+        mesh5 = mtf.Mesh(graph, 'mesh5')
+        meshes[mesh5] = GetMeshImpl([2, 2, 2])
+
+        mtf_img = mtf.import_tf_tensor(mesh1, img, GetShape([('ma1',
+            batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(mesh3, labels, GetShape([batch_size]))
+
+    else:
+        assert False
+
+    return graph, meshes, mtf_img, mtf_labels
+
+
 def AddBasicConv(img, fltr, stride=(1,1), padding='VALID', dim_name=None,
         rename_dim = True, name=None):
     dim_names = img.shape.dimension_names[1:] + [dim_name or RandName()]
@@ -179,46 +219,6 @@ def AddInceptionE(img, in_channels, dim_name=None, name=None):
                 dim_name=dim_name, name='branch_pool')
         return Concat([branch1x1, branch3x3, branch3x3dbl, branch_pool],
                 name='concat3')
-
-
-def CreateMeshes(strategy, img, labels, batch_size):
-    h, w, ch = 299, 299, 3
-    graph = mtf.Graph()
-    meshes = {}
-
-    if strategy == 0:
-        mesh = mtf.Mesh(graph, 'mesh')
-        meshes[mesh] = GetMeshImpl([8])
-
-        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('ma1', batch_size),
-            h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([('ma1',
-            batch_size)]))
-
-    elif strategy == 1:
-        mesh1 = mtf.Mesh(graph, 'mesh1')
-        meshes[mesh1] = GetMeshImpl([2])
-
-        mesh2 = mtf.Mesh(graph, 'mesh2')
-        meshes[mesh2] = GetMeshImpl([2, 4])
-
-        mesh3 = mtf.Mesh(graph, 'mesh3')
-        meshes[mesh3] = GetMeshImpl([4])
-
-        mesh4 = mtf.Mesh(graph, 'mesh4')
-        meshes[mesh4] = GetMeshImpl([2, 2])
-
-        mesh5 = mtf.Mesh(graph, 'mesh5')
-        meshes[mesh5] = GetMeshImpl([2, 2, 2])
-
-        mtf_img = mtf.import_tf_tensor(mesh1, img, GetShape([('ma1',
-            batch_size), h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(mesh3, labels, GetShape([batch_size]))
-
-    else:
-        assert False
-
-    return graph, meshes, mtf_img, mtf_labels
 
 
 def Inception(img, labels, args):
