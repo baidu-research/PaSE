@@ -11,53 +11,6 @@ from dataloader import ImageDataLoader
 import utils
 
 
-'''
-class ImportToMeshBackpropOperation(mtf.Operation):
-    def __init__(self, mesh, input, name=None):
-        super().__init__([input], mesh=mesh, name=name or
-                'import_to_mesh_backprop')
-        self._outputs = [mtf.Tensor(self, input.shape, input.dtype)]
-
-    def lower(self, lowering):
-        input_slices = \
-                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
-        n_slices = len(input_slices)
-        assert n_slices % 2 == 0
-        output_slices = [t for t in input_slices[:int(n_slices/2)]]
-
-        laid_out_tensor = \
-                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
-        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
-
-
-class ImportToMeshOperation(mtf.Operation):
-    def __init__(self, mesh, input, name=None):
-        super().__init__([input], mesh=mesh, name=name or 'import_to_mesh')
-        self.old_mesh = input.mesh
-        self._outputs = [mtf.Tensor(self, input.shape, input.dtype)]
-
-    def gradient(self, grad_ys):
-        dy = grad_ys[0]
-        return ImportToMeshBackpropOperation(self.old_mesh, dy).outputs
-
-    def lower(self, lowering):
-        input_slices = \
-                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
-        output_slices = []
-        for t in input_slices:
-            output_slices.append([t, t])
-        output_slices = utils.FlattenList(utils.TransposeLists(output_slices))
-
-        laid_out_tensor = \
-                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
-        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
-
-
-def import_to_mesh(mesh, tsr, name):
-    return ImportToMeshOperation(mesh, tsr, name).outputs[0]
-'''
-
-
 def main():
     parser = ArgumentParser()
     parser.add_argument('-b', '--batch', type=int, required=False, default=256,
@@ -172,22 +125,6 @@ def main():
         mtf_y = mtf.import_tf_tensor(mesh2, tf_y, mtf.Shape([fc_batch_dim]))
     else:
         assert False
-        '''
-        mesh = mtf.Mesh(graph, 'mesh')
-        mesh_shape = [('p1', 4), ('p2', 2)]
-        devices = ['gpu:%d' %i for i in range(num_gpus)]
-        p1_layout = AssignLayout([batch_dim.name, 'fc_n_dim'], 'p1')
-        p2_layout = AssignLayout(['n_dim', 'fc_k_dim'], 'p2')
-        layout = p1_layout + p2_layout
-        mesh_impl = mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape,
-                layout, devices)
-
-        meshes = {mesh:mesh_impl}
-
-        mtf_x = mtf.import_tf_tensor(mesh, tf_x, mtf.Shape([batch_dim, h_dim,
-            w_dim, in_ch_dim]))
-        mtf_y = mtf.import_tf_tensor(mesh, tf_y, mtf.Shape([fc_batch_dim]))
-        '''
 
     with tf.variable_scope('alexnet'):
         ConvRename = lambda x: mtf.rename_dimension(x, x.shape[-1].name,
@@ -206,7 +143,7 @@ def main():
 
         # Import pool1 to mesh2
         if strategy == 1:
-            pool1 = ReplaceMeshWithReplication(mesh2, pool1,
+            pool1 = utils.ReplaceMeshWithReplication(mesh2, pool1,
                     mesh2_impl.shape[1], name='import_to_mesh2')
 
         # Conv2 + ReLU + maxpool2

@@ -191,7 +191,8 @@ def AvgPool(*args, **kwargs):
 
 class ReplaceMeshWithRemovalOperation(mtf.Operation):
     def __init__(self, new_mesh, input, axis, name=None):
-        super().__init__([input], mesh=mesh, name=name or
+        assert isinstance(axis, mtf.Dimension)
+        super().__init__([input], mesh=new_mesh, name=name or
                 'replace_mesh_with_removal')
         self.old_mesh = input.mesh
         self.axis = axis
@@ -204,18 +205,16 @@ class ReplaceMeshWithRemovalOperation(mtf.Operation):
     def lower(self, lowering):
         input_slices = \
                 lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
-        output_slices = []
 
         mesh_impl = lowering.mesh_impl(self.old_mesh)
-        for i, d in enumerate(mesh_impl.shape):
-            if d.name == self.axis:
-                axis_num, axis_size = i, d.size
-                break
+        axis_num = mesh_impl.shape.dims.index(self.axis)
         cumprod = mesh_impl.shape.cumprod[axis_num]
 
         output_slices = [input_slices[i:i+cumprod] for i in range(0,
-            len(input_slices), cumprod * axis_size)]
-        output_slices = utils.FlattenList(output_slices)
+            len(input_slices), cumprod * self.axis.size)]
+        output_slices = FlattenList(output_slices)
+        #output_slices = [tf.identity(s, name='replicated_%d' % i) for i, s in
+        #        enumerate(output_slices)]
 
         laid_out_tensor = \
                 lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
@@ -224,6 +223,7 @@ class ReplaceMeshWithRemovalOperation(mtf.Operation):
 
 class ReplaceMeshWithReplicationOperation(mtf.Operation):
     def __init__(self, new_mesh, input, axis, name=None):
+        assert isinstance(axis, mtf.Dimension)
         super().__init__([input], mesh=new_mesh, name=name or
                 'replace_mesh_with_replication')
         self.old_mesh = input.mesh
@@ -237,18 +237,16 @@ class ReplaceMeshWithReplicationOperation(mtf.Operation):
     def lower(self, lowering):
         input_slices = \
                 lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
-        output_slices = []
 
         mesh_impl = lowering.mesh_impl(self.mesh)
-        for i, d in enumerate(mesh_impl.shape):
-            if d.name == self.axis:
-                axis_num, axis_size = i, d.size
-                break
+        axis_num = mesh_impl.shape.dims.index(self.axis)
         cumprod = mesh_impl.shape.cumprod[axis_num]
 
-        output_slices = [input_slices[i:i+cumprod] * axis_size for i in range(0,
-            len(input_slices), cumprod)]
-        output_slices = utils.FlattenList(output_slices)
+        output_slices = [input_slices[i:i+cumprod] * self.axis.size for i in
+                range(0, len(input_slices), cumprod)]
+        output_slices = FlattenList(output_slices)
+        #output_slices = [tf.identity(s, name='replicated_%d' % i) for i, s in
+        #        enumerate(output_slices)]
 
         laid_out_tensor = \
                 lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
@@ -256,9 +254,10 @@ class ReplaceMeshWithReplicationOperation(mtf.Operation):
 
 
 def ReplaceMeshWithReplication(new_mesh, tsr, axis, name=None):
-    return ReplaceMeshWithReplicationOperation(new_mesh, tsr, axis, name)
+    return ReplaceMeshWithReplicationOperation(new_mesh, tsr, axis,
+            name).outputs[0]
 
 
 def ReplaceMeshWithRemoval(new_mesh, tsr, axis, name=None):
-    return ReplaceMeshWithRemovalOperation(new_mesh, tsr, axis, name)
+    return ReplaceMeshWithRemovalOperation(new_mesh, tsr, axis, name).outputs[0]
 
