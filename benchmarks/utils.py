@@ -22,21 +22,33 @@ def AssignLayout(ta_axes, mesh_axis):
     return layout
 
 
-def GetMeshImpl(devices, layout=None):
-    layout = layout or [['ma%d' % i] for i in range(len(devices))]
-    assert len(devices) == len(layout)
+def GetMeshImpl(dev_cnts, devices=None, axes=None):
+    axes = axes or ['axis%d' % i for i in range(len(dev_cnts))]
+    assert len(dev_cnts) == len(axes)
 
     mesh_shape = []
     layout_rules = []
-    for i, (d, ls) in enumerate(zip(devices, layout)):
-        p_name = 'p%d' % i
-        mesh_shape.append((p_name, d))
-        for l in ls:
-            layout_rules.append((p_name, l))
+    for d, axis in zip(dev_cnts), axes:
+        mesh_shape.append(axis, d)
+        layout_rules.append((axis, axis))
 
-    devices = GetDeviceList(Prod(devices))
+    devices = devices or GetDeviceList(Prod(dev_cnts))
     return mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape, layout_rules,
             devices)
+
+
+'''
+def GetMeshImpls(graph, devices_list):
+    meshes = []
+    mesh_to_impl = {}
+
+    for i, devices in enumerate(devices_list):
+        mesh = mtf.Mesh(graph, 'mesh_%d' % i)
+        meshes.append(mesh)
+        mesh_to_impl[mesh] = GetMeshImpl(devices)
+
+    return meshes, mesh_to_impl
+'''
 
 
 # Converts 'v' into a tuple (v, v) if 'v' is a scalar
@@ -189,6 +201,33 @@ def AvgPool(*args, **kwargs):
     return Pooling(*args, pooling_fn=tf.nn.avg_pool, **kwargs)
 
 
+'''
+class ReplaceMeshOperation(mtf.Operation):
+    def __init__(self, new_mesh, input, axis, lowering_fn=None, name=None):
+        assert isinstance(axis, mtf.Dimension)
+        super().__init__([input], mesh=new_mesh, name=name or 'replace_mesh')
+        self.old_mesh = input.mesh
+        self.axis = axis
+        self._outputs = [mtf.Tensor(self, input.shape, input.dtype)]
+
+        self.lowering_fn = lowering_fn
+
+    def lower(self, lowering):
+        if self.lowering_fn is not None:
+            input_slices = \
+                    lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
+            output_slices = self.lowering_fn(input_slices, self.old_mesh,
+                    self.mesh, self.axis)
+
+            laid_out_tensor = \
+                    lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
+            lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+        else:
+            raise NotImplementedError('Lowering not implemented.')
+'''
+
+
 class ReplaceMeshWithRemovalOperation(mtf.Operation):
     def __init__(self, new_mesh, input, axis, name=None):
         assert isinstance(axis, mtf.Dimension)
@@ -251,6 +290,95 @@ class ReplaceMeshWithReplicationOperation(mtf.Operation):
         laid_out_tensor = \
                 lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+
+class ReplaceMeshWithConcatOperation(mtf.Operation):
+    def __init__(self, new_mesh, input, axis, name=None):
+        assert isinstance(axis, mtf.Dimension)
+        assert input.mesh.shape.dimension_names == new_mesh.shape.dimension_names
+
+        super().__init__([input], mesh=new_mesh, name=name or
+                'replace_mesh_with_concat')
+        self.old_mesh = input.mesh
+        self.axis = axis
+        self._outputs = [mtf.Tensor(self, input.shape, input.dtype)]
+
+    def gradient(self, grad_ys):
+        return ReplaceMeshWithSplitOperation(self.old_mesh, grad_ys[0],
+                self.axis).outputs
+
+    def lower(self, lowering):
+        input_slices = \
+                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
+
+        mesh_impl = lowering.mesh_impl(self.old_mesh)
+        axis_num = mesh_impl.shape.dims.index(self.axis)
+        cumprod = mesh_impl.shape.cumprod[axis_num]
+
+        concat_slices = []
+        for i in range(0, len(input_slices), cumprod * self.axis.size):
+            slices = []
+            for j in range(i, i + cumprod * self.axis.size, cumprod):
+                slices.append(input_slices[j:j+cumprod])
+            concat_slices.append(TransposeLists(slices))
+
+        output_slices = []
+        for i, s in enumerate(concat_slices):
+            with tf.device(s[0]):
+                output_slices.append(tf.concat(s, axis=axis_num,
+                    name='concat_%d' % i))
+
+        laid_out_tensor = \
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+
+
+class ReplaceMeshWithSplitOperation(mtf.Operation):
+    def __init__(self, new_mesh, input, axis, name=None):
+        assert isinstance(axis, mtf.Dimension)
+        assert input.mesh.shape.dimension_names == new_mesh.shape.dimension_names
+
+        super().__init__([input], mesh=new_mesh, name=name or
+                'replace_mesh_with_split')
+        self.old_mesh = input.mesh
+        self.axis = axis
+        self._outputs = [mtf.Tensor(self, input.shape, input.dtype)]
+
+    def gradient(self, grad_ys):
+        return ReplaceMeshWithConcatOperation(self.old_mesh, grad_ys[0],
+                self.axis).outputs
+
+    def lower(self, lowering):
+        input_slices = \
+                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
+
+        mesh_impl = lowering.mesh_impl(self.mesh)
+        axis_num = mesh_impl.shape.dims.index(self.axis)
+        cumprod = mesh_impl.shape.cumprod[axis_num]
+
+        split_slices = []
+        for i, s in enumerate(input_slices):
+            with tf.device(s.device):
+                split_slices.append(tf.split(s, self.axis.size,
+                    axis=axis_num, name='split_%d' % i))
+        split_slices = TransposeLists(split_slices)
+
+        output_slices = []
+        for i in range(0, len(input_slices), cumprod):
+            for s in split_slices:
+                output_slices.append(s[i:i+cumprod])
+
+        laid_out_tensor = \
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+
+'''
+def ReplaceMesh(new_mesh, tsr, axis, lowering_fn, name=None):
+    return ReplaceMeshOperation(new_mesh, tsr, axis, lowering_fn,
+            name=name).outputs[0]
+'''
 
 
 def ReplaceMeshWithReplication(new_mesh, tsr, axis, name=None):
