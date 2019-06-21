@@ -39,9 +39,15 @@ def GetFilterShape(dims, dim_names):
 
 def Concat(tsr_lst, name=None):
     assert all(tsr_lst[0].shape[:-1] == t.shape[:-1] for t in tsr_lst[1:])
-    assert all(tsr_lst[0].shape[-1].name == t.shape[-1].name for t in
-            tsr_lst[1:])
-    return mtf.concat(tsr_lst, tsr_lst[0].shape[-1].name, name)
+
+    concat_dim_name = RandName()
+    concat_tsrs = []
+    for t in tsr_lst:
+        assert not t.shape[-1].name.startswith('axis')
+        t = mtf.rename_dimension(t, t.shape[-1].name, concat_dim_name)
+        concat_tsrs.append(t)
+
+    return mtf.concat(concat_tsrs, concat_dim_name, name)
 
 
 def CreateMeshes(strategy, img, labels, batch_size):
@@ -53,11 +59,11 @@ def CreateMeshes(strategy, img, labels, batch_size):
     if strategy == 0:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        mesh_to_impl[meshes] = GetMeshImpl([8])
+        mesh_to_impl[mesh] = GetMeshImpl([8])
 
-        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('axis1', batch_size),
+        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('axis0', batch_size),
             h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([('axis1',
+        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([('axis0',
             batch_size)]))
 
     elif strategy == 1:
@@ -99,7 +105,7 @@ def AddBasicConv(img, fltr, stride=(1,1), padding='VALID', dim_name=None,
         rename_dim = False, name=None):
     dim_name = RandName() if dim_name is None or dim_name in \
             img.shape.dimension_names else dim_name
-    dim_names = img.shape.dimension_names[1:] + dim_name
+    dim_names = img.shape.dimension_names[1:] + [dim_name]
     in_ch_dim_name = dim_names[-2]
 
     with tf.variable_scope(name, default_name='basic_conv'):
@@ -149,6 +155,8 @@ def AddInceptionA(img, in_channels, pool_features, out_mesh_info=None,
 
 def AddInceptionB(img, in_channels, dim_name=None, name=None):
     with tf.variable_scope(name, default_name='inception_B'):
+        dim_name = dim_name or RandName()
+
         branch3x3 = AddBasicConv(img, ((3, 3, in_channels, 384)),
                 stride=2, dim_name=dim_name, name='branch3x3')
 
@@ -166,6 +174,8 @@ def AddInceptionB(img, in_channels, dim_name=None, name=None):
 def AddInceptionC(img, in_channels, channels_7x7, out_mesh_info=None,
         dim_name=None, rename_dim=False, name=None):
     with tf.variable_scope(name, default_name='inception_C'):
+        dim_name = dim_name or RandName()
+
         branch1x1 = AddBasicConv(img, ((1, 1, in_channels, 192)),
                 dim_name=dim_name, rename_dim=rename_dim, name='branch1x1')
 
@@ -202,6 +212,8 @@ def AddInceptionC(img, in_channels, channels_7x7, out_mesh_info=None,
 
 def AddInceptionD(img, in_channels, dim_name=None, name=None):
     with tf.variable_scope(name, default_name='inception_D'):
+        dim_name = dim_name or RandName()
+
         branch3x3 = AddBasicConv(img, ((1, 1, in_channels, 192)),
                 dim_name=dim_name, name='branch3x3_1')
         branch3x3 = AddBasicConv(branch3x3, ((3, 3, 192, 320)), stride=2,
@@ -222,6 +234,8 @@ def AddInceptionD(img, in_channels, dim_name=None, name=None):
 
 def AddInceptionE(img, in_channels, dim_name=None, rename_dim=False, name=None):
     with tf.variable_scope(name, default_name='inception_E'):
+        dim_name = dim_name or RandName()
+
         branch1x1 = AddBasicConv(img, (1, 1, in_channels, 320),
                 dim_name=dim_name, rename_dim=rename_dim, name='branch1x1')
 
@@ -258,10 +272,22 @@ def Inception(img, labels, args):
     graph, meshes, mesh_to_impl, mtf_img, mtf_labels = \
             CreateMeshes(args.strategy, img, labels, args.batch_size)
 
+    debug = True
+    def LogDistribution(tsr):
+        if debug:
+            print(tsr.shape)
+            mesh_impl = mesh_to_impl[tsr.mesh]
+            print('(', end='')
+            for d in tsr.shape.dims:
+                print(mtf.tensor_dim_to_mesh_dim_size(mesh_impl.layout_rules,
+                    mesh_impl.shape, d), end=', ')
+            print(')')
+
     strategy = args.strategy
     with tf.variable_scope('inception'):
         conv1a = AddBasicConv(mtf_img, (3, 3, 3, 32), stride=2, name='conv1a')
         conv2a = AddBasicConv(conv1a, (3, 3, 32, 32), name='conv2a')
+        LogDistribution(conv2a)
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -269,9 +295,11 @@ def Inception(img, labels, args):
                     mesh_to_impl[new_mesh].shape[0],
                     name='replace_mesh0_with_mesh1')
 
+        dim_name = 'axis0' if strategy == 1 else None
         conv2b = AddBasicConv(conv2a, (3, 3, 32, 64), padding='SAME',
-                dim_name='axis0', name='conv2b')
+                dim_name=dim_name, name='conv2b')
         pool = utils.MaxPool(conv2b, (3, 3), stride=2, name='pool1')
+        LogDistribution(pool)
 
         if strategy == 1:
             curr_dims = pool.shape.dims
@@ -287,6 +315,7 @@ def Inception(img, labels, args):
                     name='replace_pool_mesh1_with_mesh2')
 
         conv3b = AddBasicConv(pool, (1, 1, 64, 80), name='conv3b')
+        LogDistribution(conv3b)
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -294,15 +323,18 @@ def Inception(img, labels, args):
                     mesh_to_impl[new_mesh].shape[1],
                     name='replace_conv3b_mesh2_with_mesh1')
 
-        conv4a = AddBasicConv(conv3b, (3, 3, 80, 192),
-                dim_name=conv3b.mesh.shape[1].name, name='conv4a')
+        dim_name = 'axis1' if strategy == 1 else None
+        conv4a = AddBasicConv(conv3b, (3, 3, 80, 192), dim_name=dim_name,
+                name='conv4a')
         pool = utils.MaxPool(conv4a, (3, 3), stride=2, name='pool2')
+        LogDistribution(pool)
 
         out_mesh_info = (meshes[2], mesh_to_impl[meshes[2]]) \
                 if strategy == 1 else None
         mixed5b = AddInceptionA(pool, 192, 32, out_mesh_info, name='mixed5b')
         mixed5c = AddInceptionA(mixed5b, 256, 64, name='mixed5c')
         mixed5d = AddInceptionA(mixed5c, 288, 64, name='mixed5d')
+        LogDistribution(mixed5d)
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -312,6 +344,7 @@ def Inception(img, labels, args):
 
         dim_name = mixed5d.mesh.shape[1].name if strategy == 1 else None
         mixed6a = AddInceptionB(mixed5d, 288, dim_name=dim_name, name='mixed6a')
+        LogDistribution(mixed6a)
 
         if strategy == 1:
             new_mesh = meshes[2]
@@ -320,6 +353,7 @@ def Inception(img, labels, args):
                     name='replace_mixed6a_mesh1_with_mesh2')
 
         mixed6b = AddInceptionC(mixed6a, 768, 128, name='mixed6b')
+        LogDistribution(mixed6b)
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -327,12 +361,14 @@ def Inception(img, labels, args):
                     mesh_to_impl[new_mesh].shape[1],
                     name='replace_mixed6b_mesh2_with_mesh1')
 
-        mixed6c = AddInceptionC(mixed6b, 768, 160, dim_name='axis1',
+        dim_name = 'axis1' if strategy == 1 else None
+        mixed6c = AddInceptionC(mixed6b, 768, 160, dim_name=dim_name,
                 rename_dim=True, name='mixed6c')
-        mixed6d = AddInceptionC(mixed6c, 768, 160, dim_name='axis1',
+        mixed6d = AddInceptionC(mixed6c, 768, 160, dim_name=dim_name,
                 rename_dim=True, name='mixed6d')
-        mixed6e = AddInceptionC(mixed6d, 768, 192, dim_name='axis1',
+        mixed6e = AddInceptionC(mixed6d, 768, 192, dim_name=dim_name,
                 rename_dim=True, name='mixed6e')
+        LogDistribution(mixed6e)
 
         dim_name = mixed6e.mesh.shape[1].name if strategy == 1 else None
         mixed7a = AddInceptionD(mixed6e, 768, dim_name=dim_name, name='mixed7a')
@@ -341,6 +377,7 @@ def Inception(img, labels, args):
                 rename_dim=True, name='mixed7b')
         mixed7c = AddInceptionE(mixed7b, 2048, dim_name=dim_name,
                 rename_dim=True, name='mixed7c')
+        LogDistribution(mixed7c)
 
         mean = mtf.reduce_mean(mixed7c, output_shape =
                 mtf.Shape([mixed7c.shape[0], mixed7c.shape[-1]]))
@@ -351,8 +388,9 @@ def Inception(img, labels, args):
             new_shape[1].name = 'axis1'
             new_shape = mtf.Shape(new_shape)
             mean = mtf.reshape(mean, new_shape, name='reshape_mean')
-
-        fc = mtf.layers.dense(mean, mtf.Dimension('axis0' num_classes))
+        
+        dim_name = 'axis0' if strategy == 1 else RandName()
+        fc = mtf.layers.dense(mean, mtf.Dimension(dim_name, num_classes))
 
         with tf.variable_scope('loss'):
             one_hot_labels = mtf.one_hot(mtf_labels, fc.shape[-1])

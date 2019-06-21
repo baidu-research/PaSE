@@ -28,8 +28,8 @@ def GetMeshImpl(dev_cnts, devices=None, axes=None):
 
     mesh_shape = []
     layout_rules = []
-    for d, axis in zip(dev_cnts), axes:
-        mesh_shape.append(axis, d)
+    for d, axis in zip(dev_cnts, axes):
+        mesh_shape.append((axis, d))
         layout_rules.append((axis, axis))
 
     devices = devices or GetDeviceList(Prod(dev_cnts))
