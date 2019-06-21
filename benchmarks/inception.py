@@ -54,6 +54,7 @@ def CreateMeshes(strategy, img, labels, batch_size):
     h, w, ch = 299, 299, 3
     graph = mtf.Graph()
     meshes = []
+    global mesh_to_impl
     mesh_to_impl = {}
 
     if strategy == 0:
@@ -91,7 +92,7 @@ def CreateMeshes(strategy, img, labels, batch_size):
         #meshes.append(mesh)
         #mesh_to_impl[mesh] = GetMeshImpl([2, 2])
 
-        mtf_img = mtf.import_tf_tensor(meshs[0], img, GetShape([('axis1',
+        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis1',
             batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[1], labels, GetShape([batch_size]))
 
@@ -101,7 +102,7 @@ def CreateMeshes(strategy, img, labels, batch_size):
     return graph, meshes, mesh_to_impl, mtf_img, mtf_labels
 
 
-def AddBasicConv(img, fltr, stride=(1,1), padding='VALID', dim_name=None,
+def BasicConv(img, fltr, stride=(1,1), padding='VALID', dim_name=None,
         rename_dim = False, name=None):
     dim_name = RandName() if dim_name is None or dim_name in \
             img.shape.dimension_names else dim_name
@@ -115,153 +116,156 @@ def AddBasicConv(img, fltr, stride=(1,1), padding='VALID', dim_name=None,
         if rename_dim:
             bn = mtf.rename_dimension(bn, bn.shape[-1].name, in_ch_dim_name)
 
+        def LogDistribution(tsr, end='\n'):
+            debug = True
+            if debug:
+                print(tsr.shape)
+                mesh_impl = mesh_to_impl[tsr.mesh]
+                print('(', end='')
+                for d in tsr.shape.dims:
+                    print(mtf.tensor_dim_to_mesh_dim_size(mesh_impl.layout_rules,
+                        mesh_impl.shape, d), end=', ')
+                print(')', end=end, flush=True)
+
+        LogDistribution(img)
+        LogDistribution(bn, '\n\n')
+
         return bn
 
 
-def AddInceptionA(img, in_channels, pool_features, out_mesh_info=None,
+def InceptionA(img, in_channels, pool_features, out_mesh_info=None,
         dim_name=None, name=None):
     with tf.variable_scope(name, default_name='inception_A'):
         ReplaceMesh = lambda x, cnt: utils.ReplaceMeshWithRemoval(out_mesh_info[0],
-                branch1x1, out_mesh_info[1].shape[0],
-                name='replace_mesh_%d' % cnt) \
+                x, out_mesh_info[1].shape[1], name='replace_mesh_%d' % cnt) \
                         if out_mesh_info is not None else x
 
-        branch1x1 = AddBasicConv(img, ((1, 1, in_channels, 64)),
-                dim_name=dim_name, name='branch1x1')
+        branch1x1 = BasicConv(img, ((1, 1, in_channels, 64)), dim_name=dim_name,
+                name='branch1x1')
         branch1x1 = ReplaceMesh(branch1x1, 0)
 
-        branch5x5 = AddBasicConv(img, ((1, 1, in_channels, 48)),
-                dim_name=dim_name, name='branch5x5_1')
+        branch5x5 = BasicConv(img, ((1, 1, in_channels, 48)), dim_name=dim_name,
+                name='branch5x5_1')
         branch5x5 = ReplaceMesh(branch5x5, 1)
-        # TODO: dim_name = 'axis0' if strategy == 1
-        branch5x5 = AddBasicConv(branch5x5, ((5, 5, 48, 64)),
-                padding='SAME', dim_name=dim_name, name='branch5x5_2')
+        branch5x5 = BasicConv(branch5x5, ((5, 5, 48, 64)), padding='SAME',
+                dim_name=dim_name, name='branch5x5_2')
 
-        branch3x3dbl = AddBasicConv(img, ((1, 1, in_channels,
-            64)), dim_name=dim_name, name='branch3x3_1')
+        branch3x3dbl = BasicConv(img, ((1, 1, in_channels, 64)),
+                dim_name=dim_name, name='branch3x3_1')
         branch3x3dbl = ReplaceMesh(branch3x3dbl, 2)
-        branch3x3dbl = AddBasicConv(branch3x3dbl, ((3, 3, 64,
-            96)), padding='SAME', dim_name=dim_name, name='branch3x3_2')
-        branch3x3dbl = AddBasicConv(branch3x3dbl, ((3, 3, 96,
-            96)), padding='SAME', dim_name=dim_name, name='branch3x3_3')
+        branch3x3dbl = BasicConv(branch3x3dbl, ((3, 3, 64, 96)), padding='SAME',
+                dim_name=dim_name, name='branch3x3_2')
+        branch3x3dbl = BasicConv(branch3x3dbl, ((3, 3, 96, 96)), padding='SAME',
+                dim_name=dim_name, name='branch3x3_3')
 
         branch_pool = utils.MaxPool(img, (3, 3), padding='SAME')
-        branch_pool = AddBasicConv(branch_pool, ((1, 1,
-            in_channels, pool_features)), dim_name=dim_name, name='branch_pool')
+        branch_pool = BasicConv(branch_pool, ((1, 1, in_channels,
+            pool_features)), dim_name=dim_name, name='branch_pool')
         branch_pool = ReplaceMesh(branch_pool, 3)
 
         return Concat([branch1x1, branch5x5, branch3x3dbl, branch_pool])
 
 
-def AddInceptionB(img, in_channels, dim_name=None, name=None):
+def InceptionB(img, in_channels, dim_name=None, name=None):
     with tf.variable_scope(name, default_name='inception_B'):
-        dim_name = dim_name or RandName()
+        branch3x3 = BasicConv(img, ((3, 3, in_channels, 384)), stride=2,
+                dim_name=dim_name, rename_dim=True, name='branch3x3')
 
-        branch3x3 = AddBasicConv(img, ((3, 3, in_channels, 384)),
-                stride=2, dim_name=dim_name, name='branch3x3')
-
-        branch3x3dbl = AddBasicConv(img, ((1, 1, in_channels,
-            64)), dim_name=dim_name, name='branch3x3_1')
-        branch3x3dbl = AddBasicConv(branch3x3dbl, ((3, 3, 64,
-            96)), padding='SAME', dim_name=dim_name, name='branch3x3_2')
-        branch3x3dbl = AddBasicConv(branch3x3dbl, ((3, 3, 96,
-            96)), stride=2, dim_name=dim_name, name='branch3x3_3')
+        branch3x3dbl = BasicConv(img, ((1, 1, in_channels, 64)),
+                dim_name=dim_name, name='branch3x3_1')
+        branch3x3dbl = BasicConv(branch3x3dbl, ((3, 3, 64, 96)), padding='SAME',
+                dim_name=dim_name, rename_dim=True, name='branch3x3_2')
+        branch3x3dbl = BasicConv(branch3x3dbl, ((3, 3, 96, 96)), stride=2,
+                dim_name=dim_name, name='branch3x3_3')
 
         branch_pool = utils.MaxPool(img, (3, 3), stride=2)
         return Concat([branch3x3, branch3x3dbl, branch_pool])
 
 
-def AddInceptionC(img, in_channels, channels_7x7, out_mesh_info=None,
+def InceptionC(img, in_channels, channels_7x7, out_mesh_info=None,
         dim_name=None, rename_dim=False, name=None):
     with tf.variable_scope(name, default_name='inception_C'):
-        dim_name = dim_name or RandName()
-
-        branch1x1 = AddBasicConv(img, ((1, 1, in_channels, 192)),
+        branch1x1 = BasicConv(img, ((1, 1, in_channels, 192)),
                 dim_name=dim_name, rename_dim=rename_dim, name='branch1x1')
 
-        branch7x7 = AddBasicConv(img, ((1, 1, in_channels, channels_7x7)),
+        branch7x7 = BasicConv(img, ((1, 1, in_channels, channels_7x7)),
                 dim_name=dim_name, rename_dim=rename_dim, name='branch7x7_1')
-        branch7x7 = AddBasicConv(branch7x7, ((1, 7, channels_7x7,
-            channels_7x7)), padding='SAME', dim_name=dim_name,
-            rename_dim=rename_dim, name='branch7x7_2')
-        branch7x7 = AddBasicConv(branch7x7, ((7, 1, channels_7x7, 192)),
+        branch7x7 = BasicConv(branch7x7, ((1, 7, channels_7x7, channels_7x7)),
+                padding='SAME', dim_name=dim_name, rename_dim=rename_dim,
+                name='branch7x7_2')
+        branch7x7 = BasicConv(branch7x7, ((7, 1, channels_7x7, 192)),
                 padding='SAME', dim_name=dim_name, rename_dim=rename_dim,
                 name='branch7x7_3')
 
-        branch7x7_dbl = AddBasicConv(img, ((1, 1, in_channels, channels_7x7)),
+        branch7x7_dbl = BasicConv(img, ((1, 1, in_channels, channels_7x7)),
                 dim_name=dim_name, rename_dim=rename_dim,
                 name='branch7x7_dbl_1')
-        branch7x7_dbl = AddBasicConv(branch7x7_dbl, ((7, 1, channels_7x7,
+        branch7x7_dbl = BasicConv(branch7x7_dbl, ((7, 1, channels_7x7,
             channels_7x7)), padding='SAME', dim_name=dim_name,
             rename_dim=rename_dim, name='branch7x7_dbl_2')
-        branch7x7_dbl = AddBasicConv(branch7x7_dbl, ((1, 7, channels_7x7,
+        branch7x7_dbl = BasicConv(branch7x7_dbl, ((1, 7, channels_7x7,
             channels_7x7)), padding='SAME', dim_name=dim_name,
             rename_dim=rename_dim, name='branch7x7_dbl_3')
-        branch7x7_dbl = AddBasicConv(branch7x7_dbl, ((7, 1, channels_7x7,
+        branch7x7_dbl = BasicConv(branch7x7_dbl, ((7, 1, channels_7x7,
             channels_7x7)), padding='SAME', dim_name=dim_name,
             rename_dim=rename_dim, name='branch7x7_dbl_4')
-        branch7x7_dbl = AddBasicConv(branch7x7_dbl, ((1, 7, channels_7x7, 192)),
+        branch7x7_dbl = BasicConv(branch7x7_dbl, ((1, 7, channels_7x7, 192)),
                 padding='SAME', dim_name=dim_name, rename_dim=rename_dim,
                 name='branch7x7_dbl_5')
 
         branch_pool = utils.AvgPool(img, (3, 3), padding='SAME')
-        branch_pool = AddBasicConv(branch_pool, ((1, 1, in_channels, 192)),
-                dim_name=dim_name, name='branch_pool')
+        branch_pool = BasicConv(branch_pool, ((1, 1, in_channels, 192)),
+                dim_name=dim_name, rename_dim=rename_dim, name='branch_pool')
         return Concat([branch1x1, branch7x7, branch7x7_dbl, branch_pool])
 
 
-def AddInceptionD(img, in_channels, dim_name=None, name=None):
+def InceptionD(img, in_channels, dim_name=None, name=None):
     with tf.variable_scope(name, default_name='inception_D'):
-        dim_name = dim_name or RandName()
-
-        branch3x3 = AddBasicConv(img, ((1, 1, in_channels, 192)),
+        branch3x3 = BasicConv(img, ((1, 1, in_channels, 192)),
                 dim_name=dim_name, name='branch3x3_1')
-        branch3x3 = AddBasicConv(branch3x3, ((3, 3, 192, 320)), stride=2,
+        branch3x3 = BasicConv(branch3x3, ((3, 3, 192, 320)), stride=2,
                 dim_name=dim_name, name='branch3x3_2')
 
-        branch7x7x3 = AddBasicConv(img, ((1, 1, in_channels, 192)),
+        branch7x7x3 = BasicConv(img, ((1, 1, in_channels, 192)),
                 dim_name=dim_name, name='branch7x7x3_1')
-        branch7x7x3 = AddBasicConv(branch7x7x3, ((1, 7, 192, 192)),
-                padding='SAME', dim_name=dim_name, name='branch7x7x3_2')
-        branch7x7x3 = AddBasicConv(branch7x7x3, ((7, 1, 192, 192)),
-                padding='SAME', dim_name=dim_name, name='branch7x7x3_3')
-        branch7x7x3 = AddBasicConv(branch7x7x3, ((3, 3, 192, 192)),
-                stride=2, dim_name=dim_name, name='branch7x7x3_4')
+        branch7x7x3 = BasicConv(branch7x7x3, ((1, 7, 192, 192)), padding='SAME',
+                dim_name=dim_name, name='branch7x7x3_2')
+        branch7x7x3 = BasicConv(branch7x7x3, ((7, 1, 192, 192)), padding='SAME',
+                dim_name=dim_name, name='branch7x7x3_3')
+        branch7x7x3 = BasicConv(branch7x7x3, ((3, 3, 192, 192)), stride=2,
+                dim_name=dim_name, name='branch7x7x3_4')
 
         branch_pool = utils.MaxPool(img, (3, 3), stride=2)
         return Concat([branch3x3, branch7x7x3, branch_pool])
 
 
-def AddInceptionE(img, in_channels, dim_name=None, rename_dim=False, name=None):
+def InceptionE(img, in_channels, dim_name=None, rename_dim=False, name=None):
     with tf.variable_scope(name, default_name='inception_E'):
-        dim_name = dim_name or RandName()
+        branch1x1 = BasicConv(img, (1, 1, in_channels, 320), dim_name=dim_name,
+                rename_dim=rename_dim, name='branch1x1')
 
-        branch1x1 = AddBasicConv(img, (1, 1, in_channels, 320),
-                dim_name=dim_name, rename_dim=rename_dim, name='branch1x1')
-
-        branch3x3 = AddBasicConv(img, (1, 1, in_channels, 384),
-                dim_name=dim_name, rename_dim=rename_dim, name='branch3x3')
-        branch3x3_2a = AddBasicConv(branch3x3, (1, 3, 384, 384), padding='SAME',
+        branch3x3 = BasicConv(img, (1, 1, in_channels, 384), dim_name=dim_name,
+                rename_dim=rename_dim, name='branch3x3')
+        branch3x3_2a = BasicConv(branch3x3, (1, 3, 384, 384), padding='SAME',
                 dim_name=dim_name, rename_dim=rename_dim, name='branch3x3_2a')
-        branch3x3_2b = AddBasicConv(branch3x3, (3, 1, 384, 384), padding='SAME',
+        branch3x3_2b = BasicConv(branch3x3, (3, 1, 384, 384), padding='SAME',
                 dim_name=dim_name, rename_dim=rename_dim, name='branch3x3_2b')
         branch3x3 = Concat([branch3x3_2a, branch3x3_2b], name='concat1')
 
-        branch3x3dbl = AddBasicConv(img, (1, 1, in_channels, 448),
+        branch3x3dbl = BasicConv(img, (1, 1, in_channels, 448),
                 dim_name=dim_name, rename_dim=rename_dim, name='branch3x3dbl')
-        branch3x3dbl = AddBasicConv(branch3x3dbl, (3, 3, 448, 384),
-                padding='SAME', dim_name=dim_name, rename_dim=rename_dim,
-                name='branch3x3dbl_1')
-        branch3x3dbl_3a = AddBasicConv(branch3x3dbl, (1, 3, 384, 384),
+        branch3x3dbl = BasicConv(branch3x3dbl, (3, 3, 448, 384), padding='SAME',
+                dim_name=dim_name, rename_dim=rename_dim, name='branch3x3dbl_1')
+        branch3x3dbl_3a = BasicConv(branch3x3dbl, (1, 3, 384, 384),
                 padding='SAME', dim_name=dim_name, rename_dim=rename_dim,
                 name='branch3x3dbl_3a')
-        branch3x3dbl_3b = AddBasicConv(branch3x3dbl, (3, 1, 384, 384),
+        branch3x3dbl_3b = BasicConv(branch3x3dbl, (3, 1, 384, 384),
                 padding='SAME', dim_name=dim_name, rename_dim=rename_dim,
                 name='branch3x3dbl_3b')
         branch3x3dbl = Concat([branch3x3dbl_3a, branch3x3dbl_3b], name='concat2')
 
         branch_pool = utils.AvgPool(img, (3, 3), stride=1, padding='SAME')
-        branch_pool = AddBasicConv(branch_pool, (1, 1, in_channels, 192),
+        branch_pool = BasicConv(branch_pool, (1, 1, in_channels, 192),
                 dim_name=dim_name, rename_dim=rename_dim, name='branch_pool')
         return Concat([branch1x1, branch3x3, branch3x3dbl, branch_pool],
                 name='concat3')
@@ -272,22 +276,10 @@ def Inception(img, labels, args):
     graph, meshes, mesh_to_impl, mtf_img, mtf_labels = \
             CreateMeshes(args.strategy, img, labels, args.batch_size)
 
-    debug = True
-    def LogDistribution(tsr):
-        if debug:
-            print(tsr.shape)
-            mesh_impl = mesh_to_impl[tsr.mesh]
-            print('(', end='')
-            for d in tsr.shape.dims:
-                print(mtf.tensor_dim_to_mesh_dim_size(mesh_impl.layout_rules,
-                    mesh_impl.shape, d), end=', ')
-            print(')')
-
     strategy = args.strategy
     with tf.variable_scope('inception'):
-        conv1a = AddBasicConv(mtf_img, (3, 3, 3, 32), stride=2, name='conv1a')
-        conv2a = AddBasicConv(conv1a, (3, 3, 32, 32), name='conv2a')
-        LogDistribution(conv2a)
+        conv1a = BasicConv(mtf_img, (3, 3, 3, 32), stride=2, name='conv1a')
+        conv2a = BasicConv(conv1a, (3, 3, 32, 32), name='conv2a')
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -296,26 +288,25 @@ def Inception(img, labels, args):
                     name='replace_mesh0_with_mesh1')
 
         dim_name = 'axis0' if strategy == 1 else None
-        conv2b = AddBasicConv(conv2a, (3, 3, 32, 64), padding='SAME',
+        conv2b = BasicConv(conv2a, (3, 3, 32, 64), padding='SAME',
                 dim_name=dim_name, name='conv2b')
         pool = utils.MaxPool(conv2b, (3, 3), stride=2, name='pool1')
-        LogDistribution(pool)
 
         if strategy == 1:
             curr_dims = pool.shape.dims
             assert curr_dims[0].name == 'axis1' and curr_dims[-1].name == 'axis0'
             new_dims = curr_dims[:]
-            new_dims[0].name = curr_dims[-1].name
-            new_dims[-1].name = RandName()
-            pool = mtf.reshape(pool, new_dims, name='reshape_pool1')
+            new_dims[0] = new_dims[0]._replace(name=curr_dims[-1].name)
+            new_dims[-1] = new_dims[-1]._replace(name=RandName())
+            with tf.variable_scope('reshape_pool1'):
+                pool = mtf.reshape(pool, new_dims)
 
             new_mesh = meshes[2]
             pool = utils.ReplaceMeshWithRemoval(new_mesh, pool,
                     mesh_to_impl[pool.mesh].shape[1],
                     name='replace_pool_mesh1_with_mesh2')
 
-        conv3b = AddBasicConv(pool, (1, 1, 64, 80), name='conv3b')
-        LogDistribution(conv3b)
+        conv3b = BasicConv(pool, (1, 1, 64, 80), name='conv3b')
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -324,17 +315,15 @@ def Inception(img, labels, args):
                     name='replace_conv3b_mesh2_with_mesh1')
 
         dim_name = 'axis1' if strategy == 1 else None
-        conv4a = AddBasicConv(conv3b, (3, 3, 80, 192), dim_name=dim_name,
+        conv4a = BasicConv(conv3b, (3, 3, 80, 192), dim_name=dim_name,
                 name='conv4a')
         pool = utils.MaxPool(conv4a, (3, 3), stride=2, name='pool2')
-        LogDistribution(pool)
 
-        out_mesh_info = (meshes[2], mesh_to_impl[meshes[2]]) \
+        out_mesh_info = (meshes[2], mesh_to_impl[meshes[1]]) \
                 if strategy == 1 else None
-        mixed5b = AddInceptionA(pool, 192, 32, out_mesh_info, name='mixed5b')
-        mixed5c = AddInceptionA(mixed5b, 256, 64, name='mixed5c')
-        mixed5d = AddInceptionA(mixed5c, 288, 64, name='mixed5d')
-        LogDistribution(mixed5d)
+        mixed5b = InceptionA(pool, 192, 32, out_mesh_info, name='mixed5b')
+        mixed5c = InceptionA(mixed5b, 256, 64, name='mixed5c')
+        mixed5d = InceptionA(mixed5c, 288, 64, name='mixed5d')
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -342,18 +331,16 @@ def Inception(img, labels, args):
                     mesh_to_impl[new_mesh].shape[1],
                     name='replace_mixed5d_mesh2_with_mesh1')
 
-        dim_name = mixed5d.mesh.shape[1].name if strategy == 1 else None
-        mixed6a = AddInceptionB(mixed5d, 288, dim_name=dim_name, name='mixed6a')
-        LogDistribution(mixed6a)
+        dim_name = 'axis1' if strategy == 1 else None
+        mixed6a = InceptionB(mixed5d, 288, dim_name=dim_name, name='mixed6a')
 
         if strategy == 1:
             new_mesh = meshes[2]
             mixed6a = utils.ReplaceMeshWithRemoval(new_mesh, mixed6a,
-                    mesh_to_impl[new_mesh].shape[1],
+                    mesh_to_impl[mixed6a.mesh].shape[1],
                     name='replace_mixed6a_mesh1_with_mesh2')
 
-        mixed6b = AddInceptionC(mixed6a, 768, 128, name='mixed6b')
-        LogDistribution(mixed6b)
+        mixed6b = InceptionC(mixed6a, 768, 128, name='mixed6b')
 
         if strategy == 1:
             new_mesh = meshes[1]
@@ -362,32 +349,31 @@ def Inception(img, labels, args):
                     name='replace_mixed6b_mesh2_with_mesh1')
 
         dim_name = 'axis1' if strategy == 1 else None
-        mixed6c = AddInceptionC(mixed6b, 768, 160, dim_name=dim_name,
+        mixed6c = InceptionC(mixed6b, 768, 160, dim_name=dim_name,
                 rename_dim=True, name='mixed6c')
-        mixed6d = AddInceptionC(mixed6c, 768, 160, dim_name=dim_name,
+        mixed6d = InceptionC(mixed6c, 768, 160, dim_name=dim_name,
                 rename_dim=True, name='mixed6d')
-        mixed6e = AddInceptionC(mixed6d, 768, 192, dim_name=dim_name,
+        mixed6e = InceptionC(mixed6d, 768, 192, dim_name=dim_name,
                 rename_dim=True, name='mixed6e')
-        LogDistribution(mixed6e)
 
-        dim_name = mixed6e.mesh.shape[1].name if strategy == 1 else None
-        mixed7a = AddInceptionD(mixed6e, 768, dim_name=dim_name, name='mixed7a')
+        dim_name = 'axis1' if strategy == 1 else None
+        mixed7a = InceptionD(mixed6e, 768, dim_name=dim_name, name='mixed7a')
 
-        mixed7b = AddInceptionE(mixed7a, 1280, dim_name=dim_name,
+        mixed7b = InceptionE(mixed7a, 1280, dim_name=dim_name,
                 rename_dim=True, name='mixed7b')
-        mixed7c = AddInceptionE(mixed7b, 2048, dim_name=dim_name,
+        mixed7c = InceptionE(mixed7b, 2048, dim_name=dim_name,
                 rename_dim=True, name='mixed7c')
-        LogDistribution(mixed7c)
 
         mean = mtf.reduce_mean(mixed7c, output_shape =
                 mtf.Shape([mixed7c.shape[0], mixed7c.shape[-1]]))
 
         if strategy == 1:
             new_shape = mean.shape.dims
-            new_shape[0].name = RandName()
-            new_shape[1].name = 'axis1'
+            new_shape[0] = mtf_labels.shape[0]
+            new_shape[1] = new_shape[1]._replace(name='axis1')
             new_shape = mtf.Shape(new_shape)
-            mean = mtf.reshape(mean, new_shape, name='reshape_mean')
+            with tf.variable_scope('reshape_mean'):
+                mean = mtf.reshape(mean, new_shape)
         
         dim_name = 'axis0' if strategy == 1 else RandName()
         fc = mtf.layers.dense(mean, mtf.Dimension(dim_name, num_classes))
@@ -419,7 +405,7 @@ def Inception(img, labels, args):
             with tf.device(v.device):
                 init_op.append(v.initializer)
 
-        return init_op, [tf_loss] + tf_grad_updates
+        return init_op, tf_loss, tf_grad_updates
 
 
 def main():
@@ -461,7 +447,7 @@ def main():
     tf_x.set_shape([args.batch_size, 299, 299, 3])
     tf_y.set_shape([args.batch_size])
 
-    init_ops, ops = Inception(tf_x, tf_y, args)
+    init_ops, loss_op, grad_ops = Inception(tf_x, tf_y, args)
 
     config = tf.ConfigProto()
     #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
@@ -476,7 +462,7 @@ def main():
                 step = 0
 
                 for _ in range(train_batches_per_epoch):
-                    loss_val, *rem = sess.run(ops)
+                    loss_val, *_ = sess.run([loss_op] + grad_ops)
                     step += 1
 
                     if step % args.display_steps == 0 and step > 0:

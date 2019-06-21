@@ -84,7 +84,6 @@ def NormalizeStrideAndPad(stride, padding):
 
 # Fixes a bug in mesh-tensorflow. To be used as gradient function for slicewise
 # op. Uncomment this part if needed later.
-'''
 class GenericGradOp(mtf.GenericGradOperation):
     def lower(self, lowering):
         # lists of lists of tf.Tensor
@@ -104,7 +103,6 @@ class GenericGradOp(mtf.GenericGradOperation):
 
 def GenericGradFn(forward_op, grad_y):
     return GenericGradOp(forward_op, [grad_y]).outputs
-'''
 
 
 class Conv2dOperation(mtf.Conv2dOperation):
@@ -186,10 +184,10 @@ def Pooling(tsr, fltr, stride=(1,1), padding='VALID', pooling_fn=tf.nn.max_pool,
         output_shape = output_shape.resize_dimension(tsr.shape[2].name, w_o)
 
         splittable_dims = [tsr.shape.dims[0], tsr.shape.dims[-1]]
-        #out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype,
-        #        splittable_dims, grad_function=GenericGradFn)
         out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype,
-                splittable_dims)
+                splittable_dims, grad_function=GenericGradFn)
+        #out = mtf.slicewise(max_pool, [tsr], output_shape, tsr.dtype,
+        #        splittable_dims)
         return out
 
 
@@ -249,6 +247,17 @@ class ReplaceMeshWithRemovalOperation(mtf.Operation):
         axis_num = mesh_impl.shape.dims.index(self.axis)
         cumprod = mesh_impl.shape.cumprod[axis_num]
 
+        # Make sure the mesh axes are compatible
+        old_dims = mesh_impl.shape.to_integer_list
+        new_dims = lowering.mesh_impl(self.mesh).shape.to_integer_list
+        assert len(old_dims) == len(new_dims) + 1
+        assert old_dims[:axis_num] == new_dims[:axis_num]
+        assert old_dims[axis_num+1:] == new_dims[axis_num:]
+
+        # Make sure the tensor is replicated along 'axis_num' mesh dimension
+        tsr_layout = mesh_impl.tensor_layout(self.inputs[0])
+        assert tsr_layout.mesh_axis_to_tensor_axis(axis_num+1)[-1] is None
+
         output_slices = [input_slices[i:i+cumprod] for i in range(0,
             len(input_slices), cumprod * self.axis.size)]
         output_slices = FlattenList(output_slices)
@@ -263,6 +272,8 @@ class ReplaceMeshWithRemovalOperation(mtf.Operation):
 class ReplaceMeshWithReplicationOperation(mtf.Operation):
     def __init__(self, new_mesh, input, axis, name=None):
         assert isinstance(axis, mtf.Dimension)
+        assert axis.name not in input.shape.dimension_names
+
         super().__init__([input], mesh=new_mesh, name=name or
                 'replace_mesh_with_replication')
         self.old_mesh = input.mesh
@@ -280,6 +291,13 @@ class ReplaceMeshWithReplicationOperation(mtf.Operation):
         mesh_impl = lowering.mesh_impl(self.mesh)
         axis_num = mesh_impl.shape.dims.index(self.axis)
         cumprod = mesh_impl.shape.cumprod[axis_num]
+
+        # Make sure the mesh axes are compatible
+        old_dims = lowering.mesh_impl(self.old_mesh).shape.to_integer_list
+        new_dims = mesh_impl.shape.to_integer_list
+        assert len(old_dims) == len(new_dims) - 1
+        assert old_dims[:axis_num] == new_dims[:axis_num]
+        assert old_dims[axis_num:] == new_dims[axis_num+1:]
 
         output_slices = [input_slices[i:i+cumprod] * self.axis.size for i in
                 range(0, len(input_slices), cumprod)]
