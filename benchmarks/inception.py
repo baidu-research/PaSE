@@ -390,9 +390,9 @@ def Inception(img, labels, args):
             opt = mtf.optimize.SgdOptimizer(0.01)
             grad_updates = opt.apply_grads(grads, graph.trainable_variables)
 
-        print('Beginning to lower mtf graph...')
+        print('Beginning to lower mtf graph...', flush=True)
         lowering = mtf.Lowering(graph, mesh_to_impl)
-        print('Finished lowering.')
+        print('Finished lowering.', flush=True)
         tf_loss = lowering.export_to_tf_tensor(loss)
         tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
@@ -435,7 +435,11 @@ def main():
     os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
                                                  range(args.procs))[:-1]
     
-    # Initalize the data generator seperately for the training and validation set
+    for arg, val in vars(args).items():
+        print(str(arg) + ": " + str(val))
+    print()
+            
+    # Initalize the data generator
     dataset = ImageDataLoader(args.batch_size, (299, 299), dataset_size =
             args.dataset_size, dataset_dir=args.dataset_dir,
             labels_filename=args.labels_filename)
