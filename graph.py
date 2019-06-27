@@ -274,16 +274,17 @@ def Inception3(b, aux_logits=False):
 
 
 def Transformer(b):
-    max_seq_len = 256
+    max_seq_len = 1024
     vocab_size = 50000
-    embed_dim = 1024
-    heads = 32
-    ff_dim = heads * 1024
+    embed_dim = 512
+    heads = 4
+    ff_dim = 2048
     nx = 6
+    d_k = int(embed_dim / heads)
 
-    enc_inp_tsr = nn_ops.Tensor((b * max_seq_len,))
-    dec_inp_tsr = nn_ops.Tensor((b * max_seq_len,))
-    pos_enc = nn_ops.Tensor((b * max_seq_len, embed_dim))
+    enc_inp_tsr = nn_ops.Tensor((b, max_seq_len))
+    dec_inp_tsr = nn_ops.Tensor((b, max_seq_len))
+    pos_enc = nn_ops.Tensor((b, max_seq_len, embed_dim))
 
     enc_inp_tsr.SetAsInput()
     dec_inp_tsr.SetAsInput()
@@ -291,6 +292,7 @@ def Transformer(b):
 
     # Multi-head attention layer
     def MultiheadAttention(q, k, v):
+        '''
         # Multi-head
         k = nn_ops.FC(k, embed_dim)
         k = nn_ops.Reshape(k.GetOutTensor(0), (b, max_seq_len, heads, int(embed_dim
@@ -306,57 +308,78 @@ def Transformer(b):
         q = nn_ops.Reshape(q.GetOutTensor(0), (b, max_seq_len, heads, int(embed_dim
             / heads)))
         q = nn_ops.Transpose(q.GetOutTensor(0), (0, 2, 1, 3))
-
+ 
         # Attention
-        k_t = nn_ops.Transpose(k.GetOutTensor(0), (0, 1, 3, 2))
-        qk = nn_ops.MatMul(q.GetOutTensor(0), k_t.GetOutTensor(0))
-        smax = nn_ops.Softmax(qk.GetOutTensor(0), axis=3)
-        scores = nn_ops.MatMul(smax.GetOutTensor(0), v.GetOutTensor(0))
+        k_t = nn_ops.Transpose(k, (0, 1, 3, 2))(0)
+        qk = nn_ops.MatMul(q, k_t)(0)
+        smax = nn_ops.Softmax(qk, axis=3)(0)
+        scores = nn_ops.MatMul(smax, v)(0)
 
         # Multi-head final linear layer
-        scores = nn_ops.Transpose(scores.GetOutTensor(0), (0, 2, 1, 3))
-        scores = nn_ops.Reshape(scores.GetOutTensor(0), (b * max_seq_len,
-            embed_dim))
-        scores = nn_ops.FC(scores.GetOutTensor(0), embed_dim)
+        scores = nn_ops.Transpose(scores, (0, 2, 1, 3))(0)
+        scores = nn_ops.Reshape(scores, (b * max_seq_len, embed_dim))(0)
+        scores = nn_ops.FC(scores, embed_dim)
+        '''
 
-        return scores
+        # Weight matrices
+        wqkv = nn_ops.Tensor((3, heads, embed_dim, d_k))
+        wqkv.SetAsInput()
+
+        # Multihead
+        # s: stack, b: batch, l: seq_len, e: embed_dim, h: heads, k: d_k
+        eq = 'sble,shek->sbhlk'
+        qkv = nn_ops.Stack((q, k, v))(0)
+        qkv = nn_ops.Einsum(eq, qkv, wqkv, trainable=True)(0)
+        q, k, v = nn_ops.Unstack(qkv)()
+
+        # Dot-product attention
+        eq = 'bhlk,bhmk->bhlm' # Memory length: m = l
+        logits = nn_ops.Einsum(eq, q, k, trainable=False)(0)
+        weights = nn_ops.Softmax(logits, axis=3)(0)
+        eq = 'bhlm,bhmk->bhlk'
+        scores = nn_ops.Einsum(eq, weights, v, trainable=False)(0)
+
+        # Final linear layer
+        wo = nn_ops.Tensor((heads, embed_dim, d_k))
+        wo.SetAsInput()
+        eq = 'bhlk,hek->ble'
+        return nn_ops.Einsum(eq, scores, wo, trainable=True)
 
     # Feed-forward network: FF + relu + dropout + FF
     def FeedFwd(inp_tsr):
-        ff = nn_ops.FC(inp_tsr, ff_dim, pw_op_cnt=2)
-        ff = nn_ops.FC(ff.GetOutTensor(0), embed_dim)
-        return ff
+        eq = 'ble,ef->blf'
+        w = nn_ops.Tensor((embed_dim, ff_dim))
+        w.SetAsInput()
+        ff = nn_ops.Einsum(eq, inp_tsr, w, trainable=True, pw_op_cnt=2)(0)
+
+        eq = 'blf,fe->ble'
+        w = nn_ops.Tensor((ff_dim, embed_dim))
+        w.SetAsInput()
+        return nn_ops.Einsum(eq, ff, w, trainable=True)
 
     # Encoder layer
     def Encoder(inp_tsr):
-        norm1 = nn_ops.Norm(inp_tsr, 1)
-        tsr = norm1.GetOutTensor(0)
-        att = MultiheadAttention(tsr, tsr, tsr)
-        att = nn_ops.Elementwise(inp_tsr, att.GetOutTensor(0))
+        norm1 = nn_ops.Norm(inp_tsr, 1)(0)
+        att = MultiheadAttention(norm1, norm1, norm1)(0)
+        att = nn_ops.Elementwise(inp_tsr, att)(0)
 
-        norm2 = nn_ops.Norm(att.GetOutTensor(0), 1)
-        ff = FeedFwd(norm2.GetOutTensor(0))
-        ff = nn_ops.Elementwise(att.GetOutTensor(0), ff.GetOutTensor(0))
-
-        return ff
+        norm2 = nn_ops.Norm(att, 1)(0)
+        ff = FeedFwd(norm2)(0)
+        return nn_ops.Elementwise(att, ff)
 
     # Decoder layer
     def Decoder(inp_tsr, enc_out_tsr):
-        norm1 = nn_ops.Norm(inp_tsr, 1)
-        tsr = norm1.GetOutTensor(0)
-        att1 = MultiheadAttention(tsr, tsr, tsr)
-        att1 = nn_ops.Elementwise(inp_tsr, att1.GetOutTensor(0))
+        norm1 = nn_ops.Norm(inp_tsr, 1)(0)
+        att1 = MultiheadAttention(norm1, norm1, norm1)(0)
+        att1 = nn_ops.Elementwise(inp_tsr, att1)(0)
 
-        norm2 = nn_ops.Norm(att1.GetOutTensor(0), 1)
-        att2 = MultiheadAttention(norm2.GetOutTensor(0), enc_out_tsr,
-                enc_out_tsr)
-        att2 = nn_ops.Elementwise(att1.GetOutTensor(0), att2.GetOutTensor(0))
+        norm2 = nn_ops.Norm(att1, 1)(0)
+        att2 = MultiheadAttention(norm2, enc_out_tsr, enc_out_tsr)(0)
+        att2 = nn_ops.Elementwise(att1, att2)(0)
 
-        norm3 = nn_ops.Norm(att2.GetOutTensor(0), 1)
-        ff = FeedFwd(norm3.GetOutTensor(0))
-        ff = nn_ops.Elementwise(att2.GetOutTensor(0), ff.GetOutTensor(0))
-
-        return ff
+        norm3 = nn_ops.Norm(att2, 1)(0)
+        ff = FeedFwd(norm3)(0)
+        return nn_ops.Elementwise(att2, ff)
 
     # Encoder
     embed = nn_ops.Embedding(enc_inp_tsr, vocab_size, embed_dim)
@@ -372,11 +395,14 @@ def Transformer(b):
     x = pe
     for _ in range(nx):
         x = Decoder(x.GetOutTensor(0), enc.GetOutTensor(0))
-    dec = nn_ops.Norm(x.GetOutTensor(0), 1)
+    dec = nn_ops.Norm(x.GetOutTensor(0), 1)(0)
 
     # Linear + Softmax + cross-entropy loss
-    dec = nn_ops.FC(dec.GetOutTensor(0), vocab_size)
-    loss = nn_ops.SoftmaxCrossEntropy(dec.GetOutTensor(0))
+    eq = 'ble,ev->blv'
+    w = nn_ops.Tensor((embed_dim, vocab_size))
+    w.SetAsInput()
+    dec = nn_ops.Einsum(eq, dec, w, trainable=True)(0)
+    loss = nn_ops.SoftmaxCrossEntropy(dec)
     return nn_ops.Ops.G
 
 

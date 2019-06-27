@@ -7,7 +7,7 @@ from functools import reduce
 import operator as op
 
 
-def prod(v):
+def Prod(v):
     return reduce(op.mul, v, 1)
 
 
@@ -64,7 +64,7 @@ def GetConfigs(dom, n_procs, cutoff = 4):
             l = [1]
         proc_set.append(l)
 
-    configs = [c for c in itertools.product(*proc_set) if prod(c) <= n_procs]
+    configs = [c for c in itertools.product(*proc_set) if Prod(c) <= n_procs]
     return configs
 
 
@@ -72,7 +72,7 @@ def GetAllReduceCost(words, procs):
     # All-reduce cost = 2*((n*k)/P)*(P-1)
     chunks = words / procs # The elements are split into 'procs' chunks
     steps = 2.0 * (procs - 1)
-    costs = BytesToFlops(words * steps) # When procs = 1, the cost is 0
+    costs = BytesToFlops(chunks * steps) # When procs = 1, the cost is 0
 
     return costs
 
@@ -82,16 +82,16 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, trainable=True):
     dom_per_proc = dom / dom_configs
 
     # Cost for 1 GEMM in fwd phase + 2 GEMMs in bwd phase
-    costs = 3.0 * np.prod(dom_per_proc, axis=1)
+    costs = np.prod(dom_per_proc, axis=1)
+    if trainable:
+        costs *= 3.0
 
     # Cost of pointwise op
     if pw_op_cnt > 0:
         pw_cost = dom_per_proc[:, m_idx] * dom_per_proc[:, n_idx]
-        costs += pw_op_cnt * 3 * pw_cost # Factor 3 is to
-                                         # account for 1 pointwise op (per
-                                         # element) in fwd phase, 1
-                                         # differentiation op in bwd phase, and
-                                         # 1 hadamard product in bwd phase
+        # 1 differentiation op in bwd phase, and 1 hadamard product in bwd phase
+        coeff = 1 + (trainable * 2)
+        costs += coeff * pw_op_cnt * pw_cost 
     
     # Cost for reducing the output during fwd phase
     words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
@@ -295,7 +295,6 @@ class Ops():
         for i, t in enumerate(self.in_tsrs):
             AddEdge(t, i)
 
-
     def ComputeCosts(self):
         if not hasattr(self, 'dom_config_tuples'):
             self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
@@ -305,6 +304,12 @@ class Ops():
         self.in_tsr_configs = None
         self.out_tsr_configs = None
         self.costs = 0
+
+    def GetInTensors(self):
+        return self.in_tsrs
+
+    def GetOutTensors(self):
+        return self.out_tsrs
 
     def GetInTensor(self, idx):
         assert idx < self.in_tsrs_cnt
@@ -340,6 +345,9 @@ class Ops():
     def GetCosts(self):
         return self.costs
 
+    def __call__(self, idx=None):
+        return self.GetOutTensors() if idx is None else self.GetOutTensor(idx)
+
 
 # Elementwise ops such as add, mul, etc.,
 class Elementwise(Ops):
@@ -363,7 +371,7 @@ class Elementwise(Ops):
 
 class Ravel(Ops):
     def __init__(self, tsr, n_procs=None):
-        out_tsr = Tensor((prod(tsr), ))
+        out_tsr = Tensor((Prod(tsr),))
         super().__init__(tsr, tsr, out_tsr, n_procs)
 
     def ComputeCosts(self):
@@ -443,13 +451,55 @@ class Transpose(Ops):
         self.costs = 0
 
 
+class Stack(Ops):
+    def __init__(self, in_tsrs, n_procs=None):
+        assert all(isinstance(t, Tensor) for t in in_tsrs)
+        assert all(in_tsrs[0] == t for t in in_tsrs[1:])
+        self.num = len(in_tsrs)
+
+        dom = (self.num, *(in_tsrs[0]))
+        out_tsr = Tensor((self.num, *(in_tsrs[0])))
+        super().__init__(dom, in_tsrs, out_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+        # We don't want to distribute along stacking axis. When length along the
+        # axis is small, the tensor is by default not distributed along the
+        # axis. Make sure that is the case. If not, we need to manually remove
+        # configs > 1
+        assert np.all(self.dom_configs[:, 0] == 1)
+
+        self.in_tsr_configs = (self.dom_configs[:, 1:],) * self.num
+        self.out_tsr_configs = self.dom_configs
+        self.costs = 0
+
+
+class Unstack(Ops):
+    def __init__(self, in_tsr, n_procs=None):
+        self.num = in_tsr[0]
+        dom = tuple(in_tsr)
+        out_tsrs = tuple(Tensor(in_tsr[1:]) for _ in range(self.num))
+        super().__init__(dom, in_tsr, out_tsrs, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+        # We don't want to distribute along stacking axis. When length along the
+        # axis is small, the tensor is by default not distributed along the
+        # axis. Make sure that is the case. If not, we need to manually remove
+        # configs > 1
+        assert np.all(self.dom_configs[:, 0] == 1)
+
+        self.dom_configs[:, 0] = 1 # Don't distribute along stack axis
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = (self.dom_configs[:,1:],) * self.num
+        self.costs = 0
+
+
 # Fully connected layer
 class FC(Ops):
     def __init__(self, in_tsr, n_units, n_procs=None, pw_op_cnt=0):
         assert len(in_tsr) == 2
-
         self.pw_op_cnt = pw_op_cnt
-
         m_idx, n_idx, k_idx = range(3)
 
         # Domain and input/output tensors
@@ -506,42 +556,91 @@ class MatMul(Ops):
         self.costs *= batches_per_proc
 
 
-'''
-def Einsum(eq, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
-    tsr1_dims, rem_dims = eq.split(',')
-    tsr2_dims, out_dims = rem_dims.split('->')
+class Einsum(Ops):
+    def __init__(self, eq, tsr1, tsr2, trainable=False, n_procs=None,
+            pw_op_cnt=0):
+        tsr_dims, out_dims = eq.split('->')
+        tsr1_dims, tsr2_dims = tsr_dims.split(',')
 
-    tsr1_dim_set = set(tsr1_dims)
-    tsr2_dim_set = set(tsr2_dims)
-    out_dim_set = set(out_dims)
-    red_dim_set = (tsr1_dim_set | tsr2_dim_set) - out_dim_set
+        assert len(tsr1) == len(tsr1_dims)
+        assert len(tsr2) == len(tsr2_dims)
 
-    dim1 = (tsr1_dim_set - red_dim_set)
-    dim2 = (tsr2_dim_set - red_dim_set)
-    tsr1_batch_set = dim1 & tsr2_dim_set
-    tsr2_batch_set = dim2 & tsr2_dim_set
+        self.tsr1_dims = tsr1_dims
+        self.tsr2_dims = tsr2_dims
+        self.out_dims = out_dims
+        self.pw_op_cnt = pw_op_cnt
+        self.trainable = trainable
 
-    m_dim = dim1 - tsr1_batch_set
-    n_dim = dim2 - tsr2_batch_set
+        self.tsr1_dim_set = tsr1_dim_set = set(tsr1_dims)
+        self.tsr2_dim_set = tsr2_dim_set = set(tsr2_dims)
+        self.out_dim_set = out_dim_set = set(out_dims)
+        self.reduced_dim_set = reduced_dim_set = (tsr1_dim_set & tsr2_dim_set) \
+                - out_dim_set
+        assert len(reduced_dim_set) > 0
 
-    assert len(m_dim) <= 1
-    assert len(n_dim) <= 1
+        assert len(tsr1_dim_set) == len(tsr1_dims)
+        assert len(tsr2_dim_set) == len(tsr2_dims)
+        assert len(out_dim_set) == len(out_dims)
+        assert out_dim_set.issubset(tsr1_dim_set | tsr2_dim_set)
+        self.dom_dims = tuple(out_dims) + tuple(reduced_dim_set)
 
-    tsr1_batch_dims = [d for d in tsr1_dims if d in tsr1_batch_set]
-    tsr2_batch_dims = [d for d in tsr2_dims if d in tsr2_batch_set]
+        self.tsr1_dim_map = tsr1_dim_map = {i:j for i,j in zip(tsr1_dims, tsr1)}
+        self.tsr2_dim_map = tsr2_dim_map = {i:j for i,j in zip(tsr2_dims, tsr2)}
+        assert all(tsr1_dim_map[d] == tsr2_dim_map[d] for d in tsr1_dim_set &
+                tsr2_dim_set)
 
-    assert len(tsr1_dims) == len(tsr1)
-    assert len(tsr2_dims) == len(tsr2)
+        out_tsr = tuple(tsr1_dim_map[d] if d in tsr1_dim_set else
+                tsr2_dim_map[d] for d in out_dims)
+        dom = out_tsr + tuple(tsr1_dim_map[d] if d in tsr1_dim_set else
+                tsr2_dim_map[d] for d in reduced_dim_set)
+        super().__init__(dom, (tsr1, tsr2), Tensor(out_tsr), n_procs)
 
-    tsr1_red_axis = [i for i, d in enumerate(tsr1_dims) if d in red_dims]
-    tsr2_red_axis = [i for i, d in enumerate(tsr2_dims) if d in red_dims]
+    def ComputeCosts(self):
+        super().ComputeCosts()
 
-    assert len(tsr1_red_axis) == len(tsr2_red_axis)
+        # Configurations
+        idx1 = tuple(self.tsr1_dims.index(d) for d in self.dom_dims if d in
+                self.tsr1_dims)
+        idx2 = tuple(self.tsr2_dims.index(d) for d in self.dom_dims if d in
+                self.tsr2_dims)
+        self.in_tsr_configs = (self.dom_configs[:, idx1], self.dom_configs[:,
+            idx2])
+        self.out_tsr_configs = self.dom_configs[:, :len(self.out_dims)]
 
-    assert all(tsr1[i] == tsr2[i] for 
+        # Batch dimensions are the ones in output dim that are common in tsr1
+        # and tsr2
+        batch_dim_set = self.tsr1_dim_set & self.tsr2_dim_set & self.out_dim_set
+        # m_dims and n_dims are non-batch, non-reduced dimensions
+        m_dim_set = self.tsr1_dim_set - (batch_dim_set | self.reduced_dim_set)
+        n_dim_set = self.tsr2_dim_set - (batch_dim_set | self.reduced_dim_set)
 
-    assert all(a < len(tsr1) and a < len(tsr2) for a in reduction_axis)
-'''
+        def GetCfgs(dim_set):
+            if not dim_set:
+                dom = 1
+                dom_config = np.ones([self.dom_configs.shape[0], 1])
+            else:
+                idx = tuple(self.dom_dims.index(d) for d in dim_set)
+                dom = Prod(self.dom[i] for i in idx)
+                dom_config = np.prod(self.dom_configs[:, idx], axis=1,
+                        keepdims=True)
+
+            return dom, dom_config
+
+        # Ignore the batches, and compute the cost for GEMM
+        m_dom, m_config = GetCfgs(m_dim_set)
+        n_dom, n_config = GetCfgs(n_dim_set)
+        k_dom, k_config = GetCfgs(self.reduced_dim_set)
+        gemm_dom = (m_dom, n_dom, k_dom)
+        gemm_dom_configs = np.concatenate((m_config, n_config, k_config), axis=1)
+        self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
+                self.pw_op_cnt, trainable=self.trainable)
+
+        # Multiply the costs by batch sizes
+        batch_idx = tuple(self.dom_dims.index(d) for d in batch_dim_set)
+        batch_dom = tuple(self.dom[i] for i in batch_idx)
+        batches_per_proc = np.prod(batch_dom / self.dom_configs[:, batch_idx],
+                axis=1)
+        self.costs *= batches_per_proc
 
 
 # Convolution
@@ -755,21 +854,20 @@ class Softmax(Ops):
         # pass + cost of performing N multiplications per input in backward pass.
         exp_cost = 3.0 # Cost of computing a single exponent
         dom_per_proc = self.dom / self.dom_configs
-        self.costs = (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
+        self.costs += (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
         self.costs += np.prod(dom_per_proc, axis=1) * self.dom[self.axis]
 
         # Softmax communication costs - Adding partial sums: 1 word per input
         # per proc => batchsize / proc in forward pass.
         # Cost of gathering the rows in backward pass.
         elems = np.prod(np.delete(dom_per_proc, self.axis, 1), axis=1)
-        self.costs = BytesToFlops(2.0 * elems)
+        self.costs += GetAllReduceCost(elems, self.dom_configs[:, self.axis])
         self.costs += GetAllReduceCost(elems * self.dom[self.axis],
-                dom_per_proc[:, self.axis])
+                self.dom_configs[:, self.axis])
 
 
 class SoftmaxCrossEntropy(Ops):
     def __init__(self, in_tsr, n_procs=None):
-        assert len(in_tsr) == 2
         super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
     def ComputeCosts(self):
@@ -778,16 +876,18 @@ class SoftmaxCrossEntropy(Ops):
         self.in_tsr_configs = self.dom_configs
         self.out_tsr_configs = self.dom_configs
 
+        dom_per_proc = self.dom / self.dom_configs
+        batch_size = np.prod(dom_per_proc[:, :-1], axis=1)
+
         # Softmax computation costs - Taking exponent and summation in forward
         # pass + cost of performing one subtraction per input in backward pass.
         exp_cost = 3.0 # Cost of computing a single exponent
-        dom_per_proc = self.dom / self.dom_configs
         self.costs = (exp_cost + 1) * np.prod(dom_per_proc, axis=1)
-        self.costs += dom_per_proc[:, 0]
+        self.costs += batch_size
 
         # Cross-entropy computation costs - cost of averaging scalars over batch
         # dimension in forward pass.
-        self.costs += dom_per_proc[:, 0]
+        self.costs += batch_size
 
         # Softmax communication costs - Adding partial sums: 1 word per input
         # per proc => batchsize / proc in forward pass.
@@ -796,42 +896,41 @@ class SoftmaxCrossEntropy(Ops):
         # averaging partial sums: 1 word per proc along batch dim in forward
         # pass is ignored.
         # No communication in backward pass.
-        comm_cost = BytesToFlops(2.0 * dom_per_proc[:, 0])
-        np.add(self.costs, comm_cost, where=(self.dom_configs[:,1] > 1),
+        comm_cost = BytesToFlops(2.0 * batch_size)
+        np.add(self.costs, comm_cost, where=(self.dom_configs[:, -1] > 1),
                 out=self.costs)
 
 
 class Embedding(Ops):
     def __init__(self, in_tsr, vocab_size, embedding_dim, n_procs=None):
-        assert len(in_tsr) == 1
-
         self.embedding_dim = embedding_dim
 
-        dom = (in_tsr[0], vocab_size)
-        out_tsr = Tensor((in_tsr[0], embedding_dim))
+        dom = (*in_tsr, vocab_size)
+        out_tsr = Tensor((*in_tsr, embedding_dim))
         super().__init__(dom, in_tsr, out_tsr, n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
 
-        self.in_tsr_configs = self.dom_configs[:, 0]
-        self.out_tsr_configs = np.insert(self.dom_configs[:, 1].reshape(-1, 1),
-                1, 1, axis=1)
+        self.in_tsr_configs = self.dom_configs[:, :-1]
+        self.out_tsr_configs = np.insert(self.in_tsr_configs,
+                self.in_tsr_configs.shape[-1], 1, axis=1)
 
         dom_per_proc = self.dom / self.dom_configs
+        batch_size = np.prod(dom_per_proc[:, :-1], axis=1)
 
         # Lookup in forward phase may involve a gather operation. We assume an
         # equal likelihood for each input row to be present in a processor.
-        # p_b: no. of procs along batch dim; p_e: no. of procs along embed dim
-        # Probability of having the row for an input in a processor 'p' is 1/p_e.
-        # Each processor has b/p_b inputs. Hence, b/(p_b*p_e) input rows can be
-        # expected to be present in the current processor, and (b/p_b)*(1-1/p_e)
+        # p_b: no. of procs along batch dim; p_v: no. of procs along vocab dim
+        # Probability of having the row for an input in a processor 'p' is 1/p_v.
+        # Each processor has b/p_b inputs. Hence, b/(p_b*p_v) input rows can be
+        # expected to be present in the current processor, and (b/p_b)*(1-1/p_v)
         # elements have to be gathered from other processors.
-        self.costs = BytesToFlops(dom_per_proc[:,0] * (1.0 - 1.0 /
-            self.dom_configs[:,1]))
+        self.costs = BytesToFlops(batch_size * (1.0 - 1.0 / self.dom_configs[:,
+            -1]))
 
         # Gradient update costs
-        weights_per_proc = dom_per_proc[:,1] * self.embedding_dim
+        weights_per_proc = dom_per_proc[:, -1] * self.embedding_dim
         self.costs += weights_per_proc # Gradient addition
-        self.costs += GetAllReduceCost(weights_per_proc, self.dom_configs[:, 0])
+        self.costs += GetAllReduceCost(weights_per_proc, batch_size)
 
