@@ -69,24 +69,16 @@ class TextDataLoader():
     def parse_text(self, sentence, label):
         # Split sentence into words, and convert it into ids
         sentence = tf.string_split([sentence]).values
+        if self.max_seq_len is not None: # Trim the sentence to max_seq_len
+            sentence = sentence[:self.max_seq_len]
         src_seq_len = tf.size(sentence)
-        if self.max_seq_len is not None:
-            op = tf.Assert(tf.less_equal(src_seq_len, self.max_seq_len),
-                    [src_seq_len])
-        else:
-            op = sentence
-        with tf.control_dependencies([op]):
-            sentence = self.src_vocab.lookup(sentence)
+        sentence = self.src_vocab.lookup(sentence)
 
         label = tf.string_split([label]).values
-        tgt_seq_len = tf.size(label)
         if self.max_seq_len is not None:
-            op = tf.Assert(tf.less_equal(tgt_seq_len, self.max_seq_len),
-                    [tgt_seq_len])
-        else:
-            op = label
-        with tf.control_dependencies([op]):
-            label = self.tgt_vocab.lookup(label)
+            label = label[:self.max_seq_len]
+        tgt_seq_len = tf.size(label)
+        label = self.tgt_vocab.lookup(label)
 
         # Prepend and append SOS and EOS tokens to label
         #label = tf.concat([[self.tgt_sos_token], label, [self.tgt_eos_token]],

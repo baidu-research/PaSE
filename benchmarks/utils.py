@@ -22,6 +22,20 @@ def AssignLayout(ta_axes, mesh_axis):
     return layout
 
 
+def RenameDim(shape, axis, name):
+    assert isinstance(shape, mtf.Shape)
+    new_shape = shape.dims
+    new_shape[axis] = new_shape[axis]._replace(name=name)
+    return mtf.Shape(new_shape)
+
+
+def RenameDims(shape, axes, names):
+    assert len(axes) == len(names)
+    for axis, name in zip(axes, names):
+        shape = RenameDim(shape, axis, name)
+    return shape
+
+
 def GetMeshImpl(dev_cnts, devices=None, axes=None):
     axes = axes or ['axis%d' % i for i in range(len(dev_cnts))]
     assert len(dev_cnts) == len(axes)
