@@ -5,6 +5,7 @@ import pandas as pd
 import itertools
 from functools import reduce
 import operator as op
+import string
 
 
 def Prod(v):
@@ -14,6 +15,12 @@ def Prod(v):
 class Tensor(tuple):
     def SetAsInput(self):
         self.is_input = True
+
+
+def InputTensor(x):
+    t = Tensor(x)
+    t.SetAsInput()
+    return t
 
 
 def BytesToFlops(bytes):
@@ -859,11 +866,12 @@ class Softmax(Ops):
 
         # Softmax communication costs - Adding partial sums: 1 word per input
         # per proc => batchsize / proc in forward pass.
-        # Cost of gathering the rows in backward pass.
+        # Cost of gathering the rows in backward pass + reduction.
         elems = np.prod(np.delete(dom_per_proc, self.axis, 1), axis=1)
         self.costs += GetAllReduceCost(elems, self.dom_configs[:, self.axis])
         self.costs += GetAllReduceCost(elems * self.dom[self.axis],
                 self.dom_configs[:, self.axis])
+        self.costs += GetAllReduceCost(elems, self.dom_configs[:, self.axis])
 
 
 class SoftmaxCrossEntropy(Ops):
@@ -901,6 +909,7 @@ class SoftmaxCrossEntropy(Ops):
                 out=self.costs)
 
 
+'''
 class Embedding(Ops):
     def __init__(self, in_tsr, vocab_size, embedding_dim, n_procs=None):
         self.embedding_dim = embedding_dim
@@ -933,4 +942,13 @@ class Embedding(Ops):
         weights_per_proc = dom_per_proc[:, -1] * self.embedding_dim
         self.costs += weights_per_proc # Gradient addition
         self.costs += GetAllReduceCost(weights_per_proc, batch_size)
+'''
+def Embedding(in_tsr, vocab_size, embedding_dim, n_procs=None):
+    assert in_tsr.is_input == True
+    in_tsr = InputTensor((*in_tsr, vocab_size)) # one-hot encoding
 
+    dim_names = string.ascii_letters[:len(in_tsr)+1]
+    eq = dim_names[:-1] + ',' + dim_names[-2:] + '->' + dim_names[:-2] \
+            + dim_names[-1]
+    w = InputTensor((vocab_size, embedding_dim))
+    return Einsum(eq, in_tsr, w, trainable=True, n_procs=n_procs)

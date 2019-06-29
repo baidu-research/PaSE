@@ -4,8 +4,7 @@ import nn_ops
 
 
 def AlexNet(b):
-    img = nn_ops.Tensor((b, 3, 227, 227))
-    img.SetAsInput()
+    img = nn_ops.InputTensor((b, 3, 227, 227))
 
     # Conv1 + relu + maxpool
     conv1 = nn_ops.Conv(img, (96, 3, 11, 11), stride=4, pw_op_cnt=1)
@@ -48,8 +47,7 @@ def AlexNet(b):
 
 
 def ResNet101(b):
-    img = nn_ops.Tensor((b, 3, 227, 227))
-    img.SetAsInput()
+    img = nn_ops.InputTensor((b, 3, 227, 227))
     layers = (3, 4, 23, 3)
 
     num_classes = 1000
@@ -114,8 +112,7 @@ def ResNet101(b):
 
 
 def Inception3(b, aux_logits=False):
-    img = nn_ops.Tensor((b, 3, 299, 299))
-    img.SetAsInput()
+    img = nn_ops.InputTensor((b, 3, 299, 299))
     num_classes = 1000
 
     def AddBasicConv(img, fltr, stride=1, padding=0):
@@ -274,21 +271,17 @@ def Inception3(b, aux_logits=False):
 
 
 def Transformer(b):
-    max_seq_len = 1024
+    max_seq_len = 256
     vocab_size = 50000
-    embed_dim = 512
-    heads = 4
-    ff_dim = 2048
+    embed_dim = 1024
+    heads = 8
+    ff_dim = heads * 512
     nx = 6
-    d_k = int(embed_dim / heads)
+    d_k = 128
 
-    enc_inp_tsr = nn_ops.Tensor((b, max_seq_len))
-    dec_inp_tsr = nn_ops.Tensor((b, max_seq_len))
-    pos_enc = nn_ops.Tensor((b, max_seq_len, embed_dim))
-
-    enc_inp_tsr.SetAsInput()
-    dec_inp_tsr.SetAsInput()
-    pos_enc.SetAsInput()
+    enc_inp_tsr = nn_ops.InputTensor((b, max_seq_len))
+    dec_inp_tsr = nn_ops.InputTensor((b, max_seq_len))
+    pos_enc = nn_ops.InputTensor((b, max_seq_len, embed_dim))
 
     # Multi-head attention layer
     def MultiheadAttention(q, k, v):
@@ -321,14 +314,11 @@ def Transformer(b):
         scores = nn_ops.FC(scores, embed_dim)
         '''
 
-        # Weight matrices
-        wqkv = nn_ops.Tensor((3, heads, embed_dim, d_k))
-        wqkv.SetAsInput()
-
         # Multihead
         # s: stack, b: batch, l: seq_len, e: embed_dim, h: heads, k: d_k
         eq = 'sble,shek->sbhlk'
         qkv = nn_ops.Stack((q, k, v))(0)
+        wqkv = nn_ops.InputTensor((3, heads, embed_dim, d_k))
         qkv = nn_ops.Einsum(eq, qkv, wqkv, trainable=True)(0)
         q, k, v = nn_ops.Unstack(qkv)()
 
@@ -340,21 +330,18 @@ def Transformer(b):
         scores = nn_ops.Einsum(eq, weights, v, trainable=False)(0)
 
         # Final linear layer
-        wo = nn_ops.Tensor((heads, embed_dim, d_k))
-        wo.SetAsInput()
+        wo = nn_ops.InputTensor((heads, embed_dim, d_k))
         eq = 'bhlk,hek->ble'
         return nn_ops.Einsum(eq, scores, wo, trainable=True)
 
     # Feed-forward network: FF + relu + dropout + FF
     def FeedFwd(inp_tsr):
         eq = 'ble,ef->blf'
-        w = nn_ops.Tensor((embed_dim, ff_dim))
-        w.SetAsInput()
+        w = nn_ops.InputTensor((embed_dim, ff_dim))
         ff = nn_ops.Einsum(eq, inp_tsr, w, trainable=True, pw_op_cnt=2)(0)
 
         eq = 'blf,fe->ble'
-        w = nn_ops.Tensor((ff_dim, embed_dim))
-        w.SetAsInput()
+        w = nn_ops.InputTensor((ff_dim, embed_dim))
         return nn_ops.Einsum(eq, ff, w, trainable=True)
 
     # Encoder layer
@@ -399,8 +386,7 @@ def Transformer(b):
 
     # Linear + Softmax + cross-entropy loss
     eq = 'ble,ev->blv'
-    w = nn_ops.Tensor((embed_dim, vocab_size))
-    w.SetAsInput()
+    w = nn_ops.InputTensor((embed_dim, vocab_size))
     dec = nn_ops.Einsum(eq, dec, w, trainable=True)(0)
     loss = nn_ops.SoftmaxCrossEntropy(dec)
     return nn_ops.Ops.G
