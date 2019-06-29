@@ -121,6 +121,7 @@ class Mesh0ToMesh1Operation(mtf.Operation):
                         lowering.tensors[s].to_laid_out_tensor().tensor_list
                 slices.append(tf.concat(tensor_list, axis=self.concat_axis))
 
+        # TODO: this might be bug when axis1 is None
         laid_out_tensor = \
                 lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
@@ -128,7 +129,7 @@ class Mesh0ToMesh1Operation(mtf.Operation):
 
 def Mesh0ToMesh1(x, new_mesh, axis, name=None):
     assert len(axis) == 2
-    assert all(a < x.shape.ndims for a in axis)
+    assert all(a is None or a < x.shape.ndims for a in axis)
 
     split_x = mtf.split(x, x.shape[axis[0]], 4, name='split_along_mesh2_x')
     if axis[1] is not None:
@@ -149,7 +150,7 @@ class Mesh1ToMesh0Operation(mtf.Operation):
         self.old_mesh = xs[0].mesh
         self.old_shape = shape
 
-        self.axis = (None, None)
+        self.axis = [None, None]
         for i, a in enumerate(shape.dims):
             if a.name == 'axis0':
                 self.axis[0] = i
@@ -317,10 +318,13 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
 
             att = mtf.layers.multihead_attention(norm1, None, mask, d_k_dim,
                     heads_dim, name='enc_multihead_att')
+            if strategy == 1:
+                att = Mesh1ToMesh0(att, meshes[0], 2)
+                att = mtf.rename_dimension(att, att.shape[0].name,
+                        x.shape[0].name)
+            assert att.shape == x.shape
             x += mtf.dropout(att, dropout_rate)
     
-            if strategy == 1:
-                x = Mesh1ToMesh0(x, meshes[0], 3)
             norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm2')
             ff = DenseReLUDense(norm2, d_ff_dim, dropout_rate, name='enc_ff')
             x += mtf.dropout(ff, dropout_rate)
@@ -330,27 +334,27 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     def DecoderLayer(x, enc_out, enc_mask, dec_mask, dropout_rate=0.5, name=None):
         with tf.variable_scope(name, default_name='decoder_layer'):
             norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm1')
-            if strategy == 1:
-                embed = Mesh0ToMesh1(embed, meshes[1], (0, None))
-
             att = mtf.layers.multihead_attention(norm1, None, dec_mask, d_k_dim,
                 heads_dim, name='dec_multihead_att1')
+            assert att.shape == x.shape
             x += mtf.dropout(att, dropout_rate)
     
             norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm2')
-            if strategy == 1:
-                norm2 = mtf.rename_dimension(norm2, norm2.shape[1].name, 'axis1')
             enc_out = mtf.rename_dimension(enc_out, enc_out.shape[1].name,
                     RandName())
             att = mtf.layers.multihead_attention(norm2, enc_out, enc_mask,
                 d_k_dim, heads_dim, name='dec_multihead_att2')
+            assert att.shape == x.shape
             x += mtf.dropout(att, dropout_rate)
     
             if strategy == 1:
-                x = Mesh1ToMesh0(x, meshes[0], 3)
+                x = Mesh1ToMesh0(x, meshes[0], 2)
             norm3 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm3')
             ff = DenseReLUDense(norm3, d_ff_dim, dropout_rate, name='dec_ff')
+            assert x.shape == ff.shape
             x += mtf.dropout(ff, dropout_rate)
+            if strategy == 1:
+                x = Mesh0ToMesh1(x, meshes[1], (0, None))
     
             return x
 
@@ -383,7 +387,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         for i in range(params.nx):
             x = EncoderLayer(x, enc_mask, name='enc_layer_%d' %i)
         if strategy == 1:
-            x = Mesh0ToMesh1(x, meshes[1], (0, 1), name='rename_encoder_output')
+            x = Mesh0ToMesh1(x, meshes[1], (0, None), name='rename_encoder_output')
         enc_output = mtf.layers.layer_norm(x, dim=x.shape[-1],
                 name='enc_final_norm')
 
@@ -393,6 +397,11 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         embed = mtf.layers.embedding(mtf_tgt, tgt_vocab_dim, d_model_dim,
                 tf.float32, name='dec_embedding')
         x = (embed * math.sqrt(params.d_model)) + pos_enc
+        if strategy == 1:
+            x = Mesh0ToMesh1(x, meshes[1], (0, None))
+            assert x.mesh == enc_output.mesh
+            enc_output = mtf.rename_dimension(enc_output,
+                    enc_output.shape[-1].name, x.shape[-1].name)
 
         # Decoder layers
         dec_mask = None
