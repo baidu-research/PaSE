@@ -212,6 +212,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         d_model_dim = mtf.Dimension(RandName(), params.d_model)
         src_vocab_dim = mtf.Dimension(RandName(), src_vocab_size)
         tgt_vocab_dim = mtf.Dimension(RandName(), tgt_vocab_size)
+        final_proj_dim = tgt_vocab_dim
 
     elif strategy == 1:
         d_k_dim = mtf.Dimension(RandName(), params.d_k)
@@ -219,7 +220,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         d_ff_dim = mtf.Dimension('axis0', params.d_ff)
         d_model_dim = mtf.Dimension('axis0', params.d_model)
         src_vocab_dim = mtf.Dimension(RandName(), src_vocab_size)
-        tgt_vocab_dim = mtf.Dimension('axis0', tgt_vocab_size)
+        tgt_vocab_dim = mtf.Dimension(RandName(), tgt_vocab_size)
+        final_proj_dim = mtf.Dimension('axis0', tgt_vocab_size)
 
     else:
         # Make the vocabulary size a multiple of mesh size
@@ -231,77 +233,35 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         d_model_dim = mtf.Dimension(RandName(), params.d_model)
         src_vocab_dim = mtf.Dimension('axis1', src_vocab_size)
         tgt_vocab_dim = mtf.Dimension('axis1', tgt_vocab_size)
+        final_proj_dim = tgt_vocab_dim
 
     seq_len_dim = mtf_src.shape[-1]
     assert mtf_src.shape[-1] == mtf_tgt.shape[-1]
 
     # Layers
-    '''
-    def MultiHeadAttn(query_antecedent,
-                            memory_antecedent,
-                            mask,
-                            kv_channels,
-                            heads,
-                            dropout=0.0,
-                            dropout_broadcast_dims=None,
-                            master_dtype=tf.float32,
-                            slice_dtype=tf.float32,
-                            name="multihead_attention"):
-        batch_dims = query_antecedent.shape.dims[:-2]
-        query_length, io_channels = query_antecedent.shape.dims[-2:]
-        with tf.variable_scope(name, default_name="multihead_attention",
-                values=[query_antecedent, memory_antecedent]):
-            wq, wk, wv, wo = multihead_attention_vars(
-                    query_antecedent.mesh, heads, io_channels, kv_channels,
-                    master_dtype, slice_dtype, query_antecedent.dtype)
-            if memory_antecedent is None:
-                memory_antecedent = mtf.rename_length_to_memory_length(
-                        query_antecedent, query_length.name)
-            memory_batch_dims = memory_antecedent.shape.dims[:-2]
-            memory_length, memory_channels = memory_antecedent.shape.dims[-2:]
-            if memory_batch_dims != batch_dims:
-                raise ValueError("memory batch must equal query batch")
-            if memory_channels != io_channels:
-                raise ValueError("memory channels must equal query channels")
-            q = mtf.einsum(
-                [query_antecedent, wq],
-                mtf.Shape(batch_dims + [heads, query_length, kv_channels]))
-            k = mtf.einsum(
-                [memory_antecedent, wk],
-                mtf.Shape(batch_dims + [heads, memory_length, kv_channels]))
-            v = mtf.einsum(
-                [memory_antecedent, wv],
-                mtf.Shape(batch_dims + [heads, memory_length, kv_channels]))
-
-            o = mtf.layers.dot_product_attention(
-                q, k, v, mask, dropout, dropout_broadcast_dims)
-
-            if strategy == 1:
-                assert o.shape[1].name == 'axis1'
-                o = mtf.rename_dimension(o, o.shape[1].name, RandName())
-                wo = mtf.rename_dimension(wo, wo.shape[1].name, 'axis1')
-
-            return mtf.einsum(
-                [o, wo], mtf.Shape(batch_dims + [query_length, io_channels]))
-    '''
-
     def DenseReLUDense(x,
                          hidden_channels,
                          dropout=0.0,
                          dropout_broadcast_dims=None,
                          master_dtype=tf.float32,
                          slice_dtype=tf.float32, name=None):
+        assert strategy != 1 \
+                or (x.mesh == meshes[0] \
+                and not x.shape[0].name.startswith('axis') \
+                and not x.shape[1].name.startswith('axis') \
+                and not x.shape[2].name.startswith('axis') \
+                and hidden_channels.name == 'axis0')
+
+        io_channels = x.shape.dims[-1]
         with tf.variable_scope(name, default_name="dense_relu_dense"):
-            io_channels = x.shape.dims[-1]
             h = mtf.layers.dense(x, hidden_channels,
                       use_bias=False, activation=mtf.relu,
                       master_dtype=master_dtype, slice_dtype=slice_dtype, name="wi")
             if dropout != 0.0:
-                h = mtf.dropout(h, 1.0 - dropout,
-                        noise_shape=h.shape - dropout_broadcast_dims)
+                h = mtf.dropout(h, 1.0 - dropout, noise_shape=h.shape -
+                        dropout_broadcast_dims)
 
             if strategy == 1:
-                assert h.shape[-1].name == 'axis0'
                 with tf.variable_scope('rename_h'):
                     h = mtf.rename_dimension(h, h.shape[-1].name, RandName())
                 io_channels = io_channels._replace(name='axis0')
@@ -311,51 +271,112 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                        name="wo")
     
     def EncoderLayer(x, mask, dropout_rate=0.5, name=None):
+        assert strategy != 1 \
+                or (x.mesh == meshes[0] \
+                and not x.shape[0].name.startswith('axis') \
+                and not x.shape[1].name.startswith('axis') \
+                and x.shape[2].name == 'axis0')
+
         with tf.variable_scope(name, default_name='encoder_layer'):
             norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm1')
             if strategy == 1:
                 norm1 = Mesh0ToMesh1(norm1, meshes[1], (0, None))
 
+            # Multihead attention
             att = mtf.layers.multihead_attention(norm1, None, mask, d_k_dim,
                     heads_dim, name='enc_multihead_att')
+            assert strategy != 1 \
+                    or (att.mesh == meshes[1] \
+                    and att.shape[0].name == 'axis0' \
+                    and not att.shape[1].name.startswith('axis') \
+                    and not att.shape[2].name.startswith('axis'))
+    
+            # Dropout + norm
             if strategy == 1:
                 att = Mesh1ToMesh0(att, meshes[0], 2)
                 att = mtf.rename_dimension(att, att.shape[0].name,
                         x.shape[0].name)
             assert att.shape == x.shape
             x += mtf.dropout(att, dropout_rate)
-    
             norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm2')
+            if strategy == 1:
+                assert norm2.shape[-1].name == 'axis0'
+                norm2 = mtf.rename_dimension(norm2, norm2.shape[-1].name,
+                        RandName())
+
+            # Feed forward
             ff = DenseReLUDense(norm2, d_ff_dim, dropout_rate, name='enc_ff')
+            assert x.shape == ff.shape
             x += mtf.dropout(ff, dropout_rate)
     
+            assert strategy != 1 \
+                    or (x.mesh == meshes[0] \
+                    and not x.shape[0].name.startswith('axis') \
+                    and not x.shape[1].name.startswith('axis') \
+                    and x.shape[2].name == 'axis0')
             return x
 
     def DecoderLayer(x, enc_out, enc_mask, dec_mask, dropout_rate=0.5, name=None):
+        assert strategy != 1 \
+                or (x.mesh == meshes[0] \
+                and not x.shape[0].name.startswith('axis') \
+                and not x.shape[1].name.startswith('axis') \
+                and x.shape[2].name == 'axis0')
+        assert strategy != 1 \
+                or (enc_out.mesh == meshes[1] \
+                and enc_out.shape[0].name == 'axis0' \
+                and not enc_out.shape[1].name.startswith('axis') \
+                and not enc_out.shape[2].name.startswith('axis'))
+
         with tf.variable_scope(name, default_name='decoder_layer'):
+            if strategy == 1:
+                x = Mesh0ToMesh1(x, meshes[1], (0, None))
             norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm1')
-            att = mtf.layers.multihead_attention(norm1, None, dec_mask, d_k_dim,
-                heads_dim, name='dec_multihead_att1')
-            assert att.shape == x.shape
-            x += mtf.dropout(att, dropout_rate)
-    
-            norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm2')
+
             enc_out = mtf.rename_dimension(enc_out, enc_out.shape[1].name,
                     RandName())
-            att = mtf.layers.multihead_attention(norm2, enc_out, enc_mask,
-                d_k_dim, heads_dim, name='dec_multihead_att2')
+
+            # Multihead attention 1
+            att = mtf.layers.multihead_attention(norm1, None, dec_mask, d_k_dim,
+                heads_dim, name='dec_multihead_att1')
+            assert strategy != 1 \
+                    or (att.mesh == meshes[1] \
+                    and att.shape[0].name == 'axis0' \
+                    and not att.shape[1].name.startswith('axis') \
+                    and not att.shape[2].name.startswith('axis'))
+
+            # Dropout + norm
             assert att.shape == x.shape
             x += mtf.dropout(att, dropout_rate)
-    
+            norm2 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm2')
+
+            # Multihead attention 2
+            att = mtf.layers.multihead_attention(norm2, enc_out, enc_mask,
+                d_k_dim, heads_dim, name='dec_multihead_att2')
+            assert strategy != 1 \
+                    or (att.mesh == meshes[1] \
+                    and att.shape[0].name == 'axis0' \
+                    and not att.shape[1].name.startswith('axis') \
+                    and not att.shape[2].name.startswith('axis'))
+
+            # Dropout + norm
+            if strategy == 1:
+                att = mtf.rename_dimension(att, att.shape[-1].name, 'axis1')
+            assert att.shape == x.shape
+            x += mtf.dropout(att, dropout_rate)
             if strategy == 1:
                 x = Mesh1ToMesh0(x, meshes[0], 2)
             norm3 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm3')
+
             ff = DenseReLUDense(norm3, d_ff_dim, dropout_rate, name='dec_ff')
             assert x.shape == ff.shape
             x += mtf.dropout(ff, dropout_rate)
-            if strategy == 1:
-                x = Mesh0ToMesh1(x, meshes[1], (0, None))
     
+            assert strategy != 1 \
+                    or (x.mesh == meshes[0] \
+                    and not x.shape[0].startswith('axis') \
+                    and not x.shape[1].startswith('axis') \
+                    and x.shape[2] == 'axis0')
             return x
 
     
@@ -397,11 +418,6 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         embed = mtf.layers.embedding(mtf_tgt, tgt_vocab_dim, d_model_dim,
                 tf.float32, name='dec_embedding')
         x = (embed * math.sqrt(params.d_model)) + pos_enc
-        if strategy == 1:
-            x = Mesh0ToMesh1(x, meshes[1], (0, None))
-            assert x.mesh == enc_output.mesh
-            enc_output = mtf.rename_dimension(enc_output,
-                    enc_output.shape[-1].name, x.shape[-1].name)
 
         # Decoder layers
         dec_mask = None
@@ -416,7 +432,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         if strategy == 1:
             assert dec_output.shape[-1].name == 'axis0'
             dec_output = mtf.rename_dimension(dec_output, 'axis0', RandName())
-        out = mtf.layers.dense(dec_output, tgt_vocab_dim, use_bias=False,
+        out = mtf.layers.dense(dec_output, final_proj_dim, use_bias=False,
                 name='final_projection')
         one_hot_labels = mtf.one_hot(mtf_tgt, out.shape[-1], dtype=out.dtype)
         out = mtf.layers.softmax_cross_entropy_with_logits(out, one_hot_labels,
