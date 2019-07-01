@@ -331,6 +331,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         with tf.variable_scope(name, default_name='decoder_layer'):
             if strategy == 1:
                 x = Mesh0ToMesh1(x, meshes[1], (0, None))
+                x = mtf.rename_dimension(x, x.shape[-1].name,
+                        enc_out.shape[-1].name)
             norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm1')
 
             enc_out = mtf.rename_dimension(enc_out, enc_out.shape[1].name,
@@ -360,13 +362,14 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                     and not att.shape[2].name.startswith('axis'))
 
             # Dropout + norm
-            if strategy == 1:
-                att = mtf.rename_dimension(att, att.shape[-1].name, 'axis1')
             assert att.shape == x.shape
             x += mtf.dropout(att, dropout_rate)
             if strategy == 1:
                 x = Mesh1ToMesh0(x, meshes[0], 2)
             norm3 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm3')
+            if strategy == 1:
+                norm3 = mtf.rename_dimension(norm3, norm3.shape[-1].name,
+                        RandName())
 
             ff = DenseReLUDense(norm3, d_ff_dim, dropout_rate, name='dec_ff')
             assert x.shape == ff.shape
@@ -374,9 +377,9 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     
             assert strategy != 1 \
                     or (x.mesh == meshes[0] \
-                    and not x.shape[0].startswith('axis') \
-                    and not x.shape[1].startswith('axis') \
-                    and x.shape[2] == 'axis0')
+                    and not x.shape[0].name.startswith('axis') \
+                    and not x.shape[1].name.startswith('axis') \
+                    and x.shape[2].name == 'axis0')
             return x
 
     
@@ -432,6 +435,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         if strategy == 1:
             assert dec_output.shape[-1].name == 'axis0'
             dec_output = mtf.rename_dimension(dec_output, 'axis0', RandName())
+            dec_output = mtf.rename_dimension(dec_output,
+                    dec_output.shape[0].name, mtf_tgt.shape[0].name)
         out = mtf.layers.dense(dec_output, final_proj_dim, use_bias=False,
                 name='final_projection')
         one_hot_labels = mtf.one_hot(mtf_tgt, out.shape[-1], dtype=out.dtype)
