@@ -89,114 +89,165 @@ def CreateMeshes(strategy, src, tgt, params):
 
 
 class Mesh0ToMesh1Operation(mtf.Operation):
-    def __init__(self, xs, shape, axis, mesh, name=None):
+    def __init__(self, x, axis, mesh, new_shape=None, name=None):
         assert len(axis) == 2
-        self.old_mesh = xs[0].mesh
-        self.old_shape = shape
+        assert axis[0] is not None
+        assert all(a is None or a < x.shape.ndims for a in axis)
+        self.old_mesh = x.mesh
+        self.new_axis = axis
+        self.old_shape = x.shape
+        super().__init__([x], mesh=mesh, name=name or 'replace_mesh1_with_mesh2')
 
-        self.concat_axis = None
-        for i, a in enumerate(shape.dims):
+        # Find the current axis along which the tensor is sliced
+        self.old_axis = None
+        for i, a in enumerate(x.shape.dims):
             if a.name == 'axis0':
-                self.concat_axis = i
+                self.old_axis = i
                 break
-        assert self.concat_axis is not None
-        assert all(self.concat_axis != axis[i] for i in range(2))
+        assert self.old_axis is None or all(self.old_axis != axis[i] for i
+                in range(2))
 
-        super().__init__(xs, mesh=mesh, name=name or 'replace_mesh1_with_mesh2')
-        new_shape = utils.RenameDim(shape, self.concat_axis, RandName())
-        for i, a in enumerate(axis):
-            if a is not None:
-                new_shape = utils.RenameDim(new_shape, a, 'axis%d' % i)
-        self._outputs = [mtf.Tensor(self, new_shape, xs[0].dtype)]
+        # Output tensor
+        if new_shape is None:
+            new_shape = x.shape
+            if self.old_axis is not None:
+                new_shape = utils.RenameDim(x.shape, self.old_axis, RandName())
+            for i, a in enumerate(axis):
+                if a is not None:
+                    new_shape = utils.RenameDim(new_shape, a, 'axis%d' % i)
+        else:
+            assert new_shape[axis[0]].name == 'axis0'
+            assert axis[1] is None or new_shape[axis[1]].name -- 'axis1'
+            assert self.old_axis is None or \
+                    not new_shape[self.old_axis].name.startswith('axis')
+        self._outputs = [mtf.Tensor(self, new_shape, x.dtype)]
 
     def gradient(self, grad_ys):
-        return Mesh1ToMesh0Operation(grad_ys, self.old_shape, self.concat_axis,
-                self.old_mesh).outputs
+        return Mesh1ToMesh0Operation(grad_ys[0], self.old_axis,
+                self.old_mesh, self.old_shape).outputs
 
     def lower(self, lowering):
-        slices = []
-        for i, s in enumerate(self.inputs):
-            with tf.device('/device:GPU:%d' % i):
-                tensor_list = \
-                        lowering.tensors[s].to_laid_out_tensor().tensor_list
-                slices.append(tf.concat(tensor_list, axis=self.concat_axis))
+        input_slices = \
+                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
+        if self.old_axis is None:
+            input_slices = input_slices[:1]
 
-        # TODO: this might be bug when axis1 is None
+        # Split along new axis
+        split_slices = []
+        for i, s in enumerate(input_slices):
+            with tf.device(s.device):
+                slices = tf.split(s, 4, axis=self.new_axis[0],
+                        name='split_along_mesh0_%d' % i)
+                tmp_slices = []
+                for j, t in enumerate(slices):
+                    if self.new_axis[1] is not None:
+                        tmp_slices += tf.split(t, 2, axis=self.new_axis[1],
+                                name='split_along_mesh0_%d_%d' % {i, j})
+                    else:
+                        tmp_slices += [t, t]
+                split_slices.append(tmp_slices)
+
+        # Concatenate along old axis
+        if self.old_axis is not None:
+            out_slices = []
+            for i, ta in enumerate(zip(*split_slices)):
+                with tf.device('/device:GPU:%d' % i):
+                    out_slices.append(tf.concat(ta, axis=self.old_axis,
+                        name='concat_%d' % i))
+        else:
+            old_slices = split_slices
+
         laid_out_tensor = \
-                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(slices)
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(out_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
 
 
-def Mesh0ToMesh1(x, new_mesh, axis, name=None):
-    assert len(axis) == 2
-    assert all(a is None or a < x.shape.ndims for a in axis)
-
-    split_x = mtf.split(x, x.shape[axis[0]], 4, name='split_along_mesh2_x')
-    if axis[1] is not None:
-        slices = []
-        for i, s in enumerate(split_x):
-            slices += mtf.split(s, s.shape[axis[1]], 2,
-                    name='split_along_mesh2_y_%d' % i)
-    else:
-        slices = split_x
-
-    return Mesh0ToMesh1Operation(slices, x.shape, axis, new_mesh,
-            name).outputs[0]
+def Mesh0ToMesh1(x, axis, new_mesh, name=None):
+    return Mesh0ToMesh1Operation(x, axis, new_mesh, name=name).outputs[0]
 
 
 class Mesh1ToMesh0Operation(mtf.Operation):
-    def __init__(self, xs, shape, axis, mesh, name=None):
-        assert len(xs) == 8
-        self.old_mesh = xs[0].mesh
-        self.old_shape = shape
+    def __init__(self, x, axis, mesh, new_shape=None, name=None):
+        assert axis is None or axis < x.shape.ndims
+        self.old_mesh = x.mesh
+        self.new_axis = axis
+        self.old_shape = x.shape
+        super().__init__([x], mesh=mesh, name=name or 'replace_mesh2_with_mesh1')
 
-        self.axis = [None, None]
-        for i, a in enumerate(shape.dims):
+        # Find the axes along which 'x' is split
+        self.old_axis = [None, None]
+        for i, a in enumerate(x.shape.dims):
             if a.name == 'axis0':
-                self.axis[0] = i
+                self.old_axis[0] = i
             elif a.name == 'axis1':
-                self.axis[1] = i
-        assert self.axis[0] is not None
-        assert axis != self.axis[0] and (self.axis[1] is None or axis !=
-                self.axis[1])
+                self.old_axis[1] = i
+        assert self.old_axis[0] is not None
+        assert axis != self.old_axis[0] and (self.old_axis[1] is None or axis !=
+                self.old_axis[1])
 
-        super().__init__(xs, mesh=mesh, name=name or 'replace_mesh2_with_mesh1')
-        new_shape = utils.RenameDim(shape, axis, 'axis0')
-        for a in self.axis:
-            if a is not None:
-                new_shape = utils.RenameDim(new_shape, a, RandName())
-        self._outputs = [mtf.Tensor(self, new_shape, xs[0].dtype)]
+        # Output tensor
+        if new_shape is None:
+            new_shape = x.shape
+            if axis is not None:
+                new_shape = utils.RenameDim(new_shape, axis, 'axis0')
+            for a in self.old_axis:
+                if a is not None:
+                    new_shape = utils.RenameDim(new_shape, a, RandName())
+        else:
+            assert axis is None or new_shape[axis].name == 'axis0'
+            assert not new_shape[self.old_axis[0]].name.startswith('axis')
+            assert self.old_axis[1] is None or \
+                    not new_shape[self.old_axis[1]].name.startswith('axis')
+        self._outputs = [mtf.Tensor(self, new_shape, x.dtype)]
 
     def gradient(self, grad_ys):
-        assert len(grad_ys) == 8
-        return Mesh0ToMesh1Operation(grad_ys, self.old_shape, self.axis,
-                self.old_mesh).outputs
+        return Mesh0ToMesh1Operation(grad_ys[0], self.old_axis,
+                self.old_mesh, self.old_shape).outputs
 
     def lower(self, lowering):
-        slices = []
-        for i, s in enumerate(self.inputs):
-            with tf.device('/device:GPU:%d' % i):
-                tensor_list = \
-                        lowering.tensors[s].to_laid_out_tensor().tensor_list
-                slices_x = []
-                assert len(tensor_list) == 8
-                if self.axis[1] is not None:
-                    for t in zip(tensor_list[0::2], tensor_list[1::2]):
-                        slices_x.append(tf.concat(t, self.axis[1]))
-                else:
-                    slices_x = tensor_list
-                slices.append(tf.concat(slices_x, self.axis[0]))
+        input_slices = \
+                lowering.tensors[self.inputs[0]].to_laid_out_tensor().tensor_list
+        if self.old_axis[1] is None:
+            input_slices = input_slices[::2]
 
+        # Split along new axis
+        split_slices = []
+        if self.new_axis is not None:
+            for i, s in enumerate(input_slices):
+                with tf.device(s.device):
+                    split_slices.append(tf.split(s, 8, axis=self.new_axis,
+                        name='split_along_mesh1_%d' % i))
+        else:
+            split_slices.append([s] * 8 for s in input_slices)
+
+        # Concatenate along old axis
+        if self.old_axis[1] is not None:
+            assert len(split_slices) == 8
+            tmp_slices = []
+            for i, s1, s2 in enumerate(zip(
+                split_slices[0::2], split_slices[1::2])):
+                ta = []
+                for j, t in enumerate(zip(s1, s2)):
+                    with tf.device('/device:GPU:%d' % j):
+                        ta.append(tf.concat(t, self.old_axis[1],
+                            name='concat_x_%d_%d' % {i,j}))
+                tmp_slices.append(ta)
+            split_slices = tmp_slices
+        assert len(split_slices) == 4
+        out_slices = []
+        for i, t in enumerate(zip(*split_slices)):
+            with tf.device('/device:GPU:%d' % i):
+                out_slices.append(tf.concat(t, self.old_axis[0],
+                    name='concat_%d' % i))
+
+        # Lower the new slices
         laid_out_tensor = \
-                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(slices)
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(out_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
 
 
-def Mesh1ToMesh0(x, new_mesh, axis, name=None):
-    assert axis < x.shape.ndims
-    slices = mtf.split(x, x.shape[axis], 8, name='split_along_mesh1_x')
-    return Mesh1ToMesh0Operation(slices, x.shape, axis, new_mesh,
-            name).outputs[0]
+def Mesh1ToMesh0(x, axis, new_mesh, name=None):
+    return Mesh1ToMesh0Operation(x, axis, new_mesh, name=name).outputs[0]
 
 
 def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
@@ -215,6 +266,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         final_proj_dim = tgt_vocab_dim
 
     elif strategy == 1:
+        src_vocab_size = int(math.ceil(src_vocab_size / 8)) * int(8)
+        tgt_vocab_size = int(math.ceil(tgt_vocab_size / 8)) * int(8)
         d_k_dim = mtf.Dimension(RandName(), params.d_k)
         heads_dim = mtf.Dimension('axis1', params.heads)
         d_ff_dim = mtf.Dimension('axis0', params.d_ff)
@@ -280,7 +333,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         with tf.variable_scope(name, default_name='encoder_layer'):
             norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='enc_norm1')
             if strategy == 1:
-                norm1 = Mesh0ToMesh1(norm1, meshes[1], (0, None))
+                norm1 = Mesh0ToMesh1(norm1, (0, None), meshes[1])
 
             # Multihead attention
             att = mtf.layers.multihead_attention(norm1, None, mask, d_k_dim,
@@ -293,7 +346,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     
             # Dropout + norm
             if strategy == 1:
-                att = Mesh1ToMesh0(att, meshes[0], 2)
+                att = Mesh1ToMesh0(att, 2, meshes[0])
                 att = mtf.rename_dimension(att, att.shape[0].name,
                         x.shape[0].name)
             assert att.shape == x.shape
@@ -330,7 +383,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
 
         with tf.variable_scope(name, default_name='decoder_layer'):
             if strategy == 1:
-                x = Mesh0ToMesh1(x, meshes[1], (0, None))
+                x = Mesh0ToMesh1(x, (0, None), meshes[1])
                 x = mtf.rename_dimension(x, x.shape[-1].name,
                         enc_out.shape[-1].name)
             norm1 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm1')
@@ -365,7 +418,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
             assert att.shape == x.shape
             x += mtf.dropout(att, dropout_rate)
             if strategy == 1:
-                x = Mesh1ToMesh0(x, meshes[0], 2)
+                x = Mesh1ToMesh0(x, 2, meshes[0])
             norm3 = mtf.layers.layer_norm(x, dim=x.shape[-1], name='dec_norm3')
             if strategy == 1:
                 norm3 = mtf.rename_dimension(norm3, norm3.shape[-1].name,
@@ -411,7 +464,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         for i in range(params.nx):
             x = EncoderLayer(x, enc_mask, name='enc_layer_%d' %i)
         if strategy == 1:
-            x = Mesh0ToMesh1(x, meshes[1], (0, None), name='rename_encoder_output')
+            x = Mesh0ToMesh1(x, (0, None), meshes[1], name='rename_encoder_output')
         enc_output = mtf.layers.layer_norm(x, dim=x.shape[-1],
                 name='enc_final_norm')
 
