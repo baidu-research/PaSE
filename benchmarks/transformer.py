@@ -532,6 +532,8 @@ def main():
             help="No. of processors")
     parser.add_argument('-t', '--epochs', type=int, required=False, default=3,
             help="No. of epochs")
+    parser.add_argument('--max_steps', type=int, required=False, default=500,
+            help='Maximum no. of steps to execute')
     parser.add_argument('--display_steps', type=int, required=False, default=10,
             help="No. of epochs")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
@@ -596,6 +598,8 @@ def main():
                                 options=run_options)
                         cnt += 1
                         step += 1
+                        if cnt > args.max_steps:
+                            break
                     except tf.errors.OutOfRangeError:
                         break
 
@@ -603,6 +607,8 @@ def main():
                         print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
 
                 dataset.reset_pointer()
+                if cnt > args.max_steps:
+                    break
             end = time.time()
             tot_time += (end - start)
 
