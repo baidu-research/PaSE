@@ -28,20 +28,15 @@ class ImageDataLoader():
             self.dataset_size = dataset_size
             num_classes = 1000
 
-            def gen():
-                features = tf.random_uniform([1, img_size[0], img_size[1], 3],
-                        minval=0, maxval=1, dtype=tf.float32)
-                label = tf.random_uniform([1], minval=0, maxval=num_classes,
-                        dtype=tf.int32)
-                for i in range(dataset_size):
-                    features = np.random.uniform(size=[img_size[0], img_size[1],
-                        3])
-                    label = np.random.randint(0, num_classes, dtype=int)
-                    yield (features, label)
+            num_elems = 1000
+            assert dataset_size % num_elems == 0
+            features = tf.random_uniform([num_elems, img_size[0],
+                img_size[1], 3], minval=0, maxval=1, dtype=tf.float32)
+            classes = tf.random_uniform([num_elems], minval=0,
+                    maxval=num_classes, dtype=tf.int32)
+            dataset = tf.data.Dataset.from_tensor_slices((features,
+                classes)).repeat(int(dataset_size / num_elems))
 
-            dataset = tf.data.Dataset.from_generator(gen, (tf.float32,
-                tf.int32), (tf.TensorShape([img_size[0], img_size[1], 3]),
-                    tf.TensorShape([])))
         else:
             assert dataset_dir is not None
             assert labels_filename is not None
