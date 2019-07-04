@@ -218,13 +218,14 @@ def ReplaceMeshWithRemoval(new_mesh, tsr, axis, name=None):
 
 
 class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
-    # mesh: New mesh; dim_names: Dim names for 'x' in 'mesh'
+    # mesh: New mesh; dim_names: Dim names for 'x' in 'mesh'. If a dim_name is
+    # None, current name of that axis is used.
     def __init__(self, x, mesh, dim_names, name=None):
         assert len(dim_names) == len(x.shape)
         self.old_mesh = x.mesh
         self.new_dim_names = dim_names
-        self.new_shape = mtf.Shape([mtf.Dimension(name, dim.size) \
-                for name, dim in zip(dim_names, x.shape.dims)])
+        self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
+            for name, dim in zip(dim_names, x.shape.dims)])
         super().__init__([x], mesh=mesh, name=name or
                 'replace_mesh_independent_parallel_axes')
         self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
