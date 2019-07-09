@@ -221,6 +221,7 @@ class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
     # mesh: New mesh; dim_names: Dim names for 'x' in 'mesh'. If a dim_name is
     # None, current name of that axis is used.
     def __init__(self, x, mesh, dim_names, name=None):
+        assert x.mesh != mesh
         assert len(dim_names) == len(x.shape)
         self.old_mesh = x.mesh
         self.new_dim_names = dim_names
