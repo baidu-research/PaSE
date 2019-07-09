@@ -175,7 +175,7 @@ def Contract2(in_tsr):
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
-def LessDevices(in_tsr):
+def LessDevices1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
@@ -184,6 +184,21 @@ def LessDevices(in_tsr):
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape[:-2] + [('axis1', shape[2]), ('axis0', shape[3])])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithIndependentAxes(mtf_in_tsr, mesh1,
+            [RandName(), 'axis0', RandName(), RandName()])
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def LessDevices2(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([2]), \
+            mesh1:utils.GetMeshImpl([4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape(shape[:-1] + [('axis0', shape[3])])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithIndependentAxes(mtf_in_tsr, mesh1,
             [RandName(), 'axis0', RandName(), RandName()])
@@ -240,7 +255,8 @@ def main():
     Broadcast2(in_tsr)
     Contract1(in_tsr)
     Contract2(in_tsr)
-    LessDevices(in_tsr)
+    LessDevices1(in_tsr)
+    LessDevices2(in_tsr)
     MoreDevices(in_tsr)
     WrongShape(in_tsr)
     print('Tests passed.')
