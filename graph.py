@@ -346,25 +346,25 @@ def Transformer(b):
 
     # Encoder layer
     def Encoder(inp_tsr):
-        norm1 = nn_ops.Norm(inp_tsr, 1)(0)
+        norm1 = nn_ops.Norm(inp_tsr)(0)
         att = MultiheadAttention(norm1, norm1, norm1)(0)
         att = nn_ops.Elementwise(inp_tsr, att)(0)
 
-        norm2 = nn_ops.Norm(att, 1)(0)
+        norm2 = nn_ops.Norm(att)(0)
         ff = FeedFwd(norm2)(0)
         return nn_ops.Elementwise(att, ff)
 
     # Decoder layer
     def Decoder(inp_tsr, enc_out_tsr):
-        norm1 = nn_ops.Norm(inp_tsr, 1)(0)
+        norm1 = nn_ops.Norm(inp_tsr)(0)
         att1 = MultiheadAttention(norm1, norm1, norm1)(0)
         att1 = nn_ops.Elementwise(inp_tsr, att1)(0)
 
-        norm2 = nn_ops.Norm(att1, 1)(0)
+        norm2 = nn_ops.Norm(att1)(0)
         att2 = MultiheadAttention(norm2, enc_out_tsr, enc_out_tsr)(0)
         att2 = nn_ops.Elementwise(att1, att2)(0)
 
-        norm3 = nn_ops.Norm(att2, 1)(0)
+        norm3 = nn_ops.Norm(att2)(0)
         ff = FeedFwd(norm3)(0)
         return nn_ops.Elementwise(att2, ff)
 
@@ -374,7 +374,7 @@ def Transformer(b):
     x = pe
     for _ in range(nx):
         x = Encoder(x.GetOutTensor(0))
-    enc = nn_ops.Norm(x.GetOutTensor(0), 1)
+    enc = nn_ops.Norm(x.GetOutTensor(0))
 
     # Decoder
     embed = nn_ops.Embedding(dec_inp_tsr, vocab_size, embed_dim)
@@ -382,7 +382,7 @@ def Transformer(b):
     x = pe
     for _ in range(nx):
         x = Decoder(x.GetOutTensor(0), enc.GetOutTensor(0))
-    dec = nn_ops.Norm(x.GetOutTensor(0), 1)(0)
+    dec = nn_ops.Norm(x.GetOutTensor(0))(0)
 
     # Linear + Softmax + cross-entropy loss
     eq = 'ble,ev->blv'

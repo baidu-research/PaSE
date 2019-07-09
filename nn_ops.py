@@ -769,9 +769,11 @@ class Concat(Ops):
 
 
 class Norm(Ops):
-    def __init__(self, in_tsr, axis, n_procs=None):
+    def __init__(self, in_tsr, axis=-1, n_procs=None):
         assert len(in_tsr) > 1
-        assert axis < len(in_tsr)
+        if axis < 0:
+            axis = len(in_tsr) - axis
+        assert axis >= 0 and axis < len(in_tsr)
         self.axis = axis
         super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
