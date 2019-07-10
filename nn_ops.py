@@ -33,7 +33,8 @@ def BytesToFlops(bytes):
         p100_bw = float(13.0 / 8.0) # PCIe bidirectional GWords / sec
         
         v100_peak_flop = float(15.7 * 1000) # GFLOPs
-        v100_bw = float(47.99 / 8.0) # NVLink unidirectional GWords/sec
+        #v100_bw = float(47.99 / 8.0) # Best NVLink unidirectional GWords/sec
+        v100_bw = float(10.4 / 8.0) # Worst NVLink unidirectional GWords/sec
         
         peak_flop = v100_peak_flop
         bw = v100_bw
@@ -606,10 +607,8 @@ class Einsum(Ops):
         super().ComputeCosts()
 
         # Configurations
-        idx1 = tuple(self.tsr1_dims.index(d) for d in self.dom_dims if d in
-                self.tsr1_dims)
-        idx2 = tuple(self.tsr2_dims.index(d) for d in self.dom_dims if d in
-                self.tsr2_dims)
+        idx1 = tuple(self.dom_dims.index(d) for d in self.tsr1_dims)
+        idx2 = tuple(self.dom_dims.index(d) for d in self.tsr2_dims)
         self.in_tsr_configs = (self.dom_configs[:, idx1], self.dom_configs[:,
             idx2])
         self.out_tsr_configs = self.dom_configs[:, :len(self.out_dims)]
@@ -772,7 +771,7 @@ class Norm(Ops):
     def __init__(self, in_tsr, axis=-1, n_procs=None):
         assert len(in_tsr) > 1
         if axis < 0:
-            axis = len(in_tsr) - axis
+            axis = len(in_tsr) + axis
         assert axis >= 0 and axis < len(in_tsr)
         self.axis = axis
         super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
@@ -786,12 +785,17 @@ class Norm(Ops):
         # Computation cost for fwd phase. Same cost for bwd phase too.
         dom_per_proc = self.dom / self.dom_configs
         elems = np.prod(dom_per_proc, axis=1)
-        self.costs = (2 * 7.0) * elems
+        self.costs = (2 * 8.0) * elems
 
         # Communication cost for fwd phase: Reduction and broadcast of mean and
         # variance. 2 reductions for fwd phase, and 4 for bwd phase.
-        self.costs += 6.0 * GetAllReduceCost(elems / dom_per_proc[:, self.axis],
+        self.costs += 4.0 * GetAllReduceCost(elems / dom_per_proc[:, self.axis],
                 self.dom_configs[:, self.axis])
+
+        # Communication cost for broadcast/reduction of Weight vectors - scale
+        # and bias - in fwd/bwd phases
+        procs = np.prod(np.delete(self.dom_configs, self.axis, axis=1), axis=1)
+        self.costs += 4.0 * GetAllReduceCost(dom_per_proc[:, self.axis], procs)
 
 
 def BatchNorm(in_tsr, n_procs=None):
