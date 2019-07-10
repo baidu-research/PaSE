@@ -114,7 +114,6 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         heads_dim = mtf.Dimension('axis1', params.heads)
         d_ff_dim = mtf.Dimension('axis1', params.d_ff)
         d_model_dim = mtf.Dimension('axis0', params.d_model)
-        rand_d_model_dim = mtf.Dimension(RandName(), params.d_model)
         src_vocab_dim = mtf.Dimension(RandName(), src_vocab_size)
         tgt_vocab_dim = mtf.Dimension(RandName(), tgt_vocab_size)
         final_proj_dim = mtf.Dimension('axis0', tgt_vocab_size)
@@ -267,7 +266,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                 tf.float32, name='enc_embedding')
         if strategy == 1:
             embed = ReplaceMeshWithIndependentAxes(embed, meshes[2], ('axis0',
-                None, rand_d_model_dim.name), name='replace_embed_mesh')
+                None, RandName()), name='replace_embed_mesh')
 
         # Values for positional encoder
         pos = np.array(tuple(range(params.max_seq_len))).reshape(-1, 1)
@@ -281,7 +280,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         
         # positional encoder
         pos_enc = mtf.get_variable(embed.mesh, 'pos_enc',
-                shape=mtf.Shape([seq_len_dim, rand_d_model_dim]), dtype=tf.float32,
+                shape=mtf.Shape([seq_len_dim, embed.shape[-1]]),
+                dtype=tf.float32,
                 initializer=tf.constant_initializer(pos_enc_values),
                 trainable=False)
         assert embed.shape[1:] == pos_enc.shape.dims
@@ -300,8 +300,9 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         embed = mtf.layers.embedding(mtf_tgt, tgt_vocab_dim, d_model_dim,
                 tf.float32, name='dec_embedding')
         if strategy == 1:
+            assert not enc_output.shape[-1].name.startswith('axis')
             embed = ReplaceMeshWithIndependentAxes(embed, meshes[2], ('axis0',
-                None, rand_d_model_dim.name), name='replace_embed_mesh')
+                None, enc_output.shape[-1].name), name='replace_embed_mesh')
         assert embed.shape[1:] == pos_enc.shape.dims
         x = (embed * math.sqrt(params.d_model)) + pos_enc
 
@@ -449,7 +450,7 @@ def main():
             tot_time += (end - start)
 
     samples_per_sec = (args.batch * cnt) / tot_time
-    print("Throughout: " + str(samples_per_sec) + " samples / sec")
+    print("Throughput: " + str(samples_per_sec) + " samples / sec")
 
 
 if __name__ == '__main__':
