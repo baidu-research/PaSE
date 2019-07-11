@@ -12,7 +12,7 @@ from dataloader import TextDataLoader
 from utils import GetMeshImpl
 import utils
 from mesh_transformations import ReplaceMeshWithIndependentAxes, \
-        ReplaceMeshWithReplication, ReplaceMeshWithRemoval
+        ReplaceMeshWithDuplicates
 
 
 def RandName(k=5):
@@ -68,7 +68,7 @@ def CreateMeshes(strategy, src, tgt, params):
         mesh = Mesh(0)
         mesh_to_impl[mesh] = GetMeshImpl([8])
         mesh = Mesh(1)
-        mesh_to_impl[mesh] = GetMeshImpl([4, 2])
+        mesh_to_impl[mesh] = GetMeshImpl([2, 4])
         mesh = Mesh(2)
         mesh_to_impl[mesh] = GetMeshImpl([4])
 
@@ -111,8 +111,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         src_vocab_size = int(math.ceil(src_vocab_size / 8)) * int(8)
         tgt_vocab_size = int(math.ceil(tgt_vocab_size / 8)) * int(8)
         d_k_dim = mtf.Dimension(RandName(), params.d_k)
-        heads_dim = mtf.Dimension('axis1', params.heads)
-        d_ff_dim = mtf.Dimension('axis1', params.d_ff)
+        heads_dim = mtf.Dimension('axis0', params.heads)
+        d_ff_dim = mtf.Dimension('axis0', params.d_ff)
         d_model_dim = mtf.Dimension('axis0', params.d_model)
         src_vocab_dim = mtf.Dimension(RandName(), src_vocab_size)
         tgt_vocab_dim = mtf.Dimension(RandName(), tgt_vocab_size)
@@ -135,13 +135,17 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
 
     def ReplaceWithRemoval(x, name=None):
         assert x.mesh == meshes[1]
-        return ReplaceMeshWithRemoval(meshes[2], x,
-                mesh_to_impl[meshes[1]].shape[1], name=name)
+        new_names = x.shape.dimension_names
+        assert new_names[0] == 'axis1'
+        new_names[0] = 'axis0'
+        return ReplaceMeshWithDuplicates(x, meshes[2], new_names, name=name)
 
     def ReplaceWithReplication(x, name=None):
         assert x.mesh == meshes[2]
-        return  ReplaceMeshWithReplication(meshes[1], x,
-                mesh_to_impl[meshes[1]].shape[1], name=name)
+        new_names = x.shape.dimension_names
+        assert new_names[0] == 'axis0'
+        new_names[0] = 'axis1'
+        return  ReplaceMeshWithDuplicates(x, meshes[1], new_names, name=name)
 
     # Layers
     def EncoderLayer(x, mask, dropout_rate=0.5, name=None):
@@ -161,7 +165,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                     heads_dim, name='enc_multihead_att')
             assert strategy != 1 \
                     or (att.mesh == meshes[1] \
-                    and att.shape[0].name == 'axis0' \
+                    and att.shape[0].name == 'axis1' \
                     and not att.shape[1].name.startswith('axis') \
                     and not att.shape[2].name.startswith('axis'))
     
@@ -197,7 +201,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                 and not x.shape[2].name.startswith('axis'))
         assert strategy != 1 \
                 or (enc_out.mesh == meshes[1] \
-                and enc_out.shape[0].name == 'axis0' \
+                and enc_out.shape[0].name == 'axis1' \
                 and not enc_out.shape[1].name.startswith('axis') \
                 and not enc_out.shape[2].name.startswith('axis'))
 
@@ -211,7 +215,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                 heads_dim, name='dec_multihead_att1')
             assert strategy != 1 \
                     or (att.mesh == meshes[1] \
-                    and att.shape[0].name == 'axis0' \
+                    and att.shape[0].name == 'axis1' \
                     and not att.shape[1].name.startswith('axis') \
                     and not att.shape[2].name.startswith('axis'))
 
@@ -230,7 +234,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                 d_k_dim, heads_dim, name='dec_multihead_att2')
             assert strategy != 1 \
                     or (att.mesh == meshes[1] \
-                    and att.shape[0].name == 'axis0' \
+                    and att.shape[0].name == 'axis1' \
                     and not att.shape[1].name.startswith('axis') \
                     and not att.shape[2].name.startswith('axis'))
 
@@ -435,7 +439,7 @@ def main():
                                 options=run_options)
                         cnt += 1
                         step += 1
-                        if cnt > args.max_steps:
+                        if step > args.max_steps:
                             break
                     except tf.errors.OutOfRangeError:
                         break
@@ -444,8 +448,6 @@ def main():
                         print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
 
                 dataset.reset_pointer()
-                if cnt > args.max_steps:
-                    break
             end = time.time()
             tot_time += (end - start)
 

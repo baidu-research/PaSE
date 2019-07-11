@@ -240,6 +240,66 @@ def WrongShape(in_tsr):
         return
 
 
+def Removal1(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
+            mesh1:utils.GetMeshImpl([4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([('axis1', shape[0])] + shape[1:])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
+            ['axis0', None, None, None])
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def Removal2(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
+            mesh1:utils.GetMeshImpl([4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([shape[0], ('axis1', shape[1])] + shape[2:])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
+            [None, 'axis0', None, None])
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def Replication1(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([4]), \
+            mesh1:utils.GetMeshImpl([2, 4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
+            ['axis1', None, None, None])
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def Replication2(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([4]), \
+            mesh1:utils.GetMeshImpl([2, 4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape(shape)
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
+            [None, None, None, None])
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
 def main():
     ndims = 4
     shape = [16, 32, 64, 128]
@@ -250,15 +310,25 @@ def main():
     Transpose2(in_tsr)
     Transpose3(in_tsr)
     Transpose4(in_tsr)
+
     DependentAxes(in_tsr)
+
     Broadcast1(in_tsr)
     Broadcast2(in_tsr)
     Contract1(in_tsr)
     Contract2(in_tsr)
+
     LessDevices1(in_tsr)
     LessDevices2(in_tsr)
     MoreDevices(in_tsr)
+
     WrongShape(in_tsr)
+
+    Replication1(in_tsr)
+    Replication2(in_tsr)
+    Removal1(in_tsr)
+    Removal2(in_tsr)
+
     print('Tests passed.')
 
 

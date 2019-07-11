@@ -11,7 +11,8 @@ def Prod(lst):
 
 
 def GetDeviceList(num_gpus):
-    return ['gpu:%d' %i for i in range(num_gpus)]
+    return [tf.DeviceSpec(device_type='GPU', device_index=i) for i in
+            range(num_gpus)]
 
 
 def AssignLayout(ta_axes, mesh_axis):
