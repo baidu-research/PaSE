@@ -1,4 +1,5 @@
 import networkx as nx
+import functools
 
 import nn_ops
 
@@ -392,6 +393,85 @@ def Transformer(b):
     return nn_ops.Ops.G
 
 
+def Seq2seq(b):
+    n_layers = 2
+    unroll = 5
+    vocab_size = 50000
+    embed_dim = 1024
+
+    def LSTMCell(x, c_prev, h, w, context=None):
+        concat_tsrs = (x, h) if context is None else (x, context, h)
+        inp = nn_ops.Concat(concat_tsrs, axis=1)(0)
+        ifgo = nn_ops.MatMul(inp, w, trainable=True, pw_op_cnt=1)(0)
+        i, f, g, o = nn_ops.Split(ifgo, 4, axis=1)()
+
+        tmp1 = nn_ops.Elementwise(f, c_prev)(0)
+        tmp2 = nn_ops.Elementwise(i, g)(0)
+        c = nn_ops.Elementwise(tmp1, tmp2)(0)
+        h = nn_ops.Elementwise(o, c)(0)
+        return c, h
+
+    def RNNStack(x, cs, hs, ws, context=None):
+        assert len(cs) == len(hs) == len(ws) == n_layers
+        for i, (c, h, w) in enumerate(zip(cs, hs, ws)):
+            cs[i], hs[i] = LSTMCell(x, c, h, w, context)
+            x = hs[i]
+        return cs, hs
+
+    def RNNLoop(xs, hs=None, attn_fn=None, attn_layer=-1):
+        assert len(xs) == unroll
+        if attn_fn is not None:
+            assert attn_layer >= 0
+            context = nn_ops.InputTensor((b, embed_dim))
+        else:
+            context = None
+
+        cs = [nn_ops.InputTensor((b, embed_dim)) for _ in range(n_layers)]
+        hs = hs or [nn_ops.InputTensor((b, embed_dim)) for _ in range(n_layers)]
+        dim = embed_dim*2 if attn_fn is None else embed_dim*3
+        ws = [nn_ops.InputTensor((dim, embed_dim*4)) for _ in range(n_layers)]
+
+        ys = []
+        for x in xs:
+            cs, hs = RNNStack(x, cs, hs, ws, context)
+            ys.append(hs[-1])
+
+            # Find new context from outputs
+            if attn_fn is not None:
+                context = attn_fn(hs[attn_layer])
+
+        return ys, hs
+
+    attn_dense = None
+    def Attention(e, h):
+        nonlocal attn_dense
+        # Dense layer for encoder part of attention. This is computed only once
+        if attn_dense is None:
+            attn_w = nn_ops.InputTensor((embed_dim, embed_dim))
+            attn_dense = nn_ops.Einsum('lbe,ef->blf', e, attn_w)(0)
+
+        attn = nn_ops.Einsum('ble,be->bl', attn_dense, h)(0)
+        score = nn_ops.Softmax(attn, axis=1)(0)
+        return nn_ops.Einsum('bl,lbe->be', score, e, trainable=False)(0)
+
+    # Encoder
+    xs = [nn_ops.InputTensor((b,)) for _ in range(unroll)]
+    embeddings = [nn_ops.Embedding(x, vocab_size, embed_dim)(0) for x in xs]
+    enc_out, enc_hidden = RNNLoop(embeddings)
+
+    # Decoder
+    embeddings = [nn_ops.Embedding(x, vocab_size, embed_dim)(0) for x in xs]
+    attn_fn = functools.partial(Attention, nn_ops.Stack(enc_out)(0))
+    dec_out, _ = RNNLoop(embeddings, enc_hidden, attn_fn, 0)
+    dec_out = nn_ops.Stack(dec_out)(0)
+
+    # Final projection + Loss
+    w = nn_ops.InputTensor((embed_dim, vocab_size))
+    proj = nn_ops.Einsum('lbe,ev->blv', dec_out, w, trainable=True)(0)
+    loss = nn_ops.SoftmaxCrossEntropy(proj)
+    return nn_ops.Ops.G
+
+
 # Creates the graph for the model
 def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
     nn_ops.Ops.default_procs = n_procs
@@ -406,6 +486,8 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
         G = Seq2seq(batch_size)
     elif graph_type == 'transformer':
         G = Transformer(batch_size)
+    elif graph_type == 'seq2seq':
+        G = Seq2seq(batch_size)
     else:
         assert False
 

@@ -465,18 +465,12 @@ class Stack(Ops):
         assert all(in_tsrs[0] == t for t in in_tsrs[1:])
         self.num = len(in_tsrs)
 
-        dom = (self.num, *(in_tsrs[0]))
+        dom = (1, *(in_tsrs[0])) # This prevents distributing the stacking axis
         out_tsr = Tensor((self.num, *(in_tsrs[0])))
         super().__init__(dom, in_tsrs, out_tsr, n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
-        # We don't want to distribute along stacking axis. When length along the
-        # axis is small, the tensor is by default not distributed along the
-        # axis. Make sure that is the case. If not, we need to manually remove
-        # configs > 1
-        assert np.all(self.dom_configs[:, 0] == 1)
-
         self.in_tsr_configs = (self.dom_configs[:, 1:],) * self.num
         self.out_tsr_configs = self.dom_configs
         self.costs = 0
@@ -526,7 +520,7 @@ class FC(Ops):
         # Compute the costs for configs
         self.costs = ComputeGemmCosts(self.dom, self.dom_configs, self.pw_op_cnt)
 
-
+'''
 # Batched matmul
 class MatMul(Ops):
     def __init__(self, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
@@ -562,7 +556,7 @@ class MatMul(Ops):
                 axis=1)
         assert batches_per_proc.shape == self.costs.shape
         self.costs *= batches_per_proc
-
+'''
 
 class Einsum(Ops):
     def __init__(self, eq, tsr1, tsr2, trainable=False, n_procs=None,
@@ -647,6 +641,21 @@ class Einsum(Ops):
         batches_per_proc = np.prod(batch_dom / self.dom_configs[:, batch_idx],
                 axis=1)
         self.costs *= batches_per_proc
+
+
+# Batched matmul
+def MatMul(tsr1, tsr2, trainable=False, n_procs=None, pw_op_cnt=0):
+    # Both tensors should be of same rank and >=2, inner most two dimensions
+    # correspond to valid GEMM, and outer dimensions should match.
+    assert len(tsr1) == len(tsr2) >= 2
+    assert tsr1[-1] == tsr2[-2]
+    assert all(t1 == t2 for t1, t2 in zip(tsr1[:-2], tsr2[:-2]))
+
+    dims = string.ascii_letters[:len(tsr1)+1]
+    batch_dims = dims[:-3]
+    m, n, k = dims[-3:]
+    eq = f'{batch_dims}{m}{k},{batch_dims}{k}{n}->{batch_dims}{m}{n}'
+    return Einsum(eq, tsr1, tsr2, trainable, n_procs, pw_op_cnt)
 
 
 # Convolution
@@ -747,23 +756,37 @@ class Concat(Ops):
 
         concatenated_size = reduce(op.add, (t[axis] for t in in_tsrs))
         dom = list(tsr0)
-        dom[axis] = concatenated_size
+        dom[axis] = 1 # This prevents distribution along 'axis'
         in_tsrs = tuple(t for t in in_tsrs)
-        super().__init__(dom, in_tsrs, Tensor(dom), n_procs)
+        out_tsr = list(tsr0)
+        out_tsr[axis] = concatenated_size
+        super().__init__(dom, in_tsrs, Tensor(out_tsr), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
-
-        # Remove configs where distribution of concatenated dimension doesn't
-        # align with the tensor boundaries
-        concat_axis_sizes = list(t[self.axis] for t in self.in_tsrs)
-        valid_idx = np.all(list(np.mod(s, self.dom_configs[:, self.axis]) == 0 for s
-            in concat_axis_sizes), axis=0)
-        self.dom_configs = self.dom_configs[valid_idx, :]
-        self.dom_config_tuples = [tuple(e) for e in self.dom_configs]
-
         self.in_tsr_configs = (self.dom_configs,) * len(self.in_tsrs)
         self.out_tsr_configs = self.dom_configs
+        self.costs = 0
+
+
+class Split(Ops):
+    def __init__(self, in_tsr, num_splits, axis, n_procs=None):
+        assert axis < len(in_tsr)
+        assert in_tsr[axis] % num_splits == 0
+        self.num_splits = num_splits
+        self.axis = axis
+
+        out_tsr = list(in_tsr)
+        out_tsr[axis] = int(out_tsr[axis] / num_splits)
+        out_tsrs = tuple(Tensor(out_tsr) for _ in range(num_splits))
+        dom = list(in_tsr)
+        dom[axis] = 1 # This prevents distribution along 'axis'
+        super().__init__(dom, in_tsr, out_tsrs, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = (self.dom_configs,) * self.num_splits
         self.costs = 0
 
 
