@@ -217,6 +217,62 @@ class Ops():
     default_procs = 0 # Can be set once and reused for the entire graph.
     tsr_to_node_id = {}
 
+    # Weights are used to scale node and edge costs. Useful for cases like
+    # recurrent networks, where we create a single RNN cell and scale the cost
+    # by no. of iterations.
+    node_weight = 1
+    edge_weight = 1
+
+    @classmethod
+    def SetWeights(cls, w):
+        cls.node_weight = cls.edge_weight = w
+
+    def AddVertex(self):
+        if Ops.G is None:
+            Ops.G = nx.DiGraph()
+        node_id = Ops.G.number_of_nodes()
+    
+        print("Node: " + str(node_id) + "; Type: " +
+                str(self.__class__.__name__) + "; Configs: " +
+                str(self.dom_configs.shape[0]))
+    
+        costs = self.GetCosts()
+        costs = pd.Series(costs*Ops.node_weight,
+                index=self.dom_config_tuples, name='cost')
+    
+        Ops.G.add_node(node_id, op=self, costs=costs)
+        self.node_id = node_id
+
+        for i, t in enumerate(self.out_tsrs):
+            Ops.tsr_to_node_id[id(t)] = (node_id, i)
+
+    def AddEdge(self, tsr, idx):
+        try:
+            src, src_tsr_idx = Ops.tsr_to_node_id[id(tsr)]
+        except KeyError:
+            # Source is an input tensor
+            assert tsr.is_input == True
+            return
+
+        tgt = self.node_id
+        tgt_tsr_idx = idx
+
+        assert src in Ops.G
+        assert tgt in Ops.G
+    
+        node_ops = Ops.G.nodes(data='op')
+        src_op = node_ops[src]
+        tgt_op = self
+    
+        src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
+        tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
+    
+        costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs)
+        idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
+            tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
+        costs = pd.Series(costs*Ops.edge_weight, index=idx, name='cost')
+        Ops.G.add_edge(src, tgt, costs=costs)
+
     def __init__(self, dom, in_tsrs, out_tsrs, n_procs):
         has_right_type = lambda t: isinstance(t, Tensor) or all(isinstance(e,
             Tensor) for e in t)
@@ -250,58 +306,12 @@ class Ops():
         assert len(self.in_tsr_configs) == self.in_tsrs_cnt
         assert len(self.out_tsr_configs) == self.out_tsrs_cnt
 
-        def AddVertex():
-            if Ops.G is None:
-                Ops.G = nx.DiGraph()
-            node_id = Ops.G.number_of_nodes()
-        
-            print("Node: " + str(node_id) + "; Type: " +
-                    str(self.__class__.__name__) + "; Configs: " +
-                    str(self.dom_configs.shape[0]))
-        
-            costs = self.GetCosts()
-            costs = pd.Series(costs, index=self.dom_config_tuples, name='cost')
-        
-            Ops.G.add_node(node_id, op=self, costs=costs)
-            self.node_id = node_id
-
-            for i, t in enumerate(self.out_tsrs):
-                Ops.tsr_to_node_id[id(t)] = (node_id, i)
-
-        def AddEdge(tsr, idx):
-            try:
-                src, src_tsr_idx = Ops.tsr_to_node_id[id(tsr)]
-            except KeyError:
-                # Source is an input tensor
-                assert tsr.is_input == True
-                return
-
-            tgt = self.node_id
-            tgt_tsr_idx = idx
-
-            assert src in Ops.G
-            assert tgt in Ops.G
-        
-            node_ops = Ops.G.nodes(data='op')
-            src_op = node_ops[src]
-            tgt_op = self
-        
-            src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
-            tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
-        
-            costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs)
-            idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
-                tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
-            costs = pd.Series(costs, index=idx, name='cost')
-        
-            Ops.G.add_edge(src, tgt, costs=costs)
-
         # Add a vertex to the graph for the current op
-        AddVertex()
+        self.AddVertex()
 
         # Add edges to the predecessors
         for i, t in enumerate(self.in_tsrs):
-            AddEdge(t, i)
+            self.AddEdge(t, i)
 
     def ComputeCosts(self):
         if not hasattr(self, 'dom_config_tuples'):
@@ -981,3 +991,65 @@ def Embedding(in_tsr, vocab_size, embedding_dim, n_procs=None):
             + dim_names[-1]
     w = InputTensor((vocab_size, embedding_dim))
     return Einsum(eq, in_tsr, w, trainable=True, n_procs=n_procs)
+
+
+class RNN(Ops):
+    def __init__(self, in_tsr, num_units, attention=False, n_procs=None):
+        assert len(in_tsr) > 1
+        assert in_tsr[-1] == num_units
+
+        # Input tensor is concatenated with hidden state tensor and attention
+        # tensor along axis -1.
+        # LSTM cell concats 4 weight matrices along n-dimension, and the output
+        # is split into 4 tensors along axis -1, and elementwise mul and add are
+        # performed. We create 'dom' corresponding just 1 GEMM, so that the 4
+        # parts are equally distributed, thus eliminating any comm cost before
+        # elementwise ops. Cost is corrected later to account for 4 GEMMs. In
+        # the actual implementation, this is achieved by permuting the weight
+        # matrix corresponding to the distribution, so that no real comm cost is
+        # incurred before elementwise ops.
+        dom = in_tsr[:-1] + (num_units, (2+attention)*num_units)
+        out_tsr = Tensor(dom[:-1])
+        super().__init__(dom, in_tsr, out_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = np.delete(self.dom_configs, -2, axis=1)
+        self.out_tsr_configs = self.dom_configs[:, :-1]
+
+        gemm_dom = list(self.dom)
+        gemm_dom[-1] *= 4
+        self.costs = ComputeGemmCosts(gemm_dom, self.dom_configs, pw_op_cnt=1)
+
+        # Costs of final elementwise ops
+        num_elems = np.prod(self.dom_configs, axis=1)
+        self.costs += (5 * num_elems)
+
+        # Add comm cost along self-edge
+        src_tsr_per_proc = self.GetOutTensor(0) / self.out_tsr_configs
+        tgt_tsr_per_proc = self.GetInTensor(0) / self.in_tsr_configs
+        src_procs = np.prod(self.out_tsr_configs, axis=1)
+        tgt_procs = np.prod(self.in_tsr_configs, axis=1)
+        area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc,
+                src_procs, tgt_procs)
+        self.costs += 2.0 * np.where(area_needed < 0, 0, area_needed)
+
+
+class Repeat(Ops):
+    def __init__(self, in_tsr, num_copies, axis=0, n_procs=None):
+        self.axis = axis
+        out_tsr = Tensor(in_tsr[:axis] + (num_copies,) + in_tsr[axis:])
+        dom = list(out_tsr)
+        super().__init__(dom, in_tsr, out_tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = np.delete(self.dom_configs, self.axis, axis=1)
+        self.out_tsr_configs = self.dom_configs
+
+        # Cost of distributing different slices
+        elems = np.prod(self.dom_configs, axis=1)
+        self.costs = BytesToFlops(elems)
+
