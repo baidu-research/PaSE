@@ -394,66 +394,88 @@ def Transformer(b):
 
 
 def Seq2seq(b):
-    num_layers = 2
+    num_layers = 4
     vocab_size = 50000
     embed_dim = 1024
     max_seq_len = 256
+    unroll_factor = 1
+    assert max_seq_len % unroll_factor == 0
+    repeat_steps = int(max_seq_len / unroll_factor)
+
+    def RNNLoop(hidden=None, context=None, attention_fn=None,
+            entry_nodes=[]):
+        hidden = hidden or [None] * num_layers
+        assert len(hidden) == num_layers
+
+        inp = nn_ops.InputTensor((b,))
+        ops = []
+        outputs = []
+        for i in range(unroll_factor):
+            # Embedding
+            cell_input_op = nn_ops.Embedding(inp, vocab_size, embed_dim)
+            ops.append(cell_input_op)
+
+            # RNN layers
+            stack = []
+            next_context = None
+            for j in range(num_layers):
+                cell_input_op = nn_ops.LSTMCell(cell_input_op(0), embed_dim,
+                        hidden[j], context=context)
+                stack.append(cell_input_op)
+
+                if j == 0 and (attention_fn is not None):
+                    attention_ops = attention_fn(cell_input_op(0))
+                    ops += attention_ops
+                    next_context = attention_ops[-1](0)
+            context = next_context
+            ops += stack
+
+            outputs.append(stack[-1](0))
+            hidden = [s(0) for s in stack]
+            if i == 0:
+                first_stack = stack
+
+        # Create back edges
+        for op1, op2 in zip(first_stack, stack):
+            op2.AddEdge(op1(0), 0)
+        try: # If we computed attention, create edges from it
+            attention = attention_ops[-1](0)
+            [op.AddEdge(attention, 0) for op in first_stack]
+        except UnboundLocalError:
+            pass
+
+        # Repeat RNN 'repeat_steps' times
+        entry_edges = [e for e in nn_ops.Ops.G.out_edges(entry_nodes)]
+        nn_ops.Repeat(ops, repeat_steps, entry_edges)
+
+        # Repeat outputs 'repeat_steps' times
+        out = nn_ops.Stack(outputs, axis=1)
+        out = nn_ops.Extend(out(0), repeat_steps, axis=1)
+
+        return out, hidden
 
     # Encoder
-    nn_ops.Ops.SetWeights(max_seq_len)
-    enc = nn_ops.InputTensor((b,))
-    enc = nn_ops.Embedding(enc, vocab_size, embed_dim)(0)
-    enc_stack = []
-    for _ in range(num_layers):
-        enc_stack.append(nn_ops.RNN(enc, embed_dim))
-        enc = enc_stack[-1](0)
-    nn_ops.Ops.SetWeights(1)
-
-    # Stack encoder outputs
-    nn_ops.Ops.edge_weight = max_seq_len
-    enc_out = nn_ops.Repeat(enc, max_seq_len, axis=1)(0)
-    nn_ops.Ops.SetWeights(1)
+    enc_out, hidden = RNNLoop()
 
     # Attention
     attn_w = nn_ops.InputTensor((embed_dim, embed_dim))
-    attn_dense = nn_ops.Einsum('ble,ef->blf', enc_out, attn_w,
+    attn_dense = nn_ops.Einsum('ble,ef->blf', enc_out(0), attn_w,
             trainable=True)(0)
 
+    def AttnFn(x):
+        weights = nn_ops.Einsum('ble,be->bl', attn_dense, x)
+        score = nn_ops.Softmax(weights(0), axis=1)
+        context = nn_ops.Einsum('bl,ble->be', score(0), enc_out(0),
+                trainable=False)
+        return [weights, score, context]
+
     # Decoder
-    nn_ops.Ops.SetWeights(max_seq_len)
-    dec = nn_ops.InputTensor((b,))
-    dec = nn_ops.Embedding(dec, vocab_size, embed_dim)(0)
-    dec_stack = []
-    for _ in range(num_layers):
-        dec_stack.append(nn_ops.RNN(dec, embed_dim, attention=True))
-        dec = dec_stack[-1](0)
-    nn_ops.Ops.SetWeights(1)
-
-    # Stack decoder outputs
-    nn_ops.Ops.edge_weight = max_seq_len
-    dec_out = nn_ops.Repeat(dec, max_seq_len, axis=1)(0)
-    nn_ops.Ops.SetWeights(1)
-
-    # Edge from encoder hidden state to decoder
-    for e, d in zip(enc_stack, dec_stack):
-        d.AddEdge(e(0), 0)
-
-    # Context tensor
-    nn_ops.Ops.SetWeights(max_seq_len)
-    score = nn_ops.Einsum('ble,be->bl', attn_dense, dec_stack[0](0))(0)
-    score = nn_ops.Softmax(score, axis=1)(0)
-    context = nn_ops.Einsum('bl,ble->be', score, enc_out, trainable=False)(0)
-    nn_ops.Ops.SetWeights(1)
-
-    # Edge from context tensor to decodern RNN cells
-    nn_ops.Ops.edge_weight = max_seq_len
-    for d in dec_stack:
-        d.AddEdge(context, 0)
-    nn_ops.Ops.SetWeights(1)
+    context = nn_ops.InputTensor((b, embed_dim))
+    dec_out, _ = RNNLoop(hidden, context, AttnFn, [attn_dense])
 
     # Final projection + Loss
     w = nn_ops.InputTensor((embed_dim, vocab_size))
-    proj = nn_ops.Einsum('ble,ev->blv', dec_out, w, trainable=True)(0)
+    proj = nn_ops.Einsum('ble,ev->blv', dec_out(0), w, trainable=True)(0)
     loss = nn_ops.SoftmaxCrossEntropy(proj)
     return nn_ops.Ops.G
 

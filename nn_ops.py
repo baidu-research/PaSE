@@ -12,6 +12,13 @@ def Prod(v):
     return reduce(op.mul, v, 1)
 
 
+def AdjustAxis(tsr, axis):
+    if axis < 0:
+        axis = len(tsr) + axis
+    assert axis >=0 and axis < len(tsr)
+    return axis
+
+
 class Tensor(tuple):
     def SetAsInput(self):
         self.is_input = True
@@ -175,18 +182,19 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
 # Returns edge costs for different configs. Edge cost is computed as the
 # difference b/w tensor volume needed per proc by the target vertex and the tensor
 # volume held per proc by the source vertex.
-def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs):
+def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True):
     # Calculate the domains per processor
     src_tsr_per_proc = tsr / src_cfgs
     tgt_tsr_per_proc = tsr / tgt_cfgs
 
-    src_tsr_per_proc, tgt_tsr_per_proc = RowCartesianProd(src_tsr_per_proc,
-            tgt_tsr_per_proc)
-
     # Get the no. of procs used for each config
     src_procs = np.prod(src_cfgs, axis=1)
     tgt_procs = np.prod(tgt_cfgs, axis=1)
-    src_procs, tgt_procs = RowCartesianProd(src_procs, tgt_procs)
+
+    if cross_prod:
+        src_tsr_per_proc, tgt_tsr_per_proc = RowCartesianProd(src_tsr_per_proc,
+                tgt_tsr_per_proc)
+        src_procs, tgt_procs = RowCartesianProd(src_procs, tgt_procs)
 
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
@@ -198,6 +206,10 @@ def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs):
     costs = BytesToFlops(costs)
 
     return costs
+
+
+def GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs):
+    return GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=False)
 
 
 def GetConvolutedSize(h, w, r, s, stride, pad):
@@ -217,16 +229,6 @@ class Ops():
     default_procs = 0 # Can be set once and reused for the entire graph.
     tsr_to_node_id = {}
 
-    # Weights are used to scale node and edge costs. Useful for cases like
-    # recurrent networks, where we create a single RNN cell and scale the cost
-    # by no. of iterations.
-    node_weight = 1
-    edge_weight = 1
-
-    @classmethod
-    def SetWeights(cls, w):
-        cls.node_weight = cls.edge_weight = w
-
     def AddVertex(self):
         if Ops.G is None:
             Ops.G = nx.DiGraph()
@@ -237,8 +239,7 @@ class Ops():
                 str(self.dom_configs.shape[0]))
     
         costs = self.GetCosts()
-        costs = pd.Series(costs*Ops.node_weight,
-                index=self.dom_config_tuples, name='cost')
+        costs = pd.Series(costs, index=self.dom_config_tuples, name='cost')
     
         Ops.G.add_node(node_id, op=self, costs=costs)
         self.node_id = node_id
@@ -263,14 +264,18 @@ class Ops():
         node_ops = Ops.G.nodes(data='op')
         src_op = node_ops[src]
         tgt_op = self
-    
+
         src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
         tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
+    
+        if src_op == tgt_op:
+            self.costs += GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs)
+            return
     
         costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs)
         idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
             tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
-        costs = pd.Series(costs*Ops.edge_weight, index=idx, name='cost')
+        costs = pd.Series(costs, index=idx, name='cost')
         Ops.G.add_edge(src, tgt, costs=costs)
 
     def __init__(self, dom, in_tsrs, out_tsrs, n_procs):
@@ -470,18 +475,22 @@ class Transpose(Ops):
 
 
 class Stack(Ops):
-    def __init__(self, in_tsrs, n_procs=None):
+    def __init__(self, in_tsrs, axis=0, n_procs=None):
         assert all(isinstance(t, Tensor) for t in in_tsrs)
         assert all(in_tsrs[0] == t for t in in_tsrs[1:])
+        self.axis = AdjustAxis(in_tsrs[0], axis)
         self.num = len(in_tsrs)
 
-        dom = (1, *(in_tsrs[0])) # This prevents distributing the stacking axis
-        out_tsr = Tensor((self.num, *(in_tsrs[0])))
-        super().__init__(dom, in_tsrs, out_tsr, n_procs)
+        dom = list(in_tsrs[0])
+        dom.insert(self.axis, 1) # This prevents distributing the stacking axis
+        out_tsr = list(in_tsrs[0])
+        out_tsr.insert(self.axis, self.num)
+        super().__init__(dom, in_tsrs, Tensor(out_tsr), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
-        self.in_tsr_configs = (self.dom_configs[:, 1:],) * self.num
+        self.in_tsr_configs = (np.delete(self.dom_configs, self.axis, axis=1),)
+        self.in_tsr_configs *= self.num
         self.out_tsr_configs = self.dom_configs
         self.costs = 0
 
@@ -754,11 +763,10 @@ class Concat(Ops):
     def __init__(self, in_tsrs, axis, n_procs=None):
         tsr0 = in_tsrs[0]
         rank = len(tsr0)
-        self.axis = axis
+        axis = AdjustAxis(tsr0, axis)
 
         assert len(in_tsrs) >= 2
         # All tensors should be of same rank, and concat axis should be valid
-        assert(axis < rank)
         assert all(len(t) == rank for t in in_tsrs)
         # All tensors should have same dimensions along non-concatenated axes
         assert all(t[i] == tsr0[i] for t in in_tsrs for i in range(rank) if i !=
@@ -781,10 +789,9 @@ class Concat(Ops):
 
 class Split(Ops):
     def __init__(self, in_tsr, num_splits, axis, n_procs=None):
-        assert axis < len(in_tsr)
+        axis = AdjustAxis(in_tsr, axis)
         assert in_tsr[axis] % num_splits == 0
         self.num_splits = num_splits
-        self.axis = axis
 
         out_tsr = list(in_tsr)
         out_tsr[axis] = int(out_tsr[axis] / num_splits)
@@ -803,10 +810,7 @@ class Split(Ops):
 class Norm(Ops):
     def __init__(self, in_tsr, axis=-1, n_procs=None):
         assert len(in_tsr) > 1
-        if axis < 0:
-            axis = len(in_tsr) + axis
-        assert axis >= 0 and axis < len(in_tsr)
-        self.axis = axis
+        self.axis = AdjustAxis(in_tsr, axis)
         super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
     def ComputeCosts(self):
@@ -993,8 +997,8 @@ def Embedding(in_tsr, vocab_size, embedding_dim, n_procs=None):
     return Einsum(eq, in_tsr, w, trainable=True, n_procs=n_procs)
 
 
-class RNN(Ops):
-    def __init__(self, in_tsr, num_units, attention=False, n_procs=None):
+class LSTMCell(Ops):
+    def __init__(self, in_tsr, num_units, hidden=None, context=None, n_procs=None):
         assert len(in_tsr) > 1
         assert in_tsr[-1] == num_units
 
@@ -1008,9 +1012,13 @@ class RNN(Ops):
         # the actual implementation, this is achieved by permuting the weight
         # matrix corresponding to the distribution, so that no real comm cost is
         # incurred before elementwise ops.
-        dom = in_tsr[:-1] + (num_units, (2+attention)*num_units)
+        kdim = (2 + (context is not None)) * num_units
+        dom = in_tsr[:-1] + (num_units, kdim)
         out_tsr = Tensor(dom[:-1])
         super().__init__(dom, in_tsr, out_tsr, n_procs)
+
+        # If initial hidden is provided, create an edge from it
+        [self.AddEdge(t, 0) for t in [hidden, context] if t is not None]
 
     def ComputeCosts(self):
         super().ComputeCosts()
@@ -1018,6 +1026,7 @@ class RNN(Ops):
         self.in_tsr_configs = np.delete(self.dom_configs, -2, axis=1)
         self.out_tsr_configs = self.dom_configs[:, :-1]
 
+        # Costs of GEMMs
         gemm_dom = list(self.dom)
         gemm_dom[-1] *= 4
         self.costs = ComputeGemmCosts(gemm_dom, self.dom_configs, pw_op_cnt=1)
@@ -1026,19 +1035,11 @@ class RNN(Ops):
         num_elems = np.prod(self.dom_configs, axis=1)
         self.costs += (5 * num_elems)
 
-        # Add comm cost along self-edge
-        src_tsr_per_proc = self.GetOutTensor(0) / self.out_tsr_configs
-        tgt_tsr_per_proc = self.GetInTensor(0) / self.in_tsr_configs
-        src_procs = np.prod(self.out_tsr_configs, axis=1)
-        tgt_procs = np.prod(self.in_tsr_configs, axis=1)
-        area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc,
-                src_procs, tgt_procs)
-        self.costs += 2.0 * np.where(area_needed < 0, 0, area_needed)
 
-
-class Repeat(Ops):
+# numpy-like broadcast along a new axis 'axis' of length 'num_copies'
+class Broadcast(Ops):
     def __init__(self, in_tsr, num_copies, axis=0, n_procs=None):
-        self.axis = axis
+        self.axis = axis = AdjustAxis(in_tsr, axis)
         out_tsr = Tensor(in_tsr[:axis] + (num_copies,) + in_tsr[axis:])
         dom = list(out_tsr)
         super().__init__(dom, in_tsr, out_tsr, n_procs)
@@ -1052,4 +1053,51 @@ class Repeat(Ops):
         # Cost of distributing different slices
         elems = np.prod(self.dom_configs, axis=1)
         self.costs = BytesToFlops(elems)
+
+
+class Extend(Ops):
+    def __init__(self, in_tsr, size, axis=0, n_procs=None):
+        self.axis = axis = AdjustAxis(in_tsr, axis)
+        assert in_tsr[axis] < size
+
+        out_tsr = list(in_tsr)
+        out_tsr[axis] = size
+        dom = list(out_tsr)
+        super().__init__(dom, in_tsr, Tensor(out_tsr), n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+
+        self.in_tsr_configs = np.copy(self.dom_configs)
+        self.in_tsr_configs[:, self.axis] = 1
+        self.out_tsr_configs = self.dom_configs
+
+        # Cost of distributing different slices
+        elems = np.prod(self.dom_configs, axis=1)
+        self.costs = BytesToFlops(elems)
+
+
+# Repeat operations in 'ops' 'num_steps' times. Used to create, for e.g., RNN
+# loops. Any outside edges to 'ops' that need to be replicated are specified in
+# 'additional_edges'
+def Repeat(ops, num_steps, additional_edges=[]):
+    # Get node and edge cost attributes
+    G = Ops.G
+    vert_costs = nx.get_node_attributes(G, 'costs')
+    edge_costs = nx.get_edge_attributes(G, 'costs')
+    nodes = set(op.node_id for op in ops)
+
+    # Scale node costs by 'num_steps'
+    for node_id in nodes:
+        vert_costs[node_id] *= num_steps
+
+    # Scale edge costs by num_steps. Only consider edges b/w 'Ops'
+    edges = set(e for e in itertools.chain(G.in_edges(nodes),
+        G.out_edges(nodes)))
+    for s, t in edges:
+        if s in nodes and t in nodes:
+            edge_costs[(s, t)] *= num_steps
+
+    for edge in additional_edges:
+        edge_costs[edge] *= num_steps
 
