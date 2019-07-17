@@ -75,9 +75,7 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         src_vocab_dim = mtf.Dimension(RandName(), src_vocab_size)
         tgt_vocab_dim = mtf.Dimension(RandName(), tgt_vocab_size)
         embed_dim = mtf.Dimension(RandName(), params.num_units)
-        enc_rnn_output_dim = mtf.Dimension(RandName(), 4*params.num_units)
-        enc_rnn_output_dims = [enc_rnn_output_dim] * params.num_layers
-        dec_rnn_output_dims = enc_rnn_output_dims
+        enc_rnn_out_dims = dec_rnn_out_dims = None
         attn_dense_dim = mtf.Dimension(RandName(), params.num_units)
         final_proj_dim = tgt_vocab_dim
 
@@ -90,85 +88,103 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     assert mtf_src.shape[-1] == mtf_tgt.shape[-1]
 
     class LSTMCell():
-        def __init__(self, output_dim, h=None, name=None):
+        def __init__(self, mesh, shape, output_dim=None, h=None,
+                has_context=False, name=None):
+            assert shape.to_integer_list == [params.batch_size, params.num_units]
             self.name = name or 'lstm'
-            self.output_dim = output_dim
-            if h is not None:
-                self.h = h
+            self.shape = shape
+            self.has_context = has_context
+
+            if output_dim is None:
+                output_dim = mtf.Dimension(shape[-1].name, params.num_units)
+            assert output_dim.size == params.num_units
+
+            k_dim_size = (2 + has_context) * shape[-1].size
+            k_dim = mtf.Dimension(shape[-1].name, k_dim_size)
+            n_dim = mtf.Dimension(output_dim.name, 4 * output_dim.size)
+
+            self.h = mtf.zeros(mesh, shape) if h is None else h
+            self.c = mtf.zeros(mesh, mtf.Shape([shape[0], output_dim]))
+            self.w = mtf.get_variable(mesh, f'{self.name}_w', mtf.Shape([k_dim,
+                n_dim]))
 
         def __call__(self, x, context=None):
-            assert x.shape.to_integer_list == [params.batch_size, params.num_units]
+            assert x.shape == self.shape
+            assert self.h.shape == self.shape
+            assert (not self.has_context) or (context is not None)
 
-            try:
-                #assert x.shape[0] == self.h.shape[0]
-                #if x.shape[1] != self.h.shape[1]:
-                #    self.h = mtf.rename_dimension(self.h, self.h.shape[1].name,
-                #            x.shape[1].name)
-                assert x.shape == self.h.shape
-                concat_tsrs = (x, self.h)
-            except AttributeError:
-                self.h = mtf.zeros(x.mesh, x.shape)
-                concat_tsrs = (x, self.h)
+            # Concatenate x, h, and context
+            concat_tsrs = (x, self.h)
             if context is not None:
                 assert x.shape == context.shape
                 concat_tsrs += context,
- 
             xh = mtf.concat(concat_tsrs, x.shape[-1].name,
                     name=f'{self.name}_concat')
-            if not hasattr(self, 'w'):
-                self.w = mtf.get_variable(x.mesh, f'{self.name}_w',
-                        mtf.Shape([xh.shape[-1], self.output_dim]))
+ 
+            # GEMM
             ifgo = mtf.einsum([xh, self.w], reduced_dims=[xh.shape[-1]],
                     name=f'{self.name}_ifgo')
             i, f, g, o = mtf.split(ifgo, ifgo.shape[-1], 4,
                     name=f'{self.name}_split_ifgo')
 
+            # Activations
             i, f, o = (mtf.sigmoid(t) for t in (i, f, o))
             g = mtf.tanh(g)
 
-            try:
-                self.c = (f * self.c) + (i * g)
-            except AttributeError:
-                self.c = i * g
+            # Elementwise ops
+            assert self.c.shape == f.shape
+            self.c = (f * self.c) + (i * g)
             self.h = o * mtf.tanh(self.c)
-            self.h = mtf.rename_dimension(self.h, self.h.shape[-1].name,
-                    x.shape[-1].name)
             return self.h
 
     class RNNStack():
-        def __init__(self, output_dims, initial_hs, attention_fn=None, name=None):
-            assert len(output_dims) == params.num_layers
+        def __init__(self, mesh, shape, output_dims, initial_hs,
+                attention_fn=None, name=None):
+            self.shape = shape
+            if not isinstance(output_dims, list):
+                output_dims = [output_dims] * params.num_layers
+
             assert len(initial_hs) == params.num_layers
+            assert len(output_dims) == params.num_layers
+
+            if attention_fn is None:
+                has_context = False
+                self.context = None
+            else:
+                has_context = True
+                self.context = mtf.zeros(mesh, shape)
 
             self.name = name or 'rnn_stack'
-            self.attention_fn = attention_fn
-            self.lstms = []
-            for i, (dim, h) in enumerate(zip(output_dims, initial_hs)):
-                self.lstms.append(LSTMCell(dim, h, f'{self.name}_lstm_{i}'))
+            self.attention_fn = attention_fn or (lambda _: None)
+            has_context = (attention_fn is not None)
+            self.layers = [LSTMCell(mesh, shape, dim, h, has_context,
+                name=f'{self.name}_lstm_{i}') \
+                    for i, (dim, h) in enumerate(zip(output_dims, initial_hs))]
 
         def __call__(self, x):
-            model_dim_name = x.shape[-1].name
-            self.context = mtf.zeros(x.mesh, x.shape) \
-                    if self.attention_fn is not None else None
+            assert x.shape == self.shape
 
+            # First layer
             with tf.variable_scope(f'{self.name}_layer_{0}'):
-                x = self.lstms[0](x, self.context)
-            # Calculate context after 1st layer, to be used in next step
-            context = self.attention_fn(x) \
-                    if self.attention_fn is not None else None
+                x = self.layers[0](x, self.context)
 
-            for i, lstm in enumerate(self.lstms[1:]):
+            # Calculate context after 1st layer, to be used in next step
+            context = self.attention_fn(x)
+
+            # Remaining layers
+            dim_name = self.shape[-1].name
+            for i, lstm in enumerate(self.layers[1:]):
                 with tf.variable_scope(f'{self.name}_layer_{i+1}'):
-                    #x = mtf.rename_dimension(x, x.shape[-1].name,
-                    #        model_dim_name)
+                    if x.shape[-1].name != dim_name:
+                        x = mtf.rename_dimension(x, x.shape[-1].name, dim_name)
                     x = lstm(x, self.context)
 
-            self.context = context # Update context
+            self.context = context # Update context for next step
             return x
 
         @property
         def hs(self):
-            return [lstm.h for lstm in self.lstms]
+            return [lstm.h for lstm in self.layers]
 
     def RNN(xs, output_dims, hs=None, attention_fn=None, name=None):
         assert xs.shape.to_integer_list == [params.batch_size,
@@ -178,7 +194,8 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         hs = hs or [None]*params.num_layers
         xs = mtf.unstack(xs, seq_dim, name=f'{name}_unstack_op')
 
-        rnn_stack = RNNStack(output_dims, hs, attention_fn, f'{name}_stack')
+        rnn_stack = RNNStack(xs[0].mesh, xs[0].shape, output_dims, hs,
+                attention_fn, f'{name}_stack')
         ys = [rnn_stack(x) for x in xs]
 
         assert len(ys) == params.max_seq_len
@@ -188,18 +205,18 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     with tf.variable_scope('encoder'):
         embed = mtf.layers.embedding(mtf_src, src_vocab_dim, embed_dim,
                 tf.float32, name='enc_embedding')
-        enc_out, enc_hs = RNN(embed, enc_rnn_output_dims, name='encoder_rnn')
+        enc_out, enc_hs = RNN(embed, enc_rnn_out_dims, name='encoder_rnn')
 
         # Encoder part of attention
         enc_attn = mtf.layers.dense(enc_out, attn_dense_dim, use_bias=False,
                 name='enc_attention')
+        enc_attn = mtf.rename_dimension(enc_attn, enc_attn.shape[-1].name,
+                embed.shape[-1].name)
 
     # Decoder
     with tf.variable_scope('decoder'):
         embed = mtf.layers.embedding(mtf_tgt, tgt_vocab_dim, embed_dim,
                 tf.float32, name='dec_embedding')
-        enc_attn = mtf.rename_dimension(enc_attn, enc_attn.shape[-1].name,
-                embed.shape[-1].name)
 
         def Attention(h):
             assert enc_attn.shape[-1] == h.shape[-1]
@@ -212,7 +229,7 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                     reduced_dims=[score.shape[-1]], name='attn_context_einsum')
             return context
 
-        dec_out, _ = RNN(embed, dec_rnn_output_dims, enc_hs,
+        dec_out, _ = RNN(embed, dec_rnn_out_dims, enc_hs,
                 attention_fn=Attention, name='decoder_rnn')
 
     # Loss function
