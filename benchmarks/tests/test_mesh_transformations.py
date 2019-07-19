@@ -300,6 +300,51 @@ def Replication2(in_tsr):
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
+def Replication3(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
+            mesh1:utils.GetMeshImpl([2], [0, 4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
+            mtf_shape.dimension_names)
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def Replication4(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
+            mesh1:utils.GetMeshImpl([4, 4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([('axis1', shape[0])] + shape[1:])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
+            mtf_shape.dimension_names)
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def Replication5(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([2], [0, 4]), \
+            mesh1:utils.GetMeshImpl([2, 4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
+            mtf_shape.dimension_names)
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
 def main():
     ndims = 4
     shape = [16, 32, 64, 128]
@@ -324,10 +369,13 @@ def main():
 
     WrongShape(in_tsr)
 
-    Replication1(in_tsr)
-    Replication2(in_tsr)
     Removal1(in_tsr)
     Removal2(in_tsr)
+    Replication1(in_tsr)
+    Replication2(in_tsr)
+    Replication3(in_tsr)
+    Replication4(in_tsr)
+    Replication5(in_tsr)
 
     print('Tests passed.')
 

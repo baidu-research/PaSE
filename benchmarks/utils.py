@@ -10,9 +10,13 @@ def Prod(lst):
     return reduce(mul, lst, 1)
 
 
-def GetDeviceList(num_gpus):
-    return [tf.DeviceSpec(device_type='GPU', device_index=i) for i in
-            range(num_gpus)]
+def GetDeviceList(gpus):
+    if isinstance(gpus, list) and all(
+            isinstance(gpu, tf.DeviceSpec) for gpu in gpus):
+        return gpus
+
+    gpus = range(gpus) if isinstance(gpus, int) else gpus
+    return [tf.DeviceSpec(device_type='GPU', device_index=i) for i in gpus]
 
 
 def AssignLayout(ta_axes, mesh_axis):
@@ -47,7 +51,7 @@ def GetMeshImpl(dev_cnts, devices=None, axes=None):
         mesh_shape.append((axis, d))
         layout_rules.append((axis, axis))
 
-    devices = devices or GetDeviceList(Prod(dev_cnts))
+    devices = GetDeviceList(devices or Prod(dev_cnts))
     return mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape, layout_rules,
             devices)
 

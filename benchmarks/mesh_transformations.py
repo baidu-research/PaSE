@@ -33,36 +33,51 @@ class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
         new_mesh_shape = new_mesh_impl.shape
         old_mesh_ndims = old_mesh_shape.ndims
         new_mesh_ndims = new_mesh_shape.ndims
+        old_num_gpus = old_mesh_impl.shape.size
+        new_num_gpus = new_mesh_impl.shape.size
 
-        assert abs(old_mesh_ndims - new_mesh_ndims) == 1
-        replicate = (new_mesh_ndims > old_mesh_ndims)
+        # Check if we need to replicate or remove slices
+        replicate = (new_num_gpus > old_num_gpus)
 
+        # Find the new-to-old pnum for devices of new mesh
+        old_gpus = [d.device_index for d in old_mesh_impl.devices]
+        new_gpus = [d.device_index for d in new_mesh_impl.devices]
+        new_to_old_pnum = []
+        for gpu in new_gpus:
+            try:
+                new_to_old_pnum.append(old_gpus.index(gpu))
+            except ValueError:
+                new_to_old_pnum.append(None)
+
+        # If we need to replicate, find which pnums of old mesh to be used to
+        # copy slices
         if replicate:
-            assert old_mesh_shape.to_integer_list == \
-                    new_mesh_shape.to_integer_list[1:]
-        else:
-            assert old_mesh_shape.to_integer_list[1:] ==  \
-                    new_mesh_shape.to_integer_list
+            new_ma2ta = new_mesh_impl.tensor_layout(
+                    self.new_shape).mesh_axis_to_tensor_axis(new_mesh_ndims)
+            axes = [i for i, ta in enumerate(new_ma2ta) if ta is None]
+            pg = mtf.processor_groups(new_mesh_shape, axes)
+            assert set(FlattenList(pg)) == set(range(new_num_gpus))
+
+            for i, pnum in enumerate(new_to_old_pnum):
+                if pnum is None:
+                    for g in pg:
+                        if i in g:
+                            gpu = g[0]
+                            break
+                    new_to_old_pnum[i] = old_gpus.index(gpu)
+        assert all(pnum is not None for pnum in new_to_old_pnum)
 
         # Make sure the slice shape is same in old and new mesh
-        old_slice_shape = old_mesh_impl.slice_shape(x.shape)
-        new_slice_shape = new_mesh_impl.slice_shape(self.new_shape)
-        assert old_slice_shape == new_slice_shape
+        assert old_mesh_impl.slice_shape(x.shape)  \
+                == new_mesh_impl.slice_shape(self.new_shape)
 
         # Make sure that each processor in old and new meshes have same slices
         # of the original tensor
-        old_num_gpus = old_mesh_impl.shape.size
-        new_num_gpus = new_mesh_impl.shape.size
-        num_gpus = min(old_num_gpus, new_num_gpus)
-        assert all(old_mesh_impl.slice_begin(x.shape, p) \
-                == new_mesh_impl.slice_begin(self.new_shape, p) \
-                for p in range(num_gpus))
+        assert all(old_mesh_impl.slice_begin(x.shape, p_old) \
+                == new_mesh_impl.slice_begin(self.new_shape, p_new) \
+                for p_new, p_old in enumerate(new_to_old_pnum))
 
-        if not replicate:
-            output_slices = input_slices[:new_num_gpus]
-        else:
-            output_slices = input_slices * new_mesh_shape[0].size
-
+        output_slices = [input_slices[pnum] for pnum in new_to_old_pnum]
         laid_out_tensor = \
                 new_mesh_impl.LaidOutTensor.from_tensor_list(output_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)

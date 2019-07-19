@@ -73,7 +73,7 @@ def CreateMeshes(strategy, img, labels, batch_size):
         # mesh0
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        devices = ['gpu:0', 'gpu:4']
+        devices = [0, 4]
         axes = ['axis1']
         mesh_to_impl[mesh] = GetMeshImpl([2], devices, axes)
 
