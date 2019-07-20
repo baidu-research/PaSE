@@ -9,11 +9,13 @@ from utils import TransposeLists, FlattenList
 
 
 class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
-    def __init__(self, x, mesh, dim_names, name=None):
+    def __init__(self, x, mesh, dim_names=None, name=None):
+        self.old_mesh = x.mesh
+        if isinstance(dim_names, mtf.Shape):
+            dim_names = dim_names.dimension_names
+        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
         assert x.mesh != mesh
         assert len(dim_names) == len(x.shape)
-        self.old_mesh = x.mesh
-        self.new_dim_names = dim_names
         self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
             for name, dim in zip(dim_names, x.shape.dims)])
         super().__init__([x], mesh=mesh, name=name or
@@ -83,18 +85,21 @@ class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
 
 
-def ReplaceMeshWithDuplicates(x, mesh, dim_names, name=None):
-    return ReplaceMeshWithDuplicatesOperation(x, mesh, dim_names, name).outputs[0]
+def ReplaceMeshWithDuplicates(x, mesh, dim_names=None, name=None):
+    return ReplaceMeshWithDuplicatesOperation(x, mesh, dim_names,
+            name).outputs[0]
 
 
 class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
     # mesh: New mesh; dim_names: Dim names for 'x' in 'mesh'. If a dim_name is
     # None, current name of that axis is used.
-    def __init__(self, x, mesh, dim_names, name=None):
+    def __init__(self, x, mesh, dim_names=None, name=None):
+        if isinstance(dim_names, mtf.Shape):
+            dim_names = dim_names.dimension_names
+        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
         assert x.mesh != mesh
         assert len(dim_names) == len(x.shape)
         self.old_mesh = x.mesh
-        self.new_dim_names = dim_names
         self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
             for name, dim in zip(dim_names, x.shape.dims)])
         super().__init__([x], mesh=mesh, name=name or
@@ -177,7 +182,7 @@ class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
 
 
-def ReplaceMeshWithIndependentAxes(x, mesh, dim_names, name=None):
+def ReplaceMeshWithIndependentAxes(x, mesh, dim_names=None, name=None):
     return ReplaceMeshWithIndependentAxesOperation(x, mesh, dim_names,
             name=name).outputs[0]
 
