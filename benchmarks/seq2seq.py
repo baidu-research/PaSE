@@ -12,7 +12,7 @@ from dataloader import TextDataLoader
 from utils import GetMeshImpl
 import utils
 from mesh_transformations import ReplaceMeshWithIndependentAxes, \
-        ReplaceMeshWithDuplicates
+        ReplaceMeshWithDuplicates, ReplaceMesh
 
 
 def RandName(k=5):
@@ -116,6 +116,20 @@ def CreateMeshes(strategy, src, tgt, params):
         mtf_src = mtf.cast(mtf.import_tf_tensor(meshes[0], src, shape), tf.int32)
         mtf_tgt = mtf.cast(mtf.import_tf_tensor(meshes[0], tgt, shape), tf.int32)
 
+    elif strategy == 2:
+        mesh = Mesh(0)
+        mesh_to_impl[mesh] = GetMeshImpl([2], [0, 1])
+        mesh = Mesh(1)
+        mesh_to_impl[mesh] = GetMeshImpl([2], [2, 3])
+        mesh = Mesh(2)
+        mesh_to_impl[mesh] = GetMeshImpl([2], [4, 5])
+        mesh = Mesh(3)
+        mesh_to_impl[mesh] = GetMeshImpl([2], [6, 7])
+
+        shape = GetShape([('axis0', params.batch_size), params.max_seq_len]) 
+        mtf_src = mtf.cast(mtf.import_tf_tensor(meshes[0], src, shape), tf.int32)
+        mtf_tgt = mtf.cast(mtf.import_tf_tensor(meshes[0], tgt, shape), tf.int32)
+
     else:
         assert False
 
@@ -127,7 +141,7 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     graph, meshes, mesh_to_impl, mtf_src, mtf_tgt = CreateMeshes(strategy, src,
             tgt, params)
 
-    if strategy == 0:
+    if strategy == 0 or strategy == 2:
         src_vocab_dim = mtf.Dimension(RandName(), src_vocab_size)
         tgt_vocab_dim = mtf.Dimension(RandName(), tgt_vocab_size)
         enc_embed_dim = dec_embed_dim = mtf.Dimension(RandName(), params.num_units)
@@ -299,27 +313,34 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         hs = hs or [None]*params.num_layers
         xs = mtf.unstack(xs, seq_dim, name=f'{name}_unstack_op')
 
-        if strategy == 1:
+        if strategy == 0:
+            layer_meshes, shapes, repl_fns = xs[0].mesh, xs[0].shape, None
+
+        elif strategy == 1:
             if attention_fn is None: # Encoder
                 layer_meshes = [meshes[0], meshes[1], meshes[1], meshes[0]]
-
                 shape = xs[0].shape
                 assert shape[1].name == 'axis0'
                 new_shape = utils.RenameDim(shape, 1, 'axis1')
                 shapes = [shape, new_shape, shape, new_shape]
-
                 repl_fns = [None, Mesh0ToMesh1, None, Mesh1ToMesh0]
             else: # Decoder
                 layer_meshes = [meshes[1], meshes[1], meshes[1], meshes[0]]
-
                 shape = xs[0].shape
                 assert shape[1].name == 'axis0'
                 new_shape = utils.RenameDim(shape, 1, 'axis1')
                 shapes = [shape, new_shape, shape, new_shape]
-
                 repl_fns = [None, None, None, Mesh1ToMesh0]
+
         else:
-            layer_meshes, shapes, repl_fns = xs[0].mesh, xs[0].shape, None
+            layer_meshes, shapes = meshes, xs[0].shape
+            #repl_fns = [None] + [(lambda x: ReplaceMeshWithDuplicates(
+            #    x, mesh, name=f'rnn_replace_mesh_{i+1}')) for i, mesh in
+            #    enumerate(meshes[1:])]
+            repl_fns = [None,
+                    lambda x: ReplaceMesh(x, meshes[1], name='replace_mesh_1'),
+                    lambda x: ReplaceMesh(x, meshes[2], name='replace_mesh_2'),
+                    lambda x: ReplaceMesh(x, meshes[3], name='replace_mesh_3')]
 
         rnn_stack = RNNStack(layer_meshes, shapes, repl_fns, output_dims, hs,
                 attention_fn, f'{name}_stack')
@@ -392,7 +413,10 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
             new_dim_names[-1] = RandName()
             dec_out = ReplaceMeshWithIndependentAxes(dec_out, meshes[3],
                     new_dim_names, name='replace_dec_out_mesh')
-            mtf_tgt = ReplaceMeshWithDuplicates(mtf_tgt, meshes[3],
+            mtf_tgt = ReplaceMesh(mtf_tgt, meshes[3],
+                    name='replace_mtf_tgt_mesh')
+        elif strategy == 2:
+            mtf_tgt = ReplaceMesh(mtf_tgt, meshes[3],
                     name='replace_mtf_tgt_mesh')
 
         out = mtf.layers.dense(dec_out, final_proj_dim, use_bias=False,
@@ -446,7 +470,8 @@ def main():
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(3)), 
             help="Strategy to use. 0: DataParallel, \
-                    1: Optimized")
+                    1: Optimized, \
+                    2: Expert designed")
     parser.add_argument('--src_vocab', type=str, help="Source vocab data file.")
     parser.add_argument('--tgt_vocab', type=str, help="Target vocab data file.")
     parser.add_argument('--src_text', type=str, help="Source text data file.")

@@ -8,6 +8,51 @@ import mesh_tensorflow as mtf
 from utils import TransposeLists, FlattenList
 
 
+class ReplaceMeshOperation(mtf.Operation):
+    def __init__(self, x, mesh, dim_names=None, name=None):
+        self.old_mesh = x.mesh
+        if isinstance(dim_names, mtf.Shape):
+            dim_names = dim_names.dimension_names
+        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
+        assert x.mesh != mesh
+        assert len(dim_names) == len(x.shape)
+        self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
+            for name, dim in zip(dim_names, x.shape.dims)])
+        super().__init__([x], mesh=mesh, name=name or
+                'replace_mesh')
+        self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
+
+    def gradient(self, grad_ys):
+        return ReplaceMeshOperation(grad_ys[0], self.old_mesh,
+                self.inputs[0].shape.dimension_names).outputs
+
+    def lower(self, lowering):
+        x = self.inputs[0]
+        old_mesh_impl = lowering.mesh_impl(self.old_mesh)
+        new_mesh_impl = lowering.mesh_impl(self)
+
+        assert old_mesh_impl.shape.size == new_mesh_impl.shape.size
+
+        # Make sure the slice shape is same in old and new mesh
+        assert old_mesh_impl.slice_shape(x.shape)  \
+                == new_mesh_impl.slice_shape(self.new_shape)
+
+        # Make sure that each processor in old and new meshes have same slices
+        # of the original tensor
+        assert all(old_mesh_impl.slice_begin(x.shape, i) \
+                == new_mesh_impl.slice_begin(self.new_shape, i) \
+                for i in range(old_mesh_impl.shape.size))
+
+        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
+        laid_out_tensor = \
+                new_mesh_impl.LaidOutTensor.from_tensor_list(input_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+
+def ReplaceMesh(x, mesh, dim_names=None, name=None):
+    return ReplaceMeshOperation(x, mesh, dim_names, name).outputs[0]
+
+
 class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
     def __init__(self, x, mesh, dim_names=None, name=None):
         self.old_mesh = x.mesh
