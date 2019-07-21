@@ -266,11 +266,12 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
 
     class RNNStack():
         def __init__(self, meshes, shapes, repl_fns, output_dims, initial_hs,
-                attention_fn=None, name=None):
+                bidirectional, attention_fn=None, name=None):
             Replicate = lambda x: x if isinstance(x, list) \
                     else [x] * params.num_layers
             meshes, shapes, output_dims, repl_fns = (Replicate(x)
                     for x in [meshes, shapes, output_dims, repl_fns])
+            self.bidirectional = bidirectional
             self.shapes = shapes
             self.context = None
 
@@ -279,33 +280,70 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
 
             self.name = name or 'rnn_stack'
             self.attention_fn = attention_fn or (lambda _: None)
-            has_context = (attention_fn is not None)
-            self.layers = [LSTMCell(mesh, shape, dim, h, has_context,
+            self.has_context = (attention_fn is not None)
+            self.layers = [LSTMCell(mesh, shape, dim, h, self.has_context,
                 repl_fn, name=f'{self.name}_lstm_{i}') \
                     for i, (mesh, shape, dim, h, repl_fn) in enumerate(
                         zip(meshes, shapes, output_dims, initial_hs, repl_fns))]
 
-        def __call__(self, x):
+        def Unidirectional(self, xs):
+            assert len(xs) == params.max_seq_len
+
+            ys = []
+            for x in xs:
+                # First layer
+                with tf.variable_scope(f'{self.name}_layer_{0}'):
+                    x = self.layers[0](x, self.context)
+
+                # Calculate context after 1st layer, to be used in next step
+                context = self.attention_fn(x)
+
+                # Remaining layers
+                for i, lstm in enumerate(self.layers[1:]):
+                    with tf.variable_scope(f'{self.name}_layer_{i+1}'):
+                        x = lstm(x, self.context)
+
+                self.context = context # Update context for next step
+                ys.append(x)
+            return ys
+
+        def Bidirectional(self, xs):
+            assert self.has_context == False and self.context == None
+            assert len(xs) == params.max_seq_len
+
             # First layer
             with tf.variable_scope(f'{self.name}_layer_{0}'):
-                x = self.layers[0](x, self.context)
+                fwd_xs = [self.layers[0](x) for x in xs]
 
-            # Calculate context after 1st layer, to be used in next step
-            context = self.attention_fn(x)
+            # Second layer
+            with tf.variable_scope(f'{self.name}_layer_{1}'):
+                bwd_xs = [self.layers[1](x) for x in xs[::-1]]
 
-            # Remaining layers
-            for i, lstm in enumerate(self.layers[1:]):
-                with tf.variable_scope(f'{self.name}_layer_{i+1}'):
-                    x = lstm(x, self.context)
+            # Third and forth layer
+            ys = []
+            for x, y in zip(fwd_xs, bwd_xs):
+                with tf.variable_scope(f'{self.name}_layer_{2}'):
+                    if strategy == 1:
+                        x = Mesh0ToMesh1(x)
+                        x = mtf.rename_dimension(x, 'axis1', 'axis0')
+                    elif strategy == 2:
+                        x = ReplaceMesh(x, meshes[1])
+                    x = self.layers[2](x + y)
 
-            self.context = context # Update context for next step
-            return x
+                with tf.variable_scope(f'{self.name}_layer_{3}'):
+                    ys.append(self.layers[3](x))
+            return ys
+
+        def __call__(self, xs):
+            return self.Bidirectional(xs) if self.bidirectional \
+                    else self.Unidirectional(xs)
 
         @property
         def hs(self):
             return [lstm.h for lstm in self.layers]
 
-    def RNN(xs, output_dims, hs=None, attention_fn=None, name=None):
+    def RNN(xs, output_dims, hs=None, bidirectional=False, attention_fn=None,
+            name=None):
         assert xs.shape.to_integer_list == [params.batch_size,
                 params.max_seq_len, params.num_units]
         name = name or 'rnn'
@@ -323,7 +361,8 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                 assert shape[1].name == 'axis0'
                 new_shape = utils.RenameDim(shape, 1, 'axis1')
                 shapes = [shape, new_shape, shape, new_shape]
-                repl_fns = [None, Mesh0ToMesh1, None, Mesh1ToMesh0]
+                repl_fns = [None, lambda x: Mesh0ToMesh1(mtf.rename_dimension(x,
+                    'axis0', 'axis1')), None, Mesh1ToMesh0]
             else: # Decoder
                 layer_meshes = [meshes[1], meshes[1], meshes[1], meshes[0]]
                 shape = xs[0].shape
@@ -343,8 +382,8 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                     lambda x: ReplaceMesh(x, meshes[3], name='replace_mesh_3')]
 
         rnn_stack = RNNStack(layer_meshes, shapes, repl_fns, output_dims, hs,
-                attention_fn, f'{name}_stack')
-        ys = [rnn_stack(x) for x in xs]
+                bidirectional, attention_fn, f'{name}_stack')
+        ys = rnn_stack(xs)
 
         assert len(ys) == params.max_seq_len
         return mtf.stack(ys, seq_dim.name, 1, f'{name}_stack_op'), rnn_stack.hs
@@ -353,7 +392,8 @@ def Seq2seq(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     with tf.variable_scope('encoder'):
         embed = mtf.layers.embedding(mtf_src, src_vocab_dim, enc_embed_dim,
                 tf.float32, name='enc_embedding')
-        enc_out, enc_hs = RNN(embed, enc_rnn_out_dims, name='encoder_rnn')
+        enc_out, enc_hs = RNN(embed, enc_rnn_out_dims, bidirectional=True,
+                name='encoder_rnn')
 
         # Encoder part of attention
         if strategy == 1:
