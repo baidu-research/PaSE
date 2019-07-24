@@ -268,9 +268,9 @@ class Ops():
         src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
         tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
     
-        if src_op == tgt_op:
-            self.costs += GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs)
-            return
+        #if src_op == tgt_op:
+        #    self.costs += GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs)
+        #    return
     
         costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs)
         idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
@@ -370,6 +370,16 @@ class Ops():
 
     def __call__(self, idx=None):
         return self.GetOutTensors() if idx is None else self.GetOutTensor(idx)
+
+
+class Variable(Ops):
+    def __init__(self, tsr, n_procs=None):
+        super().__init__(tuple(tsr), tsr, tsr, n_procs)
+
+    def ComputeCosts(self):
+        super().ComputeCosts()
+        self.in_tsr_configs = self.dom_configs
+        self.out_tsr_configs = self.dom_configs
 
 
 # Elementwise ops such as add, mul, etc.,
@@ -496,23 +506,21 @@ class Stack(Ops):
 
 
 class Unstack(Ops):
-    def __init__(self, in_tsr, n_procs=None):
-        self.num = in_tsr[0]
-        dom = tuple(in_tsr)
-        out_tsrs = tuple(Tensor(in_tsr[1:]) for _ in range(self.num))
+    def __init__(self, in_tsr, axis=0, n_procs=None):
+        axis = self.axis = AdjustAxis(in_tsr, axis)
+        self.num = in_tsr[axis]
+        dom = list(in_tsr)
+        dom[axis] = 1 # This prevents distributing the stacking axis
+        out_tsr = in_tsr[:axis] + in_tsr[axis+1:]
+        out_tsrs = tuple(Tensor(out_tsr) for _ in range(self.num))
         super().__init__(dom, in_tsr, out_tsrs, n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
-        # We don't want to distribute along stacking axis. When length along the
-        # axis is small, the tensor is by default not distributed along the
-        # axis. Make sure that is the case. If not, we need to manually remove
-        # configs > 1
-        assert np.all(self.dom_configs[:, 0] == 1)
-
-        self.dom_configs[:, 0] = 1 # Don't distribute along stack axis
+        self.dom_configs[:, self.axis] = 1 # Don't distribute along stack axis
         self.in_tsr_configs = self.dom_configs
-        self.out_tsr_configs = (self.dom_configs[:,1:],) * self.num
+        self.out_tsr_configs = (np.delete(self.dom_configs, self.axis, axis=1),
+                ) * self.num
         self.costs = 0
 
 
@@ -998,9 +1006,14 @@ def Embedding(in_tsr, vocab_size, embedding_dim, n_procs=None):
 
 
 class LSTMCell(Ops):
-    def __init__(self, in_tsr, num_units, hidden=None, context=None, n_procs=None):
+    def __init__(self, in_tsr, num_units, w=None, hidden=None, context=None, n_procs=None):
+        kdim = (2 + (context is not None)) * num_units
         assert len(in_tsr) > 1
         assert in_tsr[-1] == num_units
+        assert w is None or (len(w) == 2
+                and w[0] == kdim
+                and w[1] == 4 * num_units)
+        self.w = w
 
         # Input tensor is concatenated with hidden state tensor and attention
         # tensor along axis -1.
@@ -1012,10 +1025,10 @@ class LSTMCell(Ops):
         # the actual implementation, this is achieved by permuting the weight
         # matrix corresponding to the distribution, so that no real comm cost is
         # incurred before elementwise ops.
-        kdim = (2 + (context is not None)) * num_units
         dom = in_tsr[:-1] + (num_units, kdim)
         out_tsr = Tensor(dom[:-1])
-        super().__init__(dom, in_tsr, out_tsr, n_procs)
+        in_tsrs = (in_tsr,) if w is None else (in_tsr, w)
+        super().__init__(dom, in_tsrs, out_tsr, n_procs)
 
         # If initial hidden is provided, create an edge from it
         [self.AddEdge(t, 0) for t in [hidden, context] if t is not None]
@@ -1024,6 +1037,9 @@ class LSTMCell(Ops):
         super().ComputeCosts()
 
         self.in_tsr_configs = np.delete(self.dom_configs, -2, axis=1)
+        if self.w is not None:
+            self.in_tsr_configs = (self.in_tsr_configs,
+                    self.dom_configs[:, (-1,-2)])
         self.out_tsr_configs = self.dom_configs[:, :-1]
 
         # Costs of GEMMs
@@ -1035,7 +1051,7 @@ class LSTMCell(Ops):
         num_elems = np.prod(self.dom_configs, axis=1)
         self.costs += (5 * num_elems)
 
-
+'''
 # numpy-like broadcast along a new axis 'axis' of length 'num_copies'
 class Broadcast(Ops):
     def __init__(self, in_tsr, num_copies, axis=0, n_procs=None):
@@ -1085,19 +1101,20 @@ def Repeat(ops, num_steps, additional_edges=[]):
     G = Ops.G
     vert_costs = nx.get_node_attributes(G, 'costs')
     edge_costs = nx.get_edge_attributes(G, 'costs')
-    nodes = set(op.node_id for op in ops)
+    node_ids = set(op.node_id for op in ops)
 
     # Scale node costs by 'num_steps'
-    for node_id in nodes:
-        vert_costs[node_id] *= num_steps
+    for op in ops:
+        op.costs *= num_steps
 
     # Scale edge costs by num_steps. Only consider edges b/w 'Ops'
-    edges = set(e for e in itertools.chain(G.in_edges(nodes),
-        G.out_edges(nodes)))
+    edges = set(e for e in itertools.chain(G.in_edges(node_ids),
+        G.out_edges(node_ids)))
     for s, t in edges:
-        if s in nodes and t in nodes:
+        if s in node_ids and t in node_ids:
             edge_costs[(s, t)] *= num_steps
 
     for edge in additional_edges:
         edge_costs[edge] *= num_steps
+'''
 

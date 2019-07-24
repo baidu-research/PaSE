@@ -392,12 +392,12 @@ def Transformer(b):
     loss = nn_ops.SoftmaxCrossEntropy(dec)
     return nn_ops.Ops.G
 
-
+'''
 def Seq2seq(b):
-    num_layers = 4
+    num_layers = 2
     vocab_size = 50000
     embed_dim = 1024
-    max_seq_len = 256
+    max_seq_len = 64
     unroll_factor = 1
     assert max_seq_len % unroll_factor == 0
     repeat_steps = int(max_seq_len / unroll_factor)
@@ -478,6 +478,31 @@ def Seq2seq(b):
     proj = nn_ops.Einsum('ble,ev->blv', dec_out(0), w, trainable=True)(0)
     loss = nn_ops.SoftmaxCrossEntropy(proj)
     return nn_ops.Ops.G
+'''
+
+
+def RNNLM(b):
+    num_layers = 2
+    vocab_size = 50000
+    num_units = 2048
+    max_seq_len = 64
+    unroll_factor = 8
+
+    inp_tsr = nn_ops.InputTensor((b, max_seq_len))
+    embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
+    xs = nn_ops.Unstack(embed, axis=1)()
+    w = nn_ops.Variable(nn_ops.InputTensor((2*num_units, 4*num_units)))(0)
+    h = None
+
+    ys = []
+    for i in range(unroll_factor):
+        y = nn_ops.LSTMCell(xs[i], num_units, w, h)(0)
+        ys.append(y)
+        h = y
+
+    ys = nn_ops.Stack(ys, axis=1)(0)
+    loss = nn_ops.SoftmaxCrossEntropy(ys)(0)
+    return nn_ops.Ops.G
 
 
 # Creates the graph for the model
@@ -490,12 +515,12 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
         G = ResNet101(batch_size)
     elif graph_type == 'inception3':
         G = Inception3(batch_size)
-    elif graph_type == 'seq2seq':
-        G = Seq2seq(batch_size)
+    #elif graph_type == 'seq2seq':
+    #    G = Seq2seq(batch_size)
     elif graph_type == 'transformer':
         G = Transformer(batch_size)
-    elif graph_type == 'seq2seq':
-        G = Seq2seq(batch_size)
+    elif graph_type == 'rnnlm':
+        G = RNNLM(batch_size)
     else:
         assert False
 
