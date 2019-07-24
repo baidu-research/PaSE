@@ -93,6 +93,13 @@ def GetAllReduceCost(words, procs):
 
 
 def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, trainable=True):
+    assert len(dom_configs.shape) == 2 and len(dom) == dom_configs.shape[-1]
+    if len(dom) > 3:
+      dom = (Prod(dom[:-2]),) + dom[-2:]
+      dom_configs = np.concatenate((np.prod(dom_configs[:,:-2], axis=1,
+        keepdims=True), dom_configs[:,-2:]), axis=1)
+
+    assert len(dom) == dom_configs.shape[-1] == 3
     m_idx, n_idx, k_idx = 0, 1, 2
     dom_per_proc = dom / dom_configs
 
@@ -319,9 +326,11 @@ class Ops():
             self.AddEdge(t, i)
 
     def ComputeCosts(self):
-        if not hasattr(self, 'dom_config_tuples'):
-            self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
-        self.dom_configs = np.array(self.dom_config_tuples)
+        try:
+          self.dom_configs = np.array(self.dom_config_tuples)
+        except AttributeError:
+          self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
+          self.dom_configs = np.array(self.dom_config_tuples)
         assert self.dom_configs.ndim == 2
 
         self.in_tsr_configs = None
@@ -527,13 +536,13 @@ class Unstack(Ops):
 # Fully connected layer
 class FC(Ops):
     def __init__(self, in_tsr, n_units, n_procs=None, pw_op_cnt=0):
-        assert len(in_tsr) == 2
+        assert len(in_tsr) >= 2
         self.pw_op_cnt = pw_op_cnt
         m_idx, n_idx, k_idx = range(3)
 
         # Domain and input/output tensors
-        dom = (in_tsr[0], n_units, in_tsr[1])
-        out_tsr = Tensor((dom[m_idx], dom[n_idx]))
+        dom = (*(in_tsr[:-1]), n_units, in_tsr[-1])
+        out_tsr = Tensor(dom[:-1])
         super().__init__(dom, in_tsr, out_tsr, n_procs)
 
     def ComputeCosts(self):
@@ -541,8 +550,8 @@ class FC(Ops):
 
         # Configurations
         super().ComputeCosts()
-        self.in_tsr_configs = self.dom_configs[:, (m_idx, k_idx)]
-        self.out_tsr_configs = self.dom_configs[:, m_idx:n_idx+1]
+        self.in_tsr_configs = np.delete(self.dom_configs, -2, axis=1)
+        self.out_tsr_configs = self.dom_configs[:, :-1]
 
         # Compute the costs for configs
         self.costs = ComputeGemmCosts(self.dom, self.dom_configs, self.pw_op_cnt)

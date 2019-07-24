@@ -491,16 +491,20 @@ def RNNLM(b):
     inp_tsr = nn_ops.InputTensor((b, max_seq_len))
     embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
     xs = nn_ops.Unstack(embed, axis=1)()
-    w = nn_ops.Variable(nn_ops.InputTensor((2*num_units, 4*num_units)))(0)
-    h = None
+    ws = [nn_ops.Variable(nn_ops.InputTensor((2*num_units, 4*num_units)))(0) for
+            _ in range(num_layers)]
+    hs = [None] * num_layers
 
     ys = []
     for i in range(unroll_factor):
-        y = nn_ops.LSTMCell(xs[i], num_units, w, h)(0)
-        ys.append(y)
-        h = y
+        x = xs[i]
+        for j in range(num_layers):
+            x = nn_ops.LSTMCell(x, num_units, ws[j], hs[j])(0)
+            hs[j] = x
+        ys.append(x)
 
     ys = nn_ops.Stack(ys, axis=1)(0)
+    ys = nn_ops.FC(ys, vocab_size)(0)
     loss = nn_ops.SoftmaxCrossEntropy(ys)(0)
     return nn_ops.Ops.G
 
