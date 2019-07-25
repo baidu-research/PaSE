@@ -71,19 +71,22 @@ class ImageDataLoader():
  
 
 class TextDataLoader():
-    def parse_text(self, sentence, label):
+    def parse_text(self, sentence, label=None):
         # Split sentence into words, and convert it into ids
-        sentence = tf.string_split([sentence]).values
+        sentence_split = tf.string_split([sentence]).values
         if self.max_seq_len is not None: # Trim the sentence to max_seq_len
-            sentence = sentence[:self.max_seq_len]
-        src_seq_len = tf.size(sentence)
-        sentence = self.src_vocab.lookup(sentence)
+            sentence_split = sentence_split[:self.max_seq_len]
+        src_seq_len = tf.size(sentence_split)
+        sentence = self.src_vocab.lookup(sentence_split)
 
-        label = tf.string_split([label]).values
+        if label is not None:
+            label_split = tf.string_split([label]).values
+        else:
+            label_split = sentence_split[1:]
         if self.max_seq_len is not None:
-            label = label[:self.max_seq_len]
-        tgt_seq_len = tf.size(label)
-        label = self.tgt_vocab.lookup(label)
+            label_split = label_split[:self.max_seq_len]
+        tgt_seq_len = tf.size(label_split)
+        label = self.tgt_vocab.lookup(label_split)
 
         # Prepend and append SOS and EOS tokens to label
         #label = tf.concat([[self.tgt_sos_token], label, [self.tgt_eos_token]],
@@ -99,21 +102,36 @@ class TextDataLoader():
 
         # Vocab to id table
         src_vocab = tf.contrib.lookup.index_table_from_file(src_vocab_filename)
-        tgt_vocab = tf.contrib.lookup.index_table_from_file(tgt_vocab_filename)
-
+        tgt_vocab = tf.contrib.lookup.index_table_from_file(
+                tgt_vocab_filename) if tgt_vocab_filename is not None \
+                        else src_vocab
         self.src_vocab = src_vocab
         self.tgt_vocab = tgt_vocab
 
+        def Lookup(vocab, word, default=tf.constant(0, tf.int64)):
+            try:
+                return vocab.lookup(tf.constant(word))
+            except ValueError:
+                return default
+
+        self.src_pad_id = Lookup(src_vocab, '<pad>')
+        self.tgt_pad_id = Lookup(tgt_vocab, '<pad>')
+        #self.src_sos = Lookup(src_vocab, '<sos>')
+        #self.tgt_sos = Lookup(tgt_vocab, '<sos>')
+        #self.src_eos = Lookup(src_vocab, '<eos>')
+        #self.tgt_eos = Lookup(tgt_vocab, '<eos>')
+
         # Sentences and labels datasets
+        num_parallel_reads = 8
         sentences = tf.data.TextLineDataset(src_text_filename)
-        labels = tf.data.TextLineDataset(tgt_text_filename)
-        dataset = tf.data.Dataset.zip((sentences, labels))
+        if tgt_text_filename is not None:
+            labels = tf.data.TextLineDataset(tgt_text_filename)
+            dataset = tf.data.Dataset.zip((sentences, labels))
+        else:
+            dataset = tf.data.Dataset.zip(sentences)
 
         dataset = dataset.map(self.parse_text, num_parallel_calls =
                 num_parallel_calls)
-
-        self.src_pad_id = src_vocab.lookup(tf.constant('<pad>'))
-        self.tgt_pad_id = tgt_vocab.lookup(tf.constant('<pad>'))
 
         # Shape: sentence, label, src_seq_len, tgt_seq_len
         padded_shapes = (tf.TensorShape([max_seq_len]),
