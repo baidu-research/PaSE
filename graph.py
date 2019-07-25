@@ -488,16 +488,17 @@ def RNNLM(b):
     max_seq_len = 64
     unroll_factor = 8
 
-    inp_tsr = nn_ops.InputTensor((b, max_seq_len))
-    embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
-    xs = nn_ops.Unstack(embed, axis=1)()
+    #inp_tsr = nn_ops.InputTensor((b, max_seq_len))
+    #embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
+    #xs = nn_ops.Unstack(embed, axis=1)()
     ws = [nn_ops.Variable(nn_ops.InputTensor((2*num_units, 4*num_units)))(0) for
             _ in range(num_layers)]
     hs = [None] * num_layers
 
     ys = []
     for i in range(unroll_factor):
-        x = xs[i]
+        inp_tsr = nn_ops.InputTensor((b,))
+        x = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
         for j in range(num_layers):
             x = nn_ops.LSTMCell(x, num_units, ws[j], hs[j])(0)
             hs[j] = x
