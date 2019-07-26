@@ -486,7 +486,7 @@ def RNNLM(b):
     vocab_size = 50000
     num_units = 2048
     max_seq_len = 64
-    unroll_factor = 8
+    unroll_factor = 4
 
     #inp_tsr = nn_ops.InputTensor((b, max_seq_len))
     #embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)

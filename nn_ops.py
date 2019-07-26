@@ -1023,6 +1023,8 @@ class LSTMCell(Ops):
                 and w[0] == kdim
                 and w[1] == 4 * num_units)
         self.w = w
+        self.hidden = hidden
+        self.context = context
 
         # Input tensor is concatenated with hidden state tensor and attention
         # tensor along axis -1.
@@ -1036,19 +1038,21 @@ class LSTMCell(Ops):
         # incurred before elementwise ops.
         dom = in_tsr[:-1] + (num_units, kdim)
         out_tsr = Tensor(dom[:-1])
-        in_tsrs = (in_tsr,) if w is None else (in_tsr, w)
+        in_tsrs = in_tsr,
+        CheckAndAdd = lambda x: in_tsrs if x is None else in_tsrs + (x,)
+        in_tsrs = CheckAndAdd(hidden)
+        in_tsrs = CheckAndAdd(context)
+        in_tsrs = CheckAndAdd(w)
         super().__init__(dom, in_tsrs, out_tsr, n_procs)
-
-        # If initial hidden is provided, create an edge from it
-        [self.AddEdge(t, 0) for t in [hidden, context] if t is not None]
 
     def ComputeCosts(self):
         super().ComputeCosts()
 
-        self.in_tsr_configs = np.delete(self.dom_configs, -2, axis=1)
+        self.in_tsr_configs = (np.delete(self.dom_configs, -2, axis=1),) * (
+                1 + (self.hidden != None) + (self.context != None))
         if self.w is not None:
-            self.in_tsr_configs = (self.in_tsr_configs,
-                    self.dom_configs[:, (-1,-2)])
+            self.in_tsr_configs = self.in_tsr_configs + (
+                    self.dom_configs[:, (-1,-2)],)
         self.out_tsr_configs = self.dom_configs[:, :-1]
 
         # Costs of GEMMs
