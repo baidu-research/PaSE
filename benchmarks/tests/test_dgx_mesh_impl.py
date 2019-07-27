@@ -62,6 +62,32 @@ def Concat2(in_tsr):
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
+def Concat3(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh_to_impl = {mesh0:GetMeshImpl([1], [0])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([shape[0], ('axis0', shape[1]), *shape[2:]])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    new_shape = mtf_shape.rename_dimension('axis0', RandName())
+    mtf_out_tsr = mtf.reshape(mtf_in_tsr, new_shape)
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def Concat4(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh_to_impl = {mesh0:GetMeshImpl([2], [0, 4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([shape[0], ('axis0', shape[1]), *shape[2:]])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    new_shape = mtf_shape.rename_dimension('axis0', RandName())
+    mtf_out_tsr = mtf.reshape(mtf_in_tsr, new_shape)
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
 def Reduce1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
@@ -99,6 +125,30 @@ def Reduce3(in_tsr):
     Run(graph, mesh_to_impl, tf.reduce_sum(in_tsr, axis=1), mtf_out_tsr)
 
 
+def Reduce4(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh_to_impl = {mesh0:GetMeshImpl([1], [0])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([shape[0], ('axis0', shape[1]), *shape[2:]])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mtf.reduce_sum(mtf_in_tsr, reduced_dim=mtf_shape[1])
+    Run(graph, mesh_to_impl, tf.reduce_sum(in_tsr, axis=1), mtf_out_tsr)
+
+
+def Reduce5(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh_to_impl = {mesh0:GetMeshImpl([2], [0, 4])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([shape[0], ('axis0', shape[1]), *shape[2:]])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mtf.reduce_sum(mtf_in_tsr, reduced_dim=mtf_shape[1])
+    Run(graph, mesh_to_impl, tf.reduce_sum(in_tsr, axis=1), mtf_out_tsr)
+
+
 def main():
     ndims = 4
     shape = [16, 32, 64, 128]
@@ -107,9 +157,13 @@ def main():
 
     Concat1(in_tsr)
     Concat2(in_tsr)
+    Concat3(in_tsr)
+    Concat4(in_tsr)
     Reduce1(in_tsr)
     Reduce2(in_tsr)
     Reduce3(in_tsr)
+    Reduce4(in_tsr)
+    Reduce5(in_tsr)
 
     print('Tests passed.')
 

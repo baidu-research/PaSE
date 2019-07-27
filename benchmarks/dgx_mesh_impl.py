@@ -34,17 +34,14 @@ def allconcat_dgx(xs, devices, concat_axis):
     if not flag: # Fallback to ring version
         return mtf.placement_mesh_impl.allconcat_ring(xs, devices, concat_axis)
 
-    if xs0:
-        fn = lambda: tf.concat(xs0, concat_axis)
-        ys0 = mtf.parallel(d_spec0, fn)
-    else:
-        ys0 = []
+    def concat_fn(xs, d_spec):
+        if len(xs) <= 1:
+            return xs
 
-    if xs1:
-        fn = lambda: tf.concat(xs1, concat_axis)
-        ys1 = mtf.parallel(d_spec1, fn)
-    else:
-        ys1 = []
+        return mtf.parallel(d_spec, lambda: tf.concat(xs, concat_axis))
+
+    ys0 = concat_fn(xs0, d_spec0)
+    ys1 = concat_fn(xs1, d_spec1)
 
     if xs0 and xs1:
         ys = [y for y in zip(ys0*2, ys1*2)]
@@ -73,9 +70,9 @@ def allreduce_dgx(xs, devices, reduction_fn_string="SUM"):
 
     binary_reduction = mtf.binary_reduction_fn(reduction_fn_string)
 
-    def reduce(xs, d_spec):
-        if len(xs) == 1:
-            return xs[0]
+    def reduce_fn(xs, d_spec):
+        if len(xs) <= 1:
+            return xs
 
         def split_fn(x):
             x = tf.reshape(x, [-1])
@@ -93,13 +90,13 @@ def allreduce_dgx(xs, devices, reduction_fn_string="SUM"):
         ys = allconcat_dgx(ys, d_spec, 0) if not no_split else ys
         return ys
 
-    ys0 = reduce(xs0, d_spec0) if xs0 else []
-    ys1 = reduce(xs1, d_spec1) if xs1 else []
+    ys0 = reduce_fn(xs0, d_spec0)
+    ys1 = reduce_fn(xs1, d_spec1)
 
     if xs0 and xs1:
         ys = []
         for x0, x1, s0, s1 in zip(ys0, ys1, d_spec0, d_spec1):
-            ys += reduce([x0, x1], [s0, s1])
+            ys += reduce_fn([x0, x1], [s0, s1])
     else:
         ys = ys0 + ys1
 
