@@ -4,6 +4,7 @@ from functools import reduce
 import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf
+import dgx_mesh_impl
 
 
 def Prod(lst):
@@ -50,8 +51,7 @@ def GetMeshImpl(dev_cnts, devices=None, axes=None):
         layout_rules.append((axis, axis))
 
     devices = GetDeviceList(devices or Prod(dev_cnts))
-    return mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape, layout_rules,
-            devices)
+    return dgx_mesh_impl.DGXMeshImpl(mesh_shape, layout_rules, devices)
 
 
 '''
