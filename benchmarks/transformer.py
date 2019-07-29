@@ -38,7 +38,7 @@ class Params():
         self.batch_size = batch_size
         self.nx = 6
         self.max_seq_len = 256
-        self.d_model = 1024
+        self.d_model = 512
         self.heads = 8
         self.d_ff = self.heads * 512
         self.d_k = 128
@@ -116,7 +116,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         d_model_dim = mtf.Dimension('axis0', params.d_model)
         src_vocab_dim = mtf.Dimension(RandName(), src_vocab_size)
         tgt_vocab_dim = mtf.Dimension(RandName(), tgt_vocab_size)
-        final_proj_dim = mtf.Dimension('axis0', tgt_vocab_size)
+        #final_proj_dim = mtf.Dimension('axis0', tgt_vocab_size)
+        final_proj_dim = mtf.Dimension('axis1', tgt_vocab_size)
 
     else:
         # Make the vocabulary size a multiple of mesh size
@@ -327,9 +328,14 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
     with tf.variable_scope('loss'):
         if strategy == 1:
             assert dec_output.mesh == meshes[2]
-            assert dec_output.shape[0].name == 'axis0'
-            dec_output = ReplaceMeshWithIndependentAxes(dec_output, meshes[0],
-                    (mtf_tgt.shape[0].name, None, None),
+            #assert dec_output.shape[0].name == 'axis0'
+            #dec_output = ReplaceMeshWithIndependentAxes(dec_output, meshes[0],
+            #        (mtf_tgt.shape[0].name, None, None),
+            #        name='replace_dec_out_mesh')
+            dec_output = ReplaceWithReplication(dec_output, 'replace_dec_out_mesh')
+            dec_output = mtf.rename_dimension(dec_output, 'axis1', 'axis0')
+            mtf_tgt = ReplaceMeshWithIndependentAxes(mtf_tgt, meshes[1],
+                    dec_output.shape.dimension_names[:-1],
                     name='replace_dec_out_mesh')
         out = mtf.layers.dense(dec_output, final_proj_dim, use_bias=False,
                 name='final_projection')
@@ -367,7 +373,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class =
             argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('-b', '--batch', type=int, required=False, default=64,
+    parser.add_argument('-b', '--batch', type=int, required=False, default=32,
             help="Batch size")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors")
