@@ -485,24 +485,39 @@ def RNNLM(b):
     num_layers = 2
     vocab_size = 50000
     num_units = 2048
-    max_seq_len = 64
-    unroll_factor = 4
+    max_seq_len = 512
+    unroll_factor = 2
+    assert max_seq_len % unroll_factor == 0
+    repeats = max_seq_len // unroll_factor
 
     #inp_tsr = nn_ops.InputTensor((b, max_seq_len))
     #embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
     #xs = nn_ops.Unstack(embed, axis=1)()
     ws = [nn_ops.Variable(nn_ops.InputTensor((2*num_units, 4*num_units)))(0) for
             _ in range(num_layers)]
-    hs = [None] * num_layers
 
+    hs = [None] * num_layers
     ys = []
+    repeat_ops = []
     for i in range(unroll_factor):
         inp_tsr = nn_ops.InputTensor((b,))
-        x = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
+        x = nn_ops.Embedding(inp_tsr, vocab_size, num_units)
+        repeat_ops.append(x)
         for j in range(num_layers):
-            x = nn_ops.LSTMCell(x, num_units, ws[j], hs[j])(0)
-            hs[j] = x
-        ys.append(x)
+            x = nn_ops.LSTMCell(x(0), num_units, ws[j], hs[j])
+            repeat_ops.append(x)
+            hs[j] = x(0)
+        ys.append(x(0))
+
+    # Add back edges
+    for i in range(num_layers):
+        src = repeat_ops[-num_layers+i]
+        tgt = repeat_ops[1+i]
+        assert isinstance(src, nn_ops.LSTMCell)
+        assert isinstance(tgt, nn_ops.LSTMCell)
+        tgt.AddEdge(src.GetOutTensor(0), 0, ignore_area_intersection=True)
+    nn_ops.Repeat(repeat_ops, repeats)
+    ys *= repeats
 
     ys = nn_ops.Stack(ys, axis=1)(0)
     ys = nn_ops.FC(ys, vocab_size)(0)

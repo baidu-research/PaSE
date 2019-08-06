@@ -171,9 +171,12 @@ def RowCartesianProd(arr1, arr2):
     return arr1, arr2
 
 
-def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
+def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs,
+        ignore_area_intersection=False):
     # Area needed by the target vertex
     tgt_area = np.prod(tgt_data_sizes, axis=1)
+    if ignore_area_intersection:
+        return tgt_area
 
     # Intersection of area computed by source, and needed by target.
     # If no. of target procs is more than src procs, then at least one proc
@@ -189,7 +192,8 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs):
 # Returns edge costs for different configs. Edge cost is computed as the
 # difference b/w tensor volume needed per proc by the target vertex and the tensor
 # volume held per proc by the source vertex.
-def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True):
+def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True,
+        ignore_area_intersection=False):
     # Calculate the domains per processor
     src_tsr_per_proc = tsr / src_cfgs
     tgt_tsr_per_proc = tsr / tgt_cfgs
@@ -206,7 +210,7 @@ def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True):
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
     area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
-            tgt_procs)
+            tgt_procs, ignore_area_intersection)
     costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
                                                             # account for fwd
                                                             # and bwd phases
@@ -215,8 +219,9 @@ def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True):
     return costs
 
 
-def GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs):
-    return GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=False)
+def GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs, ignore_area_intersection):
+    return GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=False,
+            ignore_area_intersection=ignore_area_intersection)
 
 
 def GetConvolutedSize(h, w, r, s, stride, pad):
@@ -254,7 +259,7 @@ class Ops():
         for i, t in enumerate(self.out_tsrs):
             Ops.tsr_to_node_id[id(t)] = (node_id, i)
 
-    def AddEdge(self, tsr, idx):
+    def AddEdge(self, tsr, idx, ignore_area_intersection=False):
         try:
             src, src_tsr_idx = Ops.tsr_to_node_id[id(tsr)]
         except KeyError:
@@ -275,11 +280,13 @@ class Ops():
         src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
         tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
     
-        #if src_op == tgt_op:
-        #    self.costs += GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs)
-        #    return
+        if src_op == tgt_op:
+            self.costs += GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs,
+                    ignore_area_intersection)
+            return
     
-        costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs)
+        costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs,
+                ignore_area_intersection=ignore_area_intersection)
         idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
             tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
         costs = pd.Series(costs, index=idx, name='cost')
@@ -1057,14 +1064,13 @@ class LSTMCell(Ops):
 
         # Costs of GEMMs
         gemm_dom = list(self.dom)
-        gemm_dom[-1] *= 4
+        gemm_dom[-2] *= 4
         self.costs = ComputeGemmCosts(gemm_dom, self.dom_configs, pw_op_cnt=1)
 
         # Costs of final elementwise ops
         num_elems = np.prod(self.dom_configs, axis=1)
         self.costs += (5 * num_elems)
 
-'''
 # numpy-like broadcast along a new axis 'axis' of length 'num_copies'
 class Broadcast(Ops):
     def __init__(self, in_tsr, num_copies, axis=0, n_procs=None):
@@ -1129,5 +1135,4 @@ def Repeat(ops, num_steps, additional_edges=[]):
 
     for edge in additional_edges:
         edge_costs[edge] *= num_steps
-'''
 
