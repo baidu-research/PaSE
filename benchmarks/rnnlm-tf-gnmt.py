@@ -96,7 +96,6 @@ def main():
     print("Vocab size: %d" % vocab_size)
 
     # Model
-    model = keras.Sequential()
     with tf.device(devices[0]):
         cell0 = LSTMCell(params.batch_size, params.num_units, devices[0],
                 layer=0)
@@ -104,9 +103,8 @@ def main():
         cell1 = LSTMCell(params.batch_size, params.num_units, devices[4],
                 layer=1)
     cells = [cell0, cell1]
-    model.add(keras.layers.RNN(cells, return_sequences=True,
-        return_state=False))
-    model.add(keras.layers.Dense(vocab_size, use_bias=False))
+    rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
+    dense = keras.layers.Dense(vocab_size, use_bias=False)
 
     num_data_parallel = 4
     xs = tf.split(inputs, num_data_parallel, axis=0)
@@ -116,7 +114,7 @@ def main():
     for x, dev in zip(xs, devices):
         with tf.device(dev):
             x = tf.nn.embedding_lookup(embedding_weights, x)
-            ys.append(model(x))
+            ys.append(dense(rnn(x)))
     y = tf.concat(ys, axis=0)
 
     # Loss
@@ -158,7 +156,7 @@ def main():
         end = time.time()
         tot_time += (end - start)
 
-    samples_per_sec = (args.batch * cnt) / tot_time
+    samples_per_sec = (args.batch * params.max_seq_len * cnt) / tot_time
     print("Throughput: " + str(samples_per_sec) + " samples / sec")
 
 

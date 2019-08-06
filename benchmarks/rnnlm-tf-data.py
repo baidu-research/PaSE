@@ -89,12 +89,10 @@ def main():
     print("Vocab size: %d" % vocab_size)
 
     # Model
-    model = keras.Sequential()
     cells = [LSTMCell(params.batch_size, params.num_units),
             LSTMCell(params.batch_size, params.num_units)]
-    model.add(keras.layers.RNN(cells, return_sequences=True,
-        return_state=False))
-    model.add(keras.layers.Dense(vocab_size, use_bias=False))
+    rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
+    dense = keras.layers.Dense(vocab_size, use_bias=False)
 
     xs = tf.split(inputs, args.procs, axis=0)
     with tf.device(devices[0]):
@@ -104,7 +102,7 @@ def main():
     for x, dev in zip(xs, devices):
         with tf.device(dev):
             x = tf.nn.embedding_lookup(embedding_weights, x)
-            ys.append(model(x))
+            ys.append(dense(rnn(x)))
 
     with tf.device(devices[0]):
         y = tf.concat(ys, axis=0)
@@ -148,7 +146,7 @@ def main():
         end = time.time()
         tot_time += (end - start)
 
-    samples_per_sec = (args.batch * cnt) / tot_time
+    samples_per_sec = (args.batch * params.max_seq_len * cnt) / tot_time
     print("Throughput: " + str(samples_per_sec) + " samples / sec")
 
 
