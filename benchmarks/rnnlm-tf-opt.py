@@ -15,7 +15,7 @@ class Params():
     def __init__(self, batch_size):
         self.batch_size = batch_size
         self.num_units = 2048
-        self.max_seq_len = 512
+        self.max_seq_len = 256
         self.num_layers = 2
 
 
