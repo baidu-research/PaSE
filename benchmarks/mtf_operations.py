@@ -2,6 +2,8 @@ import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf 
 
+import utils
+
 # Allows concatenation of distributed dimensions. When the concat_axis is
 # distributed, slices in each processor are locally concatenated. No
 # communication happens.
@@ -144,15 +146,10 @@ def WhileLoop(cond_ub, body_fn, inputs, name='while_loop'):
 #    return GetItemOperation(x, begin, size, slice_dim_name,
 #            name=name).outputs[0]
 
-# Fixes a bug in mesh-tensorflow. To be used as gradient function for slicewise
-# op. Also, we set "unconnected_gradients='zero'" for 'tf.gradients'. This fixes
-# an mtf bug that throws NoneType error during lowering when some of the grads are None.
+# Fixes a bug in mesh-tensorflow. To be used as gradient function for slicewise op.
 # Uncomment this part if not needed later.
 class GenericGradOp(mtf.GenericGradOperation):
     def lower(self, lowering):
-        def zero_unconnected_gradients(xs, grads):
-            return [g or tf.zeros_like(x) for x, g in zip(xs, grads)]
-
         # lists of lists of tf.Tensor
         all_ys = mtf.transpose_list_of_lists(
             [lowering.tensors[y].to_laid_out_tensor().tensor_list for y in self._forward_op.outputs])
@@ -162,8 +159,6 @@ class GenericGradOp(mtf.GenericGradOperation):
             [lowering.tensors[dy].to_laid_out_tensor().tensor_list for dy in self._grad_ys])
         all_grad_xs = [tf.gradients(ys=ys, xs=xs, grad_ys=grad_ys) 
                 for ys, xs, grad_ys in zip(all_ys, all_xs, all_grad_ys)]
-        all_grad_xs = [zero_unconnected_gradients(xs, grads) for xs, grads in
-                zip(all_xs, all_grad_xs)]
         grad_xs = mtf.transpose_list_of_lists(all_grad_xs)
         for out, grad_x in zip(self.outputs, grad_xs):
             lowering.set_tensor_lowering(out,
@@ -206,6 +201,20 @@ class Conv2dOperation(mtf.Conv2dOperation):
         output_shape = mtf.Shape(
             self._batch_dims + [self._out_h_dim, self._out_w_dim, self._out_dim])
         self._outputs = [mtf.Tensor(self, output_shape, conv_input.dtype)]
+
+
+def NormalizeStrideAndPad(stride, padding):
+    stride = utils.MakePair(stride)
+
+    if isinstance(padding, str):
+        assert padding == 'VALID' or padding == 'SAME'
+    else:
+        if padding == 0:
+            padding = 'VALID'
+        else:
+            padding = 'SAME'
+
+    return stride, padding
 
 
 def Conv2d(tsr, fltr_shape, stride=(1,1), padding='VALID', use_bias=True,

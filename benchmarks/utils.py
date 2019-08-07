@@ -87,20 +87,6 @@ def TransposeLists(l):
     return [list(x) for x in zip(*l)]
 
 
-def NormalizeStrideAndPad(stride, padding):
-    stride = MakePair(stride)
-
-    if isinstance(padding, str):
-        assert padding == 'VALID' or padding == 'SAME'
-    else:
-        if padding == 0:
-            padding = 'VALID'
-        else:
-            padding = 'SAME'
-
-    return stride, padding
-
-
 '''
 class ReplaceMeshOperation(mtf.Operation):
     def __init__(self, new_mesh, input, axis, lowering_fn=None, name=None):
