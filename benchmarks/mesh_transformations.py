@@ -222,12 +222,126 @@ class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
                 x.shape, device=dev))
         assert len(output_slices) == new_mesh_shape.size
 
-        laid_out_tensor = \
-                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(output_slices)
+        laid_out_tensor = lowering.mesh_impl(
+                self).LaidOutTensor.from_tensor_list(output_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
 
 
 def ReplaceMeshWithIndependentAxes(x, mesh, dim_names=None, name=None):
     return ReplaceMeshWithIndependentAxesOperation(x, mesh, dim_names,
             name=name).outputs[0]
+
+
+class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
+    def __init__(self, x, mesh, dim_names=None, name=None):
+        self.old_mesh = x.mesh
+        if isinstance(dim_names, mtf.Shape):
+            dim_names = dim_names.dimension_names
+        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
+        assert x.mesh != mesh
+        assert len(dim_names) == len(x.shape)
+        self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
+            for name, dim in zip(dim_names, x.shape.dims)])
+        super().__init__([x], mesh=mesh, name=name or
+                'replace_mesh_with_duplicates')
+        self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
+
+    def gradient(self, grad_ys):
+        return ReplaceMeshWithConcatSplitOperation(grad_ys[0],
+                self.old_mesh, self.inputs[0].shape.dimension_names).outputs
+
+    def lower(self, lowering):
+        x = self.inputs[0]
+        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
+        old_mesh_impl = lowering.mesh_impl(self.old_mesh)
+        new_mesh_impl = lowering.mesh_impl(self)
+        old_mesh_shape = old_mesh_impl.shape
+        new_mesh_shape = new_mesh_impl.shape
+        old_mesh_ndims = old_mesh_shape.ndims
+        new_mesh_ndims = new_mesh_shape.ndims
+        old_num_gpus = old_mesh_impl.shape.size
+        new_num_gpus = new_mesh_impl.shape.size
+        assert old_mesh_ndims == new_mesh_ndims
+
+        old_ta2ma = old_mesh_impl.tensor_layout(
+                x.shape).tensor_axis_to_mesh_axis
+        new_ta2ma = new_mesh_impl.tensor_layout(
+                self.new_shape).tensor_axis_to_mesh_axis
+        assert old_ta2ma == new_ta2ma
+
+        concat_mesh_dim = -1
+        concat_tensor_dim = -1
+        concat = False
+        for i, dim in enumerate(old_ta2ma):
+            if dim == None:
+                continue
+
+            size1 = old_mesh_shape[dim].size
+            size2 = new_mesh_shape[dim].size
+            if size1 == size2:
+                continue
+
+            assert concat_mesh_dim == -1
+            concat_tensor_dim = i
+            concat_mesh_dim = dim
+            if size1 > size2:
+                concat = True
+
+        assert concat_mesh_dim != -1
+        old_groups = mtf.processor_groups(old_mesh_shape, [concat_mesh_dim])
+        new_groups = mtf.processor_groups(new_mesh_shape, [concat_mesh_dim])
+        assert len(old_groups) == len(new_groups)
+        assert all(len(old_groups[0]) == len(group) for group in old_groups)
+        assert all(len(new_groups[0]) == len(group) for group in new_groups)
+        old_gpus = [d.device_index for d in old_mesh_impl.devices]
+        new_gpus = [d.device_index for d in new_mesh_impl.devices]
+
+        if concat:
+            assert len(old_groups[0]) % len(new_groups[0]) == 0
+            num_splits = len(old_groups[0]) // len(new_groups[0])
+        else:
+            assert len(new_groups[0]) % len(old_groups[0]) == 0
+            num_splits = len(new_groups[0]) // len(old_groups[0])
+
+        output_slices = [None] * new_num_gpus
+        for old_group, new_group in zip(old_groups, new_groups):
+            if concat:
+                for idx1, idx2 in enumerate(range(0, len(old_group),
+                    num_splits)):
+                    slices = [input_slices[p] for p in
+                            old_group[idx2:idx2+num_splits]]
+                    assert output_slices[new_group[idx1]] == None
+                    assert old_gpus[old_group[idx2]] == new_gpus[new_group[idx1]]
+
+                    with tf.device(new_mesh_impl.devices[new_group[idx1]]):
+                        output_slices[new_group[idx1]] = tf.concat(slices,
+                                axis=concat_tensor_dim)
+
+            else:
+                for idx1, idx2 in enumerate(range(0, len(new_group),
+                    num_splits)):
+                    slice = input_slices[old_group[idx1]]
+                    assert all(output_slices[p] == None for p in
+                            new_group[idx2:idx2+num_splits])
+                    assert old_gpus[old_group[idx1]] == new_gpus[new_group[idx2]]
+
+                    with tf.device(new_mesh_impl.devices[new_group[idx2]]):
+                        slices = tf.split(slice, num_splits,
+                                axis=concat_tensor_dim)
+
+                    for p, slice in zip(new_group[idx2:idx2+num_splits], slices):
+                        with tf.device(new_mesh_impl.devices[p]):
+                            assert output_slices[p] == None
+                            output_slices[p] = tf.identity(slice)
+
+        assert all(s is not None for s in output_slices)
+        laid_out_tensor = lowering.mesh_impl(
+                self).LaidOutTensor.from_tensor_list(output_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+
+def ReplaceMeshWithConcatSplit(x, mesh, dim_names=None, name=None):
+    return ReplaceMeshWithConcatSplitOperation(x, mesh, dim_names,
+            name=name).outputs[0]
+
 
