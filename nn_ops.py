@@ -30,7 +30,7 @@ def InputTensor(x):
     return t
 
 
-def BytesToFlops(bytes):
+def BytesToFlops(bytes, arch=0):
     try:
         return BytesToFlops.bw_to_flops * bytes
     except AttributeError:
@@ -42,9 +42,16 @@ def BytesToFlops(bytes):
         v100_peak_flop = float(15.7 * 1000) # GFLOPs
         #v100_bw = float(47.99 / 8.0) # Best NVLink unidirectional GWords/sec
         v100_bw = float(10.4 / 8.0) # Worst NVLink unidirectional GWords/sec
-        
-        peak_flop = v100_peak_flop
-        bw = v100_bw
+
+        if arch == 0:
+            peak_flop = p100_peak_flop
+            bw = p100_bw
+        elif arch == 1:
+            peak_flop = v100_peak_flop
+            bw = v100_bw
+        else:
+            assert False
+
         BytesToFlops.bw_to_flops = float(peak_flop / bw)
 
         return BytesToFlops.bw_to_flops * bytes
@@ -239,7 +246,12 @@ class Ops():
     # Static variables
     G = None # Default graph
     default_procs = 0 # Can be set once and reused for the entire graph.
+    default_arch = 0
     tsr_to_node_id = {}
+
+    def SetDefaultArch(arch):
+        Ops.default_arch = arch
+        BytesToFlops(1, arch)
 
     def AddVertex(self):
         if Ops.G is None:

@@ -272,10 +272,10 @@ def Inception3(b, aux_logits=False):
 
 
 def Transformer(b):
-    max_seq_len = 256
+    max_seq_len = 512
     vocab_size = 50000
     embed_dim = 1024
-    heads = 8
+    heads = 16
     ff_dim = heads * 512
     nx = 6
     d_k = 128
@@ -392,12 +392,11 @@ def Transformer(b):
     loss = nn_ops.SoftmaxCrossEntropy(dec)
     return nn_ops.Ops.G
 
-'''
 def Seq2seq(b):
-    num_layers = 2
+    num_layers = 4
     vocab_size = 50000
-    embed_dim = 1024
-    max_seq_len = 64
+    num_units = embed_dim = 1024
+    max_seq_len = 512
     unroll_factor = 1
     assert max_seq_len % unroll_factor == 0
     repeat_steps = int(max_seq_len / unroll_factor)
@@ -408,27 +407,31 @@ def Seq2seq(b):
         assert len(hidden) == num_layers
 
         inp = nn_ops.InputTensor((b,))
-        ops = []
+        kdim = (2 + (context is not None)) * num_units
+        ws = [nn_ops.Variable(nn_ops.InputTensor(
+            (kdim, 4*num_units)))(0) for _ in range(num_layers)]
+
+        repeat_ops = []
         outputs = []
         for i in range(unroll_factor):
             # Embedding
             cell_input_op = nn_ops.Embedding(inp, vocab_size, embed_dim)
-            ops.append(cell_input_op)
+            repeat_ops.append(cell_input_op)
 
             # RNN layers
             stack = []
             next_context = None
             for j in range(num_layers):
                 cell_input_op = nn_ops.LSTMCell(cell_input_op(0), embed_dim,
-                        hidden[j], context=context)
+                        ws[j], hidden[j], context=context)
                 stack.append(cell_input_op)
 
                 if j == 0 and (attention_fn is not None):
                     attention_ops = attention_fn(cell_input_op(0))
-                    ops += attention_ops
+                    repeat_ops += attention_ops
                     next_context = attention_ops[-1](0)
             context = next_context
-            ops += stack
+            repeat_ops += stack
 
             outputs.append(stack[-1](0))
             hidden = [s(0) for s in stack]
@@ -446,7 +449,7 @@ def Seq2seq(b):
 
         # Repeat RNN 'repeat_steps' times
         entry_edges = [e for e in nn_ops.Ops.G.out_edges(entry_nodes)]
-        nn_ops.Repeat(ops, repeat_steps, entry_edges)
+        nn_ops.Repeat(repeat_ops, repeat_steps, entry_edges)
 
         # Repeat outputs 'repeat_steps' times
         out = nn_ops.Stack(outputs, axis=1)
@@ -478,7 +481,6 @@ def Seq2seq(b):
     proj = nn_ops.Einsum('ble,ev->blv', dec_out(0), w, trainable=True)(0)
     loss = nn_ops.SoftmaxCrossEntropy(proj)
     return nn_ops.Ops.G
-'''
 
 
 def RNNLM(b):
@@ -526,8 +528,9 @@ def RNNLM(b):
 
 
 # Creates the graph for the model
-def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
+def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs, arch):
     nn_ops.Ops.default_procs = n_procs
+    nn_ops.Ops.SetDefaultArch(arch)
 
     if graph_type == 'alexnet':
         G = AlexNet(batch_size)
@@ -535,8 +538,8 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs):
         G = ResNet101(batch_size)
     elif graph_type == 'inception3':
         G = Inception3(batch_size)
-    #elif graph_type == 'seq2seq':
-    #    G = Seq2seq(batch_size)
+    elif graph_type == 'seq2seq':
+        G = Seq2seq(batch_size)
     elif graph_type == 'transformer':
         G = Transformer(batch_size)
     elif graph_type == 'rnnlm':

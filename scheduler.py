@@ -8,7 +8,7 @@ import pandas as pd
 import itertools
 from argparse import ArgumentParser
 
-import graph
+import graph, nn_ops
 
 
 # Adds vertex costs of 'v' to the table
@@ -212,8 +212,10 @@ def main():
             help="Model size. (Default: 128)")
     parser.add_argument("-g", "--graph", type=str, required=False,
             choices=['alexnet', 'resnet101', 'inception3', 'rnnlm',
-                'transformer'],
+                'seq2seq', 'transformer'],
             default='alexnet', help="Neural net graph. (Default: 'alexnet')")
+    parser.add_argument('-a', '--arch', type=int, required=False, default=1,
+            choices=[0, 1], help='Architecture. 0: P100, 1: DGX')
     parser.add_argument("--profile", dest="profile", action='store_true',
             help="Turn on/off profiling.")
     parser.add_argument("-d", "--dump-graph", dest="dump_graph",
@@ -231,7 +233,8 @@ def main():
         pr = cProfile.Profile()
 
     # Create input graph
-    G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs)
+    G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs,
+            args['arch'])
     print("")
 
     if args['dump_graph']:
