@@ -375,10 +375,12 @@ def main():
             default=128, help="Batch size.")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors.")
-    parser.add_argument('-t', '--epochs', type=int, required=False, default=10,
+    parser.add_argument('-t', '--epochs', type=int, required=False, default=5,
             help="No. of epochs")
     parser.add_argument('--display_steps', type=int, required=False, default=10,
             help="Steps to pass before displaying intermediate results")
+    parser.add_argument('--max_steps', type=int, required=False, default=100,
+            help='Maximum no. of steps to execute')
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
             choices=list(range(3)), 
             help="Strategy to use. 0: DataParallel, 1: Optimized, 2: Expert")
@@ -425,6 +427,8 @@ def main():
                 for _ in range(train_batches_per_epoch):
                     loss_val, *_ = sess.run([loss_op] + grad_ops)
                     step += 1
+                    if step > args.max_steps:
+                        break
 
                     if step % args.display_steps == 0 and step > 0:
                         print("Epoch: " + str(epoch) + "; Loss: " +
