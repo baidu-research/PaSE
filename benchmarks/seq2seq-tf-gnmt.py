@@ -11,6 +11,7 @@ import functools
 
 from dataloader import TextDataLoader
 
+num_data_parallel = 2
 class Params():
     def __init__(self):
         self.num_units = 1024
@@ -34,6 +35,7 @@ class LSTMCell(keras.layers.Layer):
         if attention and layer != num_layers - 1:
             self.output_size += num_units
 
+        self.counter = 0
         super().__init__(**kwargs)
 
     def build(self, input_shape):
@@ -45,7 +47,12 @@ class LSTMCell(keras.layers.Layer):
             super().build(input_shape)
 
     def call(self, x, states, constants):
-        with tf.device(self.device):
+        device_name = x.device.split(':')
+        device_name[-1] = str(int(self.counter % num_data_parallel) 
+                + (self.layer * num_data_parallel))
+        device_name = ':'.join(device_name)
+        self.counter += 1
+        with tf.device(device_name):
             h, c = states[:2]
             concat_lst = [h, x]
             if self.attention:
@@ -144,22 +151,23 @@ class Model():
         # Final projection
         self.proj = keras.layers.Dense(tgt_vocab_size, use_bias=False)
 
-    def __call__(self, enc_inp, dec_inp):
-        # Encoder
-        x = tf.nn.embedding_lookup(self.enc_weights, enc_inp)
-        enc_out, *states = self.enc_rnn(x, constants=tf.zeros(1))
-        enc_attn = self.enc_attn(enc_out)
-        constants = [enc_attn, enc_out]
+    def __call__(self, device, enc_inp, dec_inp):
+        with tf.device(device):
+            # Encoder
+            x = tf.nn.embedding_lookup(self.enc_weights, enc_inp)
+            enc_out, *states = self.enc_rnn(x, constants=tf.zeros(1))
+            enc_attn = self.enc_attn(enc_out)
+            constants = [enc_attn, enc_out]
 
-        # Decoder
-        x = tf.nn.embedding_lookup(self.dec_weights, dec_inp)
-        context = tf.zeros([dec_inp.shape.as_list()[0], self.num_units],
-                dtype=tf.float32)
-        states.insert(2, context)
-        dec_out = self.dec_rnn(x, initial_state=states, constants=constants)
-        dec_out = self.proj(dec_out)
-        
-        return dec_out
+            # Decoder
+            x = tf.nn.embedding_lookup(self.dec_weights, dec_inp)
+            context = tf.zeros([dec_inp.shape.as_list()[0], self.num_units],
+                    dtype=tf.float32)
+            states.insert(2, context)
+            dec_out = self.dec_rnn(x, initial_state=states, constants=constants)
+            dec_out = self.proj(dec_out)
+            
+            return dec_out
 
 def main():
     parser = argparse.ArgumentParser(formatter_class =
@@ -212,13 +220,12 @@ def main():
     print("Source vocab size: %d" % src_vocab_size)
     print("Target vocab size: %d" % tgt_vocab_size)
 
-    num_data_parallel = 2
     model = Model(args, params, src_vocab_size, tgt_vocab_size, devices,
             num_data_parallel)
     enc_inps = tf.split(enc_inputs, num_data_parallel, axis=0)
     dec_inps = tf.split(dec_inputs, num_data_parallel, axis=0)
     ys = []
-    for model_args in zip(enc_inps, dec_inps):
+    for model_args in zip(devices, enc_inps, dec_inps):
         ys.append(model(*model_args))
 
     # Loss
