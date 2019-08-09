@@ -11,13 +11,22 @@ def Prod(lst):
     return reduce(mul, lst, 1)
 
 
-def GetDeviceList(gpus):
+def GetDeviceList(gpus, as_strings=True):
     if isinstance(gpus, list) and all(
             isinstance(gpu, tf.DeviceSpec) for gpu in gpus):
         return gpus
 
     gpus = range(gpus) if isinstance(gpus, int) else gpus
-    return [tf.DeviceSpec(device_type='GPU', device_index=i) for i in gpus]
+    if as_strings:
+        gpus = [f'/device:GPU:{i}' for i in gpus]
+    else:
+        gpus = [tf.DeviceSpec(device_type='GPU', device_index=i) for i in gpus]
+    return gpus
+
+
+def DeviceIndex(gpu):
+    return gpu.device_index if isinstance(gpu,
+            tf.DeviceSpec) else int(gpu.split(':')[-1])
 
 
 def AssignLayout(ta_axes, mesh_axis):

@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf
 
-from utils import TransposeLists, FlattenList
+from utils import TransposeLists, FlattenList, DeviceIndex
 
 
 class ReplaceMeshOperation(mtf.Operation):
@@ -87,8 +87,8 @@ class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
         replicate = (new_num_gpus > old_num_gpus)
 
         # Find the new-to-old pnum for devices of new mesh
-        old_gpus = [d.device_index for d in old_mesh_impl.devices]
-        new_gpus = [d.device_index for d in new_mesh_impl.devices]
+        old_gpus = [DeviceIndex(d) for d in old_mesh_impl.devices]
+        new_gpus = [DeviceIndex(d) for d in new_mesh_impl.devices]
         new_to_old_pnum = []
         for gpu in new_gpus:
             try:
@@ -293,8 +293,8 @@ class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
         assert len(old_groups) == len(new_groups)
         assert all(len(old_groups[0]) == len(group) for group in old_groups)
         assert all(len(new_groups[0]) == len(group) for group in new_groups)
-        old_gpus = [d.device_index for d in old_mesh_impl.devices]
-        new_gpus = [d.device_index for d in new_mesh_impl.devices]
+        old_gpus = [DeviceIndex(d) for d in old_mesh_impl.devices]
+        new_gpus = [DeviceIndex(d) for d in new_mesh_impl.devices]
 
         if concat:
             assert len(old_groups[0]) % len(new_groups[0]) == 0
