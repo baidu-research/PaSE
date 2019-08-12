@@ -23,31 +23,43 @@ class Params():
 def ParallelGEMM(As, Bs, eq=None):
     assert len(As) == len(Bs)
     partial_sums = []
+    if eq is None:
+        eq = string.ascii_letters[:As[0].shape.ndims] + ',' \
+                + string.ascii_letters[As[0].shape.ndims-1
+                        :As[0].shape.ndims+Bs[0].shape.ndims-1]
     for A, B in zip(As, Bs):
         assert A.device == B.device
         with tf.device(A.device):
-            if eq is not None:
-                partial_sums.append(tf.matmul(A, B))
-            else:
-                partial_sums.append(tf.einsum(eq, A, B))
-    return tf.add_n(partial_sums) if len(As) > 1 else partial_sums[0]
+            partial_sums.append(tf.einsum(eq, A, B))
+    with tf.device(As[0].device):
+        y = tf.add_n(partial_sums)
+    return y
 
-def ParallelDense(x, w_shape, num_k_splits, num_n_splits, devices, concat=False):
+def ParallelDense(x, w_shape, num_k_splits, num_n_splits, devices, name,
+        concat=False):
     assert len(w_shape) == 2
     assert num_k_splits * num_n_splits <= len(devices)
 
-    xs = tf.split(x, num_k_splits, axis=-1)
+    if isinstance(x, list):
+        assert len(x) == num_k_splits
+        xs = x
+    else:
+        xs = tf.split(x, num_k_splits, axis=-1)
     ys = []
     for i in range(num_n_splits):
         sums = []
-        for j in range(num_k_splits):
-            idx = j*self.num_n_splits+i
+        for j, x in enumerate(xs):
+            ndims = x.shape.ndims
+            idx = j*num_n_splits+i
             dev = devices[idx]
+            eq = string.ascii_letters[:ndims] + ',' \
+                    + string.ascii_letters[ndims-1:ndims+1]
             with tf.device(dev):
-                w = tf.get_variable(f'enc_attn_w_{idx}', shape=[w_shape[0] //
+                w = tf.get_variable(f'{name}_{idx}', shape=[w_shape[0] //
                     num_k_splits, w_shape[1] // num_n_splits])
-                sums.append(tf.matmul(x[j], w))
-        ys.append(tf.add_n(sums))
+                sums.append(tf.einsum(eq, x, w))
+        with tf.device(devices[i]):
+            ys.append(tf.add_n(sums))
     return ys if not concat else tf.concat(ys, axis=-1)
 
 class LSTMCell(keras.layers.Layer):
@@ -66,7 +78,7 @@ class LSTMCell(keras.layers.Layer):
         self.state_size = h_state_size + c_state_size
 
         if attention and layer == 0:
-            self.state_size.append(h_state_size)
+            self.state_size += h_state_size
         self.output_size = num_units
         if attention and layer != num_layers - 1:
             self.output_size += num_units
@@ -81,7 +93,7 @@ class LSTMCell(keras.layers.Layer):
                         self.num_k_splits, (4 * self.num_units) //
                         self.num_n_splits]
                 w = self.add_weight(shape=w_shape, initializer='uniform',
-                        name='w', dtype=tf.float32, name=f'w_{d.device_index}')
+                        dtype=tf.float32, name=f'w_{d.device_index}')
                 self.ws.append(w)
         super().build(input_shape)
 
@@ -94,33 +106,34 @@ class LSTMCell(keras.layers.Layer):
             # For other layers, context is passed from previous layer, by
             # concatenating with 'x'
             if self.layer == 0:
-                assert len(constants) == 2
                 assert len(states) == (
                         2 * self.num_k_splits) + self.num_n_splits
                 assert x.shape.as_list()[-1] == self.num_units
                 xs = tf.split(x, self.num_k_splits, axis=1)
                 contexts = states[self.num_k_splits+self.num_n_splits:]
             else:
-                assert len(states) == 2
+                assert len(states) == self.num_k_splits + self.num_n_splits
                 assert x.shape.as_list()[-1] == 2 * self.num_units
                 splits = tf.split(x, 2 * self.num_k_splits, axis=1)
-                xs, contexts = splits[:self.num_k_splits], splits[num_k_splits:]
+                xs = splits[:self.num_k_splits]
+                contexts = splits[self.num_k_splits:]
         else:
             xs = tf.split(x, self.num_k_splits, axis=1)
 
         def Attention(hs):
             attn_num_k_splits, attn_num_n_splits = 4, 1
-            enc_attn = constants[:attn_num_k_splits],
+            assert len(constants) == attn_num_k_splits + self.num_k_splits
+            enc_attn = constants[:attn_num_k_splits]
             enc_out = constants[attn_num_k_splits:]
-            assert len(enc_out) == self.num_k_splits
             assert len(enc_attn) == len(hs)
+            assert len(enc_out) == self.num_k_splits
 
             score = ParallelGEMM(enc_attn, hs, 'ble,be->bl')
             score = tf.nn.softmax(score, axis=-1)
             contexts = []
             for dev, y in zip(self.devices[::self.num_n_splits], enc_out):
                 with tf.device(dev):
-                    contexts.append(tf.einsum('ble,be->bl', score, y))
+                    contexts.append(tf.einsum('bl,ble->be', score, y))
             return contexts
 
         concat_lst = [hs, xs]
@@ -129,7 +142,7 @@ class LSTMCell(keras.layers.Layer):
 
         # Concatenate x and h
         xhs = []
-        for dev, tsrs in zip(self.devices[::self.num_n_splits], *concat_lst):
+        for dev, *tsrs in zip(self.devices[::self.num_n_splits], *concat_lst):
             with tf.device(dev):
                 xhs.append(tf.concat(tsrs, axis=1))
 
@@ -143,11 +156,9 @@ class LSTMCell(keras.layers.Layer):
                     copies.append(tf.identity(xh))
             xhs_copies.append(copies)
         assert len(FlattenList(xhs_copies)) == 8
-        assert all(xh.device == device.to_string() for xh, device in
-                zip(FlattenList(xhs_copies), self.devices))
 
         # GEMM
-        ws_lst = [self.ws[i::i+self.num_n_splits] for i in range(self.num_n_splits)]]
+        ws_lst = [self.ws[i::self.num_n_splits] for i in range(self.num_n_splits)]
         ifgos = [ParallelGEMM(xs, ws) for xs, ws in zip(xhs_copies, ws_lst)]
         assert len(ifgos) == self.num_n_splits
         assert all(ifgo.device == device.to_string() for ifgo, device in
@@ -169,10 +180,10 @@ class LSTMCell(keras.layers.Layer):
         # Concatenate hs
         if self.num_n_splits > self.num_k_splits:
             num_concats = self.num_n_splits // self.num_k_splits
-            new_hs_split = [new_hs_split[i:i+num_concats] for i in range(0,
+            tmp_hs = [new_hs_split[i:i+num_concats] for i in range(0,
                 len(new_hs_split), num_concats)]
             new_hs = []
-            for d, hs in zip(self.devices[::self.num_n_splits], new_hs_split):
+            for d, hs in zip(self.devices[::self.num_n_splits], tmp_hs):
                 with tf.device(d):
                     new_hs.append(tf.concat(hs, axis=1))
             assert [h.device for h in new_hs] == [d.to_string() for d in
@@ -198,8 +209,9 @@ class LSTMCell(keras.layers.Layer):
         states = new_hs + new_cs
         if self.attention:
             if self.layer == 0:
-                next_context = Attention(new_hs)
-                states.append(next_context)
+                assert len(new_hs_split) == self.num_n_splits
+                next_context = Attention(new_hs_split)
+                states += next_context
                 assert len(next_context) == self.num_k_splits
 
             if self.layer != self.num_layers - 1:
@@ -220,8 +232,8 @@ class Model():
     def __init__(self, args, params, src_vocab_size, tgt_vocab_size, devices):
         self.num_units = params.num_units
         self.num_layers = params.num_layers
-        num_k_splits = 2
-        num_n_splits = 4
+        num_k_splits = self.num_k_splits = 2
+        num_n_splits = self.num_n_splits = 4
 
         def get_device_fn():
             i = 0
@@ -245,7 +257,7 @@ class Model():
 
         # Encoder attention
         self.enc_attn = lambda x: ParallelDense(x, [params.num_units,
-            params.num_units], 2, 4, devices)
+            params.num_units], 2, 4, devices, name='enc_attn')
 
         # Decoder
         with tf.device(get_device_fn()):
@@ -259,22 +271,26 @@ class Model():
         self.dec_rnn = RNN(cells, return_sequences=True, return_state=False)
 
         # Final projection
-        self.proj = lambda x: ParallelDense(x, [params.num_units, tgt_vocab], 1,
-                8, devices, concat=True)
+        self.proj = lambda x: ParallelDense(x, [params.num_units,
+            tgt_vocab_size], 1, 8, devices, name='final_proj', concat=True)
 
     def __call__(self, enc_inp, dec_inp, device):
+        batch_size = enc_inp.shape.as_list()[0]
+
         # Encoder
         x = tf.nn.embedding_lookup(self.enc_weights, enc_inp)
-        enc_out, *states = self.enc_rnn(x, constants=tf.zeros(1))
+        enc_out, *enc_states = self.enc_rnn(x, constants=tf.zeros(1))
+        enc_out = tf.split(enc_out, 2, -1)
         enc_attn = self.enc_attn(enc_out)
-        constants = [enc_attn, enc_out]
+        constants = enc_attn + enc_out
 
         # Decoder
         x = tf.nn.embedding_lookup(self.dec_weights, dec_inp)
-        context = tf.zeros([dec_inp.shape.as_list()[0], self.num_units],
-                dtype=tf.float32)
-        states.insert(2, context)
-        dec_out = self.dec_rnn(x, initial_state=states, constants=constants)
+        contexts = [tf.zeros([batch_size, self.num_units // self.num_k_splits],
+                dtype=tf.float32)] * self.num_k_splits
+        cnt = self.num_k_splits + self.num_n_splits
+        dec_states = enc_states[:cnt] + contexts + enc_states[cnt:]
+        dec_out = self.dec_rnn(x, initial_state=dec_states, constants=constants)
         dec_out = self.proj(dec_out)
         
         return dec_out
@@ -331,15 +347,11 @@ def main():
     print("Target vocab size: %d" % tgt_vocab_size)
 
     model = Model(args, params, src_vocab_size, tgt_vocab_size, devices)
-    enc_inps = tf.split(enc_inputs, args.procs, axis=0)
-    dec_inps = tf.split(dec_inputs, args.procs, axis=0)
-    ys = []
-    for model_args in zip(enc_inps, dec_inps, devices):
-        ys.append(model(*model_args))
+    y = model(enc_inputs, dec_inputs, devices)
+    assert y.shape.as_list() == [args.batch, params.max_seq_len, tgt_vocab_size]
 
     # Loss
     with tf.device(devices[0]):
-        y = tf.concat(ys, axis=0)
         loss = tf.losses.sparse_softmax_cross_entropy(dec_inputs, y,
                 reduction=tf.losses.Reduction.MEAN)
     opt = tf.train.GradientDescentOptimizer(learning_rate=0.01)
