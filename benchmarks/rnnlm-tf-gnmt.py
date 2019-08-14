@@ -156,9 +156,8 @@ def main():
         end = time.time()
         tot_time += (end - start)
 
-    samples_per_sec = (args.batch * params.max_seq_len * cnt) / tot_time
+    samples_per_sec = (args.batch * cnt) / tot_time
     print("Throughput: " + str(samples_per_sec) + " samples / sec")
-
 
 
 if __name__ == '__main__':

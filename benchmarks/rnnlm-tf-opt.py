@@ -11,6 +11,12 @@ import functools
 
 from dataloader import TextDataLoader
 
+def Devices(lst):
+    return [x.device for x in lst]
+
+def FlattenList(l):
+   return [item for sublist in l for item in sublist]
+
 class Params():
     def __init__(self, batch_size):
         self.batch_size = batch_size
@@ -18,16 +24,143 @@ class Params():
         self.max_seq_len = 256
         self.num_layers = 2
 
+def AllConcatRing(xs, axis, devices=None):
+  devices = devices or [x.device for x in xs]
+  n = len(xs)
+  if n == 1:
+    return xs
+  # [target, source]
+  parts = [[xs[target] if target == source else None for source in range(n)]
+           for target in range(n)]
+  for distance in range(1, n // 2 + 1):
+    for target in range(n):
+      source = (target + distance) % n
+      if parts[target][source] is None:
+        with tf.device(devices[target]):
+          parts[target][source] = tf.identity(parts[(target + 1) % n][source])
+      source = (target - distance) % n
+      if parts[target][source] is None:
+        with tf.device(devices[target]):
+          parts[target][source] = tf.identity(parts[(target - 1) % n][source])
+
+  ys = []
+  for i, dev in enumerate(devices):
+      with tf.device(dev):
+          ys.append(tf.concat(parts[i], axis=axis))
+  return ys
+
+def split_inputs(xs, devices):
+    device_ids = [d.device_index for d in devices]
+    d_spec0, d_spec1, d0, d1, xs0, xs1 = [], [], [], [], [], []
+    for x, spec, d in zip(xs, devices, device_ids):
+        if d < 4:
+            d0.append(d)
+            xs0.append(x)
+            d_spec0.append(spec)
+        else:
+            d1.append(d)
+            xs1.append(x)
+            d_spec1.append(spec)
+
+    flag = (not d0) or (not d1) \
+            or (len(d0) == len(d1) 
+                    and all(i+4 == j and device_ids.index(i) <
+                        device_ids.index(j) for i, j in zip(d0, d1)))
+    return d_spec0, d_spec1, d0, d1, xs0, xs1, flag
+
+
+def AllConcat(xs, axis, devices=None):
+    devices = devices or Devices(xs)
+    if len(xs) == 1:
+        return xs
+    ys = []
+    for x, d in zip(xs, devices):
+        with tf.device(d):
+            ys.append(tf.concat([x]*len(xs), axis))
+    return ys
+
+    d_spec0, d_spec1, d0, d1, xs0, xs1, flag = split_inputs(xs, devices)
+    if not flag: # Fallback to ring version
+        return AllConcatRing(xs, axis, devices)
+
+    def concat_fn(xs, d_spec):
+        if len(xs) <= 1:
+            return xs
+        ys = []
+        for d in d_spec:
+            with tf.device(d):
+                ys.append(tf.concat(xs, axis))
+        return ys
+
+    ys0 = concat_fn(xs0, d_spec0)
+    ys1 = concat_fn(xs1, d_spec1)
+
+    if xs0 and xs1:
+        tmp_ys = [y for y in zip(ys0*2, ys1*2)]
+        ys = []
+        for d in devices:
+            with tf.device(d):
+                ys.append(tf.concat(tmp_ys, axis))
+    else:
+        ys = ys0 + ys1
+    assert len(xs) == len(ys)
+    assert all(y.shape[axis] == x.shape[axis] * len(devices) for x, y in zip(xs,
+        ys))
+    return ys
+
+def ParallelGEMM(As, Bs, eq=None):
+    assert len(As) == len(Bs)
+    partial_sums = []
+    if eq is None:
+        eq = string.ascii_letters[:As[0].shape.ndims] + ',' \
+                + string.ascii_letters[As[0].shape.ndims-1
+                        :As[0].shape.ndims+Bs[0].shape.ndims-1]
+    for A, B in zip(As, Bs):
+        assert A.device == B.device
+        with tf.device(A.device):
+            partial_sums.append(tf.einsum(eq, A, B))
+    with tf.device(As[0].device):
+        y = tf.add_n(partial_sums)
+    return y
+
+def ParallelDense(x, w_shape, num_k_splits, num_n_splits, devices, name,
+        concat=False):
+    assert len(w_shape) == 2
+    assert num_k_splits * num_n_splits <= len(devices)
+
+    if isinstance(x, list):
+        assert len(x) == num_k_splits
+        xs = x
+    else:
+        xs = tf.split(x, num_k_splits, axis=-1)
+    ys = []
+    for i in range(num_n_splits):
+        sums = []
+        for j, x in enumerate(xs):
+            ndims = x.shape.ndims
+            idx = j*num_n_splits+i
+            dev = devices[idx]
+            eq = string.ascii_letters[:ndims] + ',' \
+                    + string.ascii_letters[ndims-1:ndims+1]
+            with tf.device(dev):
+                w = tf.get_variable(f'{name}_{idx}', shape=[w_shape[0] //
+                    num_k_splits, w_shape[1] // num_n_splits])
+                sums.append(tf.einsum(eq, x, w))
+        with tf.device(devices[i]):
+            ys.append(tf.add_n(sums))
+    return ys if not concat else tf.concat(ys, axis=-1)
+
 
 class LSTMCell(keras.layers.Layer):
     def __init__(self, batch_size, num_units, devices, num_k_splits,
             num_n_splits, **kwargs):
+        self.num_gpus = 8
         self.num_k_splits = num_k_splits
         self.num_n_splits = num_n_splits
         self.batch_size = batch_size
         self.num_units = num_units
 
-        h_state_size = [num_units // self.num_k_splits] * self.num_k_splits
+        h_state_size = [num_units // self.num_k_splits] * self.num_gpus
         c_state_size = [num_units // self.num_n_splits] * self.num_n_splits
         self.state_size = h_state_size + c_state_size
 
@@ -46,52 +179,57 @@ class LSTMCell(keras.layers.Layer):
         super().build(input_state)
 
     def call(self, x, states):
-        assert len(states) == self.num_k_splits + self.num_n_splits
-        hs, cs = states[:self.num_k_splits], states[self.num_k_splits:]
+        def SetDevices(xs):
+            new_xs = []
+            for x, dev in zip(xs, self.devices):
+                if not x.device:
+                    with tf.device(dev):
+                        new_xs.append(tf.identity(x))
+                else:
+                    assert x.device == dev.to_string()
+                    new_xs.append(x)
+            return new_xs
+
+        assert len(states) == self.num_gpus + self.num_n_splits
+        hs = SetDevices(states[:self.num_gpus])
+        cs = SetDevices(states[self.num_gpus:self.num_gpus+self.num_n_splits])
+
+        # Replicate tensors stored by k-axis gpus to n-axis gpus
+        def Replicate(xs):
+            assert len(xs) == self.num_k_splits
+            x_copies = []
+            for i, x in enumerate(xs):
+                for j in range(self.num_n_splits):
+                    dev_idx = i*self.num_n_splits+j
+                    with tf.device(self.devices[dev_idx]):
+                        x_copies.append(tf.identity(x))
+            assert len(x_copies) == self.num_gpus
+            return x_copies
 
         assert x.shape.as_list() == [self.batch_size, self.num_units]
-        xs = tf.split(x, self.num_k_splits, axis=1)
+        xs = Replicate(tf.split(x, self.num_k_splits, axis=1))
 
         # Concatenate x and h
         xhs = []
+        assert len(xs) == len(hs)
         for x, h in zip(xs, hs):
+            assert x.device == h.device
             with tf.device(h.device):
                 xhs.append(tf.concat([x, h], axis=1))
-
-        # Copy xh to all devices
-        xhs_copies = []
-        for i, xh in enumerate(xhs):
-            for j in range(self.num_n_splits):
-                dev_idx = i*self.num_n_splits+j
-                with tf.device(self.devices[dev_idx]):
-                    xhs_copies.append(tf.identity(xh))
-        assert len(xhs_copies) == 8
-        assert all(xh.device == device.to_string() for xh, device in
-                zip(xhs_copies, self.devices))
+        assert len(xhs) == self.num_gpus
+        assert all(x.device == device.to_string() for x, device in zip(xhs,
+            self.devices))
 
         # GEMM
-        partial_ifgos = []
-        for xh, w in zip(xhs_copies, self.ws):
-            assert xh.device == w.device
-            with tf.device(w.device):
-                partial_ifgos.append(tf.matmul(xh, w))
-
-        # Reduce-sum partial GEMMs
-        if self.num_k_splits > 1:
-            ifgo_list = [[] for _ in range(self.num_n_splits)]
-            for i, ifgo in enumerate(partial_ifgos):
-                ifgo_list[i % self.num_n_splits].append(ifgo)
-            ifgos = []
-            for ifgo in ifgo_list:
-                with tf.device(ifgo[0].device):
-                    ifgos.append(tf.add_n(ifgo))
-        else:
-            ifgos = partial_ifgos
+        xhs = [xhs[i::self.num_n_splits] for i in range(self.num_n_splits)]
+        ws_lst = [self.ws[i::self.num_n_splits] for i in range(self.num_n_splits)]
+        ifgos = [ParallelGEMM(xs, ws) for xs, ws in zip(xhs, ws_lst)]
         assert len(ifgos) == self.num_n_splits
         assert all(ifgo.device == device.to_string() for ifgo, device in
                 zip(ifgos, self.devices))
 
         # Apply activations
+        assert len(ifgos) == len(cs)
         new_hs_split, new_cs = [], []
         for ifgo, c in zip(ifgos, cs):
             with tf.device(ifgo.device):
@@ -106,15 +244,31 @@ class LSTMCell(keras.layers.Layer):
 
         # Concatenate hs
         if self.num_n_splits > self.num_k_splits:
-            num_concats = self.num_n_splits // self.num_k_splits
-            new_hs_split = [new_hs_split[i:i+num_concats] for i in range(0,
-                len(new_hs_split), num_concats)]
-            new_hs = []
-            for d, hs in zip(self.devices[::self.num_n_splits], new_hs_split):
-                with tf.device(d):
-                    new_hs.append(tf.concat(hs, axis=1))
-            assert [h.device for h in new_hs] == [d.to_string() for d in
-                    self.devices[::self.num_n_splits]]
+            #num_concats = self.num_n_splits // self.num_k_splits
+            #new_hs_split = [new_hs_split[i:i+num_concats] for i in range(0,
+            #    len(new_hs_split), num_concats)]
+            #new_hs = []
+            #for d, hs in zip(self.devices[::self.num_n_splits], new_hs_split):
+            #    with tf.device(d):
+            #        new_hs.append(tf.concat(hs, axis=1))
+            #assert [h.device for h in new_hs] == [d.to_string() for d in
+            #        self.devices[::self.num_n_splits]]
+
+            # TODO: Handling just this special case for now.
+            assert len(new_hs_split) == 4
+            assert all(h.device == dev.to_string() for h, dev in zip(new_hs_split,
+                self.devices[:4]))
+            split_1 = AllConcat(new_hs_split[:2], axis=1)
+            split_2 = AllConcat(new_hs_split[2:], axis=1,
+                    devices=self.devices[4:6])
+            new_hs = split_1[:]
+            for h, dev in zip(split_1, self.devices[2:]):
+                with tf.device(dev):
+                    new_hs.append(tf.identity(h))
+            new_hs += split_2
+            for h, dev in zip(split_2, self.devices[6:]):
+                with tf.device(dev):
+                    new_hs.append(tf.identity(h))
         elif self.num_n_splits < self.num_k_splits:
             new_hs = []
             num_splits = self.num_k_splits // self.num_n_splits
@@ -124,11 +278,14 @@ class LSTMCell(keras.layers.Layer):
         else:
             new_hs = new_hs_split
 
+        assert [h.device for h in new_hs] == [d.to_string() for d in
+                self.devices]
         assert [c.device for c in new_cs] == [d.to_string() for d in
                 self.devices[:self.num_n_splits]]
 
         with tf.device(self.devices[0]):
-            x = tf.concat(new_hs, axis=1)
+            x = tf.concat(new_hs[::self.num_n_splits], axis=1)
+            assert x.shape.as_list() == [self.batch_size, self.num_units]
         return x, new_hs + new_cs
 
 
@@ -181,7 +338,7 @@ def main():
 
     # Initial states
     hs0, hs1 = [], []
-    for device in devices[::num_n_splits]:
+    for device in devices:
         with tf.device(device):
             hs0.append(tf.zeros([params.batch_size, params.num_units //
                 num_k_splits], dtype=tf.float32))
@@ -256,7 +413,7 @@ def main():
         end = time.time()
         tot_time += (end - start)
 
-    samples_per_sec = (args.batch * params.max_seq_len * cnt) / tot_time
+    samples_per_sec = (args.batch * cnt) / tot_time
     print("Throughput: " + str(samples_per_sec) + " samples / sec")
 
 
