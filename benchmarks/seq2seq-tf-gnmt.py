@@ -241,7 +241,7 @@ def main():
 
     cnt = 0
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
-    config = tf.ConfigProto(log_device_placement=True,
+    config = tf.ConfigProto(log_device_placement=False,
             allow_soft_placement=True)
     with tf.Session(config=config) as sess:
         dataset.reset_pointer()
@@ -269,7 +269,7 @@ def main():
         end = time.time()
         tot_time += (end - start)
 
-    samples_per_sec = (args.batch * params.max_seq_len * cnt) / tot_time
+    samples_per_sec = (args.batch * cnt) / tot_time
     print("Throughput: " + str(samples_per_sec) + " samples / sec")
 
 
