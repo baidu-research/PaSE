@@ -1,10 +1,15 @@
 from operator import mul
 from functools import reduce
+import string, random
 
 import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf
-#import dgx_mesh_impl
+
+
+def RandName(k=5):
+    return ''.join(random.choices(string.ascii_letters + string.ascii_uppercase
+        + string.digits, k=k))
 
 
 def Prod(lst):
@@ -25,6 +30,7 @@ def GetDeviceList(gpus, as_strings=True):
 
 
 def DeviceIndex(gpu):
+    assert gpu
     return gpu.device_index if isinstance(gpu,
             tf.DeviceSpec) else int(gpu.split(':')[-1])
 
@@ -49,7 +55,8 @@ def RenameDims(shape, axes, names):
     return shape
 
 
-def GetMeshImpl(dev_cnts, devices=None, axes=None):
+def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None):
+    mesh_impl = mesh_impl or mtf.placement_mesh_impl.PlacementMeshImpl
     axes = axes or ['axis%d' % i for i in range(len(dev_cnts))]
     assert len(dev_cnts) == len(axes)
 
@@ -60,9 +67,7 @@ def GetMeshImpl(dev_cnts, devices=None, axes=None):
         layout_rules.append((axis, axis))
 
     devices = GetDeviceList(devices or Prod(dev_cnts))
-    #return dgx_mesh_impl.DGXMeshImpl(mesh_shape, layout_rules, devices)
-    return mtf.placement_mesh_impl.PlacementMeshImpl(mesh_shape, layout_rules,
-            devices)
+    return mesh_impl(mesh_shape, layout_rules, devices)
 
 
 '''

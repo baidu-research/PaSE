@@ -255,7 +255,7 @@ def Removal1(in_tsr):
     mtf_shape = GetShape([('axis1', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            ['axis0', None, None, None])
+            ['axis0', None, None, None], axis=0)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -270,7 +270,7 @@ def Removal2(in_tsr):
     mtf_shape = GetShape([shape[0], ('axis1', shape[1])] + shape[2:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            [None, 'axis0', None, None])
+            [None, 'axis0', None, None], axis=0)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -285,7 +285,7 @@ def Replication1(in_tsr):
     mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            ['axis1', None, None, None])
+            ['axis1', None, None, None], axis=0)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -300,7 +300,7 @@ def Replication2(in_tsr):
     mtf_shape = GetShape(shape)
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            [None, None, None, None])
+            [None, None, None, None], axis=0)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -315,7 +315,7 @@ def Replication3(in_tsr):
     mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            mtf_shape.dimension_names)
+            mtf_shape.dimension_names, axis=1)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -323,8 +323,8 @@ def Replication4(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([4, 4])}
+    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 1]), \
+            mesh1:utils.GetMeshImpl([4, 1])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis1', shape[0])] + shape[1:])
@@ -345,7 +345,7 @@ def Replication5(in_tsr):
     mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            mtf_shape.dimension_names)
+            mtf_shape.dimension_names, axis=1)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 

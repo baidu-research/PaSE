@@ -29,6 +29,11 @@ def split_inputs(xs, devices):
 def allconcat_dgx(xs, devices, concat_axis):
     if len(xs) == 1:
         return xs
+    ys = []
+    for x, d in zip(xs, devices):
+        with tf.device(d):
+            ys.append(tf.concat([x]*len(xs), concat_axis))
+    return ys
 
     d_spec0, d_spec1, d0, d1, xs0, xs1, flag = split_inputs(xs, devices)
     if not flag: # Fallback to ring version
@@ -50,8 +55,9 @@ def allconcat_dgx(xs, devices, concat_axis):
         ys = ys0 + ys1
     return ys
 
-
+'''
 def allreduce_dgx(xs, devices, reduction_fn_string="SUM"):
+    return xs
     if len(xs) == 1:
         return xs
 
@@ -103,20 +109,21 @@ def allreduce_dgx(xs, devices, reduction_fn_string="SUM"):
     fn = lambda x: tf.reshape(x, shape)
     ys = mtf.parallel(devices, fn, ys)
     return ys
-
+'''
 
 class DGXMeshImpl(mtf.placement_mesh_impl.PlacementMeshImpl):
-    def allreduce(self, x, mesh_axes, reduction_fn_string):
-        return self._collective_with_groups(
-                x, mesh_axes, functools.partial(
-                    allreduce_dgx,
-                    reduction_fn_string=reduction_fn_string))
+    #def allreduce(self, x, mesh_axes, reduction_fn_string):
+    #    return self._collective_with_groups(
+    #            x, mesh_axes, functools.partial(
+    #                #allreduce_dgx,
+    #                mtf.placement_mesh_impl.allreduce_ring_single_shard,
+    #                reduction_fn_string=reduction_fn_string))
 
     #def alltoall(self, x, mesh_axis, split_axis, concat_axis):
     #    return self._collective_with_groups(
     #            x, [mesh_axis],
     #            functools.partial(
-    #                alltoall_pointtwise, split_axis=split_axis,
+    #                mtf.placement_mesh_impl.alltoall_pointtwise, split_axis=split_axis,
     #                concat_axis=concat_axis))
 
     def allconcat(self, x, mesh_axis, concat_axis):
