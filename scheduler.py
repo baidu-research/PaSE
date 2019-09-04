@@ -35,6 +35,16 @@ def AddEdgeCosts(src, tgt, edge_costs, tbl):
 def MergeTables(tbl1, tbl2):
     common_keys = list(set(tbl1.columns).intersection(tbl2.columns))
 
+    if __debug__:
+        if common_keys:
+            tbl1_common = tbl1[common_keys].copy().drop_duplicates(
+                            ).sort_values(by=common_keys,
+                                    axis=0).reset_index(drop=True)
+            tbl2_common = tbl2[common_keys].copy().drop_duplicates(
+                            ).sort_values(by=common_keys,
+                                    axis=0).reset_index(drop=True)
+            assert (tbl1_common == tbl2_common).all(axis=None)
+
     if not common_keys:
         if 'key' not in tbl1.columns:
             tbl1 = tbl1.assign(key=0)
@@ -115,11 +125,8 @@ class Processor:
             for n in it:
                 tbl = MergeTables(tbl, self.v_to_tbl_map[n])
             assert(tbl.shape[0] > 0)
-
-        try:
-            if str(v) not in tbl.columns:
-                tbl = MergeTables(tbl, cfg_to_df(v))
-        except NameError:
+            assert str(v) in tbl.columns
+        else:
             tbl = cfg_to_df(v)
 
         # Add all combinations of configurations of unprocessed neighbors
