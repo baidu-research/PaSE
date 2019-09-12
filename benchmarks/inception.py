@@ -8,10 +8,9 @@ import string, random
 import argparse
 
 from dataloader import ImageDataLoader
-from utils import FlattenList, GetMeshImpl
+import utils
 from mtf_operations import Conv2d, MaxPool, AvgPool
-from mesh_transformations import ReplaceMeshWithDuplicates, \
-        ReplaceMeshWithConcatSplit
+import dgx_mesh_impl
 
 log_distribution = False
 
@@ -47,6 +46,75 @@ def Concat(tsr_lst, name=None):
     return mtf.concat(concat_tsrs, concat_dim_name, name)
 
 
+class ReplaceMesh0AndMesh1Operation(mtf.Operation):
+    def __init__(self, x, mesh, dim_names=None, name=None):
+        self.old_mesh = x.mesh
+        if isinstance(dim_names, mtf.Shape):
+            dim_names = dim_names.dimension_names
+        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
+        assert x.mesh != mesh
+        assert len(dim_names) == len(x.shape)
+        self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
+            for name, dim in zip(dim_names, x.shape.dims)])
+        super().__init__([x], mesh=mesh, name=name or
+                'replace_mesh')
+        self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
+
+        CheckShape = lambda names: names[0] == 'axis0' and all(not
+                name.startswith('axis') for name in names[1:])
+        assert CheckShape(x.shape.dimension_names)
+        assert CheckShape(dim_names)
+
+    def gradient(self, grad_ys):
+        return ReplaceMesh0AndMesh1Operation(grad_ys[0], self.old_mesh,
+                self.inputs[0].shape.dimension_names).outputs
+
+    def lower(self, lowering):
+        x = self.inputs[0]
+        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
+        old_mesh_impl = lowering.mesh_impl(self.old_mesh)
+        new_mesh_impl = lowering.mesh_impl(self)
+        old_mesh_shape = old_mesh_impl.shape
+        new_mesh_shape = new_mesh_impl.shape
+
+        output_slices = []
+        if old_mesh_shape.ndims == 1:
+            assert new_mesh_shape.ndims == 2
+            for i in range(0, 8, 2):
+                devices = [new_mesh_impl.devices[i], new_mesh_impl.devices[i+1]]
+                output_slices += mtf.placement_mesh_impl.allconcat_ring(
+                        [input_slices[i], input_slices[i+1]], 
+                        devices, 0)
+
+        elif old_mesh_shape.ndims == 2:
+            assert new_mesh_shape.ndims == 1
+            for i in range(0, 8, 2):
+                dev = new_mesh_impl.devices[i]
+                with tf.device(dev):
+                    t = input_slices[i]
+                    assert dev == t.device
+                    assert t.shape[0] % 2 == 0
+                    size = t.shape[0] // 2
+                    output_slices.append(t[:size, ...])
+
+                dev = new_mesh_impl.devices[i+1]
+                with tf.device(dev):
+                    t = input_slices[i+1]
+                    assert dev == t.device
+                    assert t.shape[0] % 2 == 0
+                    size = t.shape[0] // 2
+                    output_slices.append(t[size:, ...])
+
+        else:
+            assert False
+
+        laid_out_tensor = \
+                new_mesh_impl.LaidOutTensor.from_tensor_list(output_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+def ReplaceMesh0AndMesh1(x, mesh, dim_names=None, name=None):
+    return ReplaceMesh0AndMesh1Operation(x, mesh, dim_names, name).outputs[0]
+
 def CreateMeshes(strategy, img, labels, batch_size):
     h, w, ch = 299, 299, 3
     graph = mtf.Graph()
@@ -59,6 +127,10 @@ def CreateMeshes(strategy, img, labels, batch_size):
         Mesh.idx += 1
         return mesh
     Mesh.idx = 0
+
+    def GetMeshImpl(dev_cnts, devices=None):
+        return utils.GetMeshImpl(dev_cnts, devices=devices,
+                mesh_impl=dgx_mesh_impl.DGXMeshImpl)
 
     if strategy == 0:
         mesh = Mesh()
@@ -77,10 +149,6 @@ def CreateMeshes(strategy, img, labels, batch_size):
         # mesh1
         mesh = Mesh()
         mesh_to_impl[mesh] = GetMeshImpl([4, 2])
-
-        # mesh2
-        mesh = Mesh()
-        mesh_to_impl[mesh] = GetMeshImpl([4], [0, 2, 4, 6])
 
         mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
             batch_size), h, w, ch]))
@@ -243,8 +311,7 @@ def InceptionE(img, in_channels, strategy, meshes=None, name=None):
             dim_name = 'axis1'
             rename_dim = True
             if meshes is not None:
-                img = ReplaceMeshWithConcatSplit(img, meshes[2])
-                img = ReplaceMeshWithDuplicates(img, meshes[1])
+                img = ReplaceMesh0AndMesh1(img, meshes[1])
         else:
             dim_name = None
             rename_dim = False
@@ -358,7 +425,7 @@ def Inception(img, labels, args):
         tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
         # Initializer
-        tf_init_vars = FlattenList([lowering.variables[var]
+        tf_init_vars = utils.FlattenList([lowering.variables[var]
             .laid_out_tensor.all_slices for var in graph.all_variables])
         init_op = []
         for v in tf_init_vars:

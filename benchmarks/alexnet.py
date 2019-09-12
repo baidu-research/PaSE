@@ -9,9 +9,10 @@ import argparse
 import string, random
 
 from dataloader import ImageDataLoader
-from utils import GetMeshImpl
 import utils
 from mesh_transformations import ReplaceMeshWithIndependentAxes
+from mtf_operations import Conv2d, MaxPool
+import dgx_mesh_impl
 
 
 def RandName(k=5):
@@ -35,6 +36,10 @@ def CreateMeshes(strategy, img, labels, batch_size):
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
+
+    def GetMeshImpl(dev_cnts, devices=None):
+        return utils.GetMeshImpl(dev_cnts, devices=devices,
+                mesh_impl=dgx_mesh_impl.DGXMeshImpl)
 
     if strategy == 0:
         mesh = mtf.Mesh(graph, 'mesh0')
@@ -105,27 +110,27 @@ def Alexnet(img, labels, args):
 
     with tf.variable_scope('alexnet'):
         # Conv1 + ReLU + maxpool1
-        conv1 = utils.Conv2d(mtf_img, GetFilterShape(mtf_img, (11, 11, 3, 96)),
+        conv1 = Conv2d(mtf_img, GetFilterShape(mtf_img, (11, 11, 3, 96)),
                 (4, 4), 'VALID', activation=mtf.relu, name='conv1')
-        pool1 = utils.MaxPool(conv1, (3, 3), (2, 2), 'VALID', name='pool1')
+        pool1 = MaxPool(conv1, (3, 3), (2, 2), 'VALID', name='pool1')
 
         # Conv2 + ReLU + maxpool2
-        conv2 = utils.Conv2d(pool1, GetFilterShape(pool1, (5, 5, 96, 256)), (1,
+        conv2 = Conv2d(pool1, GetFilterShape(pool1, (5, 5, 96, 256)), (1,
             1), 'SAME', activation=mtf.relu, name='conv2')
-        pool2 = utils.MaxPool(conv2, (3, 3), (2, 2), name='pool2')
+        pool2 = MaxPool(conv2, (3, 3), (2, 2), name='pool2')
 
         # Conv3 + ReLU
-        conv3 = utils.Conv2d(pool2, GetFilterShape(pool2, (3, 3, 256, 384)),
+        conv3 = Conv2d(pool2, GetFilterShape(pool2, (3, 3, 256, 384)),
                 padding='SAME', activation=mtf.relu, name='conv3')
 
         # Conv4 + ReLU
-        conv4 = utils.Conv2d(conv3, GetFilterShape(conv3, (3, 3, 384, 384)),
+        conv4 = Conv2d(conv3, GetFilterShape(conv3, (3, 3, 384, 384)),
                 padding='SAME', activation=mtf.relu, name='conv4')
 
         # Conv5 + ReLU + maxpool5
-        conv5 = utils.Conv2d(conv4, GetFilterShape(conv4, (3, 3, 384, 256)),
+        conv5 = Conv2d(conv4, GetFilterShape(conv4, (3, 3, 384, 256)),
                 padding='SAME', activation=mtf.relu, name='conv5')
-        pool5 = utils.MaxPool(conv5, (3, 3), (2, 2), name='pool5')
+        pool5 = MaxPool(conv5, (3, 3), (2, 2), name='pool5')
 
         # Rename dims
         if strategy == 1:

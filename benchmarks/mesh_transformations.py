@@ -7,14 +7,21 @@ import mesh_tensorflow as mtf
 
 from utils import TransposeLists, FlattenList, DeviceIndex, RandName
 
+def HasDGXLink(x, y):
+    return (x//4 == y//4) or (y == x+4)
+
+def PnumToDeviceID(mesh_impl, pnums):
+    return [DeviceIndex(mesh_impl.devices[p]) for p in pnums]
 
 # Replication function specialized for DGX network topology
 def ReplicateOnDGX(tsrs, gpu_ids):
+    if isinstance(gpu_ids[0], str) or isinstance(gpu_ids[0], tf.DeviceSpec):
+        gpu_ids = [DeviceIndex(g) for g in gpu_ids]
+
     num_gpus = len(gpu_ids)
     assert len(tsrs) <= 4
     assert bool(num_gpus and 
             not (num_gpus & (num_gpus-1))) # num_gpus is a power of 2
-    has_dgx_link = lambda x, y: (x//4 == y//4) or (y == x+4)
 
     gpu_ids = sorted(gpu_ids)
     assert gpu_ids[-1] < 8
@@ -28,24 +35,23 @@ def ReplicateOnDGX(tsrs, gpu_ids):
 
     if len(tsrs) < 2:
         with tf.device(f'/device:GPU:{gpu_ids[1]}'):
-            assert has_dgx_link(gpu_ids[0], gpu_ids[1])
+            assert HasDGXLink(gpu_ids[0], gpu_ids[1])
             tsrs.append(tf.identity(tsrs[0]))
 
     if len(tsrs) < 4 and num_gpus > 2:
         for i in range(2):
             with tf.device(f'/device:GPU:{gpu_ids[i+2]}'):
-                assert has_dgx_link(gpu_ids[i], gpu_ids[i+2])
+                assert HasDGXLink(gpu_ids[i], gpu_ids[i+2])
                 tsrs.append(tf.identity(tsrs[i]))
 
     if num_gpus > 4:
         for i in range(4):
             with tf.device(f'/device:GPU:{gpu_ids[i+4]}'):
-                assert has_dgx_link(gpu_ids[i], gpu_ids[i+4])
+                assert HasDGXLink(gpu_ids[i], gpu_ids[i+4])
                 tsrs.append(tf.identity(tsrs[i]))
 
     assert len(tsrs) == num_gpus
     return tsrs
-
 
 class ReplaceMeshOperation(mtf.Operation):
     def __init__(self, x, mesh, dim_names=None, name=None):
@@ -227,9 +233,8 @@ class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
             for old_g, new_g in zip(old_pg, new_pg):
                 tsrs = [input_slices[p] for p in old_g]
                 if n > o:
-                    dev_ids = [DeviceIndex(new_mesh_impl.devices[p])
-                            for p in new_g]
-                    tsrs = ReplicateOnDGX(tsrs, dev_ids)
+                    tsrs = ReplicateOnDGX(tsrs, PnumToDeviceID(new_mesh_impl,
+                        new_g))
                 else:
                     tsrs = tsrs[:n]
 
@@ -341,11 +346,17 @@ class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
             zip(self.new_dim_names, input_slices[0].get_shape().as_list())])
         split_slices = [new_mesh_impl.make_slices(slice, slice_shape) \
                 for slice in input_slices]
+        assert all(len(s) == new_mesh_shape.size for s in split_slices)
+        for s in split_slices:
+            for i, d in enumerate(new_mesh_impl.devices):
+                with tf.device(d):
+                    s[i] = tf.identity(s[i])
         assert all(len(slice) == new_mesh_shape.size for slice in split_slices)
 
         # Concat along old axes
         output_slices = []
         for dev, slices in zip(new_mesh_impl.devices, zip(*split_slices)):
+            assert all(s.device == dev for s in slices)
             output_slices.append(old_mesh_impl.combine_slices(slices,
                 x.shape, device=dev))
         assert len(output_slices) == new_mesh_shape.size

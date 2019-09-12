@@ -9,10 +9,10 @@ import string, random
 import argparse
 
 from dataloader import TextDataLoader
-from utils import GetMeshImpl
 import utils
 from mesh_transformations import ReplaceMeshWithIndependentAxes, \
         ReplaceMeshWithDuplicates
+import dgx_mesh_impl
 
 
 def RandName(k=5):
@@ -38,10 +38,10 @@ class Params():
         self.batch_size = batch_size
         self.nx = 6
         self.max_seq_len = 256
-        self.d_model = 512
+        self.d_model = 1024
         self.heads = 8
-        self.d_ff = self.heads * 512
-        self.d_k = 128
+        self.d_ff = 4096 #self.heads * 512
+        self.d_k = 64
 
 
 def CreateMeshes(strategy, src, tgt, params):
@@ -53,6 +53,9 @@ def CreateMeshes(strategy, src, tgt, params):
         mesh = mtf.Mesh(graph, 'mesh%d' % idx)
         meshes.append(mesh)
         return mesh
+
+    def GetMeshImpl(dev_cnts, devices=None):
+        return utils.GetMeshImpl(dev_cnts, devices=devices)
 
     if strategy == 0: # Data-parallel
         mesh = Mesh(0)
@@ -139,14 +142,16 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         new_names = x.shape.dimension_names
         assert new_names[0] == 'axis1'
         new_names[0] = 'axis0'
-        return ReplaceMeshWithDuplicates(x, meshes[2], new_names, name=name)
+        return ReplaceMeshWithDuplicates(x, meshes[2], new_names, axis=0,
+                name=name)
 
     def ReplaceWithReplication(x, name=None):
         assert x.mesh == meshes[2]
         new_names = x.shape.dimension_names
         assert new_names[0] == 'axis0'
         new_names[0] = 'axis1'
-        return  ReplaceMeshWithDuplicates(x, meshes[1], new_names, name=name)
+        return  ReplaceMeshWithDuplicates(x, meshes[1], new_names, axis=0,
+                name=name)
 
     # Layers
     def EncoderLayer(x, mask, dropout_rate=0.5, name=None):
@@ -284,11 +289,9 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                 dtype=np.float32)
         
         # positional encoder
-        pos_enc = mtf.get_variable(embed.mesh, 'pos_enc',
+        pos_enc = mtf.constant(embed.mesh, pos_enc_values,
                 shape=mtf.Shape([seq_len_dim, embed.shape[-1]]),
-                dtype=tf.float32,
-                initializer=tf.constant_initializer(pos_enc_values),
-                trainable=False)
+                dtype=tf.float32)
         assert embed.shape[1:] == pos_enc.shape.dims
         x = (embed * math.sqrt(params.d_model)) + pos_enc
 
@@ -373,7 +376,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class =
             argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('-b', '--batch', type=int, required=False, default=32,
+    parser.add_argument('-b', '--batch', type=int, required=False, default=64,
             help="Batch size")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors")
