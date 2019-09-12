@@ -11,12 +11,14 @@
 
 \newcommand{\set}[1]{\{#1\}}
 \newcommand{\seq}[1]{(#1)}
+\newcommand{\cost}{\textsc{Cost}}
 
 \DeclareMathOperator*{\argmin}{arg\,min}
 
 \begin{document}
 
 \section{Recurrence}
+$S\gets \textsc{SortNodes}(G)$: Sequence of nodes sorted using Alg.~\ref{alg:sort}
 $$
 min\_cost(v, SS_u) = \min_{cfg_v}~\{vert\_cost(v, cfg_v) + \sum_{n \in N_u(v)} edge\_cost(v,
 n, cfg_v, SS_u(n)) + \sum_{n \in N_p(v)} min\_cost(n, SS_u\cup
@@ -234,6 +236,42 @@ strategy for a computation DAG}
 	\State $v_{next} \leftarrow \argmin_{v\in V_u} |v.depends|$
 	\State \Return{$v_{next}$}
 
+	\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+
+\begin{algorithm}
+	\caption{\label{alg:sort}Sort vertices in the order of increasing dependent
+	vertex count.}
+
+\begin{algorithmic}[1]
+	\Procedure{SortNodes}{$G=(V,E)$}
+
+	\LeftComment{For each vertex $v$, assign all its neighbors as its
+	unprocessed neighbor set $v.un$.}
+	\ForAll{$v \in V$}
+	\State $v.un \leftarrow \set{u\in V~|~(u,v)\in E \lor (v,u)\in E}$
+	\State $v.prior \gets ()$
+	\EndFor
+	\Statex
+
+	\State $U\gets V$
+	\State $S \gets ()$ \Comment{Empty sequence}
+	\While{$U\not=\emptyset$}
+		\State $v \gets \argmin_{v \in U} |v.un|$
+		\State $U \gets U \setminus \set{v}$
+		\State $v.depends \gets v.un$
+		\State $S \gets S + (v)$ \Comment{Append $v$ to sequence $S$}
+		\ForAll{$u \in U$}
+			\State $u.un \gets u.un \setminus \set{v}$
+			\If{$(u,v)\in E \lor (v,u) \in E$}
+				\State $u.prior \gets u.prior + (v)$
+			\EndIf
+		\EndFor
+	\EndWhile
+
+	\State \Return{$S$}
 	\EndProcedure
 \end{algorithmic}
 \end{algorithm}
