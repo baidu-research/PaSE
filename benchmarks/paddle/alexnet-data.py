@@ -6,15 +6,14 @@ import paddle.fluid.layers as layers
 import math
 
 class DataReader():
-    def __init__(dataset_size, batch_size, num_classes):
+    def __init__(self, dataset_size, batch_size, num_classes):
         self.batch_size=batch_size
         self.images = np.reshape(np.random.uniform(-1, 1,
-            size=dataset_size*227*227*3, dtype='float32'),
-                shape=[-1, 227, 227, 3])
+            size=dataset_size*227*227*3), [-1, 3, 227, 227])
         self.labels = np.reshape(np.random.randint(num_classes,
-            size=dataset_size, dtype='int64'), shape=[-1, 1])
+            size=dataset_size, dtype='int64'), [-1, 1])
 
-    def __call__():
+    def __call__(self, feeder):
         def DataGenerator():
             for i in range(dataset_size):
                 yield [self.images[i], self.labels[i]]
@@ -48,8 +47,7 @@ def Alexnet(img, label, num_classes):
     fc7 = layers.fc(fc6, 4096, act="relu")
     fc8 = layers.fc(fc7, num_classes, act="relu")
 
-    one_hot_label = layers.one_hot(input=label, depth=num_classes)
-    loss = layers.softmax_with_cross_entropy(logits=fc8, label=one_hot_label)
+    loss = layers.softmax_with_cross_entropy(logits=fc8, label=label)
     return layers.mean(loss)
 
 def main():
@@ -67,11 +65,12 @@ def main():
 
     num_epochs = args.epochs
     batch_size = args.batch_size
+    dataset_size = args.dataset_size
     num_classes = 1000
     place = fluid.CUDAPlace(0)
 
     # Model
-    img = layers.data(name='img', shape=[227, 227, 3], dtype='float32')
+    img = layers.data(name='img', shape=[3, 227, 227], dtype='float32')
     label = layers.data(name='label', shape=[1], dtype='int64');
     loss = Alexnet(img, label, num_classes)
     fluid.optimizer.SGD(learning_rate=0.01).minimize(loss)
@@ -102,12 +101,12 @@ def main():
     train_data_reader = DataReader(dataset_size, batch_size, num_classes)
     #test_data_reader = DataReader(int(dataset_size/10), batch_size, num_classes)
     for _ in range(num_epochs):
-        for steps, data in enumerate(train_data_reader()):
+        for steps, data in enumerate(train_data_reader(data_feeder)):
             loss = exe.run(compiled_train_prog,
                     feed=data_feeder,
                     fetch_list=[loss.name])
 
-            if steps != 0 && steps % display_steps == 0:
+            if steps != 0 and steps % display_steps == 0:
                 print(f"Step: {step}, Loss: {loss}")
     
 if __name__ == '__main__':
