@@ -74,6 +74,20 @@ def CreateMeshes(strategy, img, labels, batch_size):
             h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([batch_size]))
 
+    elif strategy == 3:
+        mesh = mtf.Mesh(graph, 'mesh0')
+        meshes.append(mesh)
+        mesh_to_impl[mesh] = GetMeshImpl([8])
+
+        mesh = mtf.Mesh(graph, 'mesh1')
+        meshes.append(mesh)
+        mesh_to_impl[mesh] = GetMeshImpl([1])
+
+        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
+            batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
+                GetShape([batch_size]))
+
     else:
         assert False
 
@@ -103,10 +117,14 @@ def Alexnet(img, labels, args):
         fc6_units = mtf.Dimension('axis1', 4096)
         fc7_units = mtf.Dimension('axis0', 4096)
         fc8_units = mtf.Dimension('axis1', num_classes)
-    else:
+    elif strategy == 2:
         fc6_units = mtf.Dimension('axis0', 4096)
         fc7_units = mtf.Dimension('axis0', 4096)
         fc8_units = mtf.Dimension('axis0', num_classes)
+    elif strategy == 3:
+        fc6_units = mtf.Dimension(RandName(), 4096)
+        fc7_units = mtf.Dimension(RandName(), 4096)
+        fc8_units = mtf.Dimension(RandName(), num_classes)
 
     with tf.variable_scope('alexnet'):
         # Conv1 + ReLU + maxpool1
@@ -141,6 +159,9 @@ def Alexnet(img, labels, args):
                     (RandName(), 'axis0'))
         elif strategy == 2:
             pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name, RandName())
+        elif strategy == 3:
+            dim_names = pool5.shape.rename_dimension('axis0', RandName())
+            pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1], dim_names)
 
         # FC + ReLU + dropout
         fc_activation = lambda x: mtf.dropout(mtf.relu(x), keep_prob)
@@ -204,10 +225,11 @@ def main():
     parser.add_argument('-d', '--dropout', type=float, required=False,
             default=0.5, help="keep_prob value for dropout layers. (Default: 0.5)")
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
-            choices=list(range(3)), 
+            choices=list(range(4)),
             help="Strategy to use. 0: DataParallel, \
                     1: Optimized, \
-                    2: Expert (OWT)")
+                    2: Expert (OWT), \
+                    3: FlexFlow")
     parser.add_argument('--dataset_dir', type=str, required=False, default=None,
             help='Dataset directory')
     parser.add_argument('--labels_filename', type=str, required=False,
