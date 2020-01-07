@@ -31,20 +31,26 @@ def GetShape(dims):
     sh = mtf.Shape(sh)
     return sh
 
-def CreateMeshes(strategy, img, labels, batch_size):
+def CreateMeshes(img, labels, args):
     h, w, ch = 227, 227, 3
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
 
-    def GetMeshImpl(dev_cnts, devices=None):
-        return utils.GetMeshImpl(dev_cnts, devices=devices,
+    strategy = args.strategy
+    batch_size = args.batch_size
+    num_gpus = args.procs
+    num_nodes = args.nodes
+    gpus_per_node = num_gpus // num_nodes
+
+    def GetMeshImpl(dev_cnts):
+        return utils.GetMeshImpl(dev_cnts, num_nodes=num_nodes,
                 mesh_impl=dgx_mesh_impl.DGXMeshImpl)
 
     if strategy == 0:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([8])
+        mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
         mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('axis0', batch_size),
             h, w, ch]))
@@ -104,8 +110,8 @@ def Alexnet(img, labels, args):
     num_classes = 1000
     keep_prob = 0.5
     learning_rate = 0.01
-    graph, meshes, mesh_to_impl, mtf_img, mtf_labels = \
-            CreateMeshes(args.strategy, img, labels, args.batch_size)
+    graph, meshes, mesh_to_impl, mtf_img, mtf_labels = CreateMeshes(img, labels,
+            args)
     RenameFC = lambda x: mtf.rename_dimension(x, x.shape[-1].name, RandName())
 
     strategy = args.strategy
@@ -219,6 +225,8 @@ def main():
             help="Batch size.")
     parser.add_argument('-p', '--procs', type=int, required=False, default=8,
             help="No. of processors.")
+    parser.add_argument('-n', '--nodes', type=int, required=False, default=1,
+            help="No. of processors.")
     parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
             help="No. of epochs")
     parser.add_argument('--display_steps', type=int, required=False, default=10,
@@ -238,11 +246,38 @@ def main():
     parser.add_argument('--dataset_size', type=int, required=False,
             default=1000, help='Labels filename')
     args = parser.parse_args()
+    num_gpus = args.procs
+    num_nodes = args.nodes
+    assert num_gpus % num_nodes == 0
+    gpus_per_node = num_gpus // num_nodes
 
-    if args.procs != 8:
+    if gpus_per_node != 8:
         raise NotImplementedError('Current implementation only handles 8 GPUs.')
     os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
-                                                 range(args.procs))[:-1]
+                                                 range(gpus_per_node))[:-1]
+
+    if num_nodes > 1:
+        from hostlist import expand_hostlist
+
+        n_tasks = int(os.environ['SLURM_NPROCS'])
+        assert n_tasks == num_nodes
+
+        task_index = int(os.environ['SLURM_PROCID'])
+        hostlist = [("%s:2222" % host) for host in expand_hostlist(
+            os.environ['SLURM_NODELIST'])] 
+
+        cluster = tf.train.ClusterSpec({"worker":hostlist}).as_cluster_def()
+        server = tf.train.Server(cluster, job_name="worker",
+                task_index=task_index)
+        session_target = server.target
+
+        if task_index != 0:
+            utils.join_tasks(tf.Session(session_target), task_index, num_nodes)
+            quit()
+    else:
+        task_index = 0
+        hostlist = ['localhost:2222']
+        session_target = ''
     
     for arg, val in vars(args).items():
         print(str(arg) + ": " + str(val))
@@ -265,9 +300,10 @@ def main():
     config = tf.ConfigProto()
     #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
     with tf.variable_scope('train'):
-        with tf.Session(config=config) as sess:
+        with tf.Session(session_target, config=config) as sess:
             dataset.reset_pointer()
             sess.run(init_ops)
+            print('Finished initialization.')
 
             tot_time = float(0)
             start = time.time()
@@ -278,7 +314,7 @@ def main():
                     loss_val, *_ = sess.run([loss_op] + grad_ops)
                     step += 1
 
-                    if step % args.display_steps == 0 and step > 0:
+                    if step % args.display_steps == 0:
                         print("Epoch: " + str(epoch) + "; Loss: " +
                                 str(loss_val))
 
@@ -286,8 +322,10 @@ def main():
             end = time.time()
             tot_time += (end - start)
 
-    img_per_sec = float(dataset.dataset_size * args.epochs) / tot_time
-    print("Throughout: " + str(img_per_sec) + " images / sec")
+            img_per_sec = float(dataset.dataset_size * args.epochs) / tot_time
+            print("Throughout: " + str(img_per_sec) + " images / sec")
+
+            utils.join_tasks(sess, task_index, num_nodes)
 
 if __name__ == '__main__':
     main()

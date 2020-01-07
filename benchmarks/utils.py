@@ -16,17 +16,19 @@ def Prod(lst):
     return reduce(mul, lst, 1)
 
 
-def GetDeviceList(gpus, as_strings=True):
-    if isinstance(gpus, list) and all(
-            isinstance(gpu, tf.DeviceSpec) for gpu in gpus):
+def GetDeviceList(gpus, num_nodes=1):
+    if isinstance(gpus, list):
+        assert all(isinstance(g, str) for g in gpus)
         return gpus
 
-    gpus = range(gpus) if isinstance(gpus, int) else gpus
-    if as_strings:
-        gpus = [f'/device:GPU:{i}' for i in gpus]
+    assert gpus % num_nodes == 0
+    gpus_per_node = gpus // num_nodes
+
+    if num_nodes == 1:
+        return [f'/device:GPU:{i}' for i in range(gpus_per_node)]
     else:
-        gpus = [tf.DeviceSpec(device_type='GPU', device_index=i) for i in gpus]
-    return gpus
+        return [f'/job:worker/replica:0/task:{i}/device:GPU:{j}' for i in
+                range(num_nodes) for j in range(gpus_per_node)]
 
 
 def DeviceIndex(gpu):
@@ -55,7 +57,10 @@ def RenameDims(shape, axes, names):
     return shape
 
 
-def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None):
+def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None, num_nodes=1):
+    num_devs = Prod(dev_cnts)
+    assert num_devs % num_nodes == 0
+
     mesh_impl = mesh_impl or mtf.placement_mesh_impl.PlacementMeshImpl
     axes = axes or ['axis%d' % i for i in range(len(dev_cnts))]
     assert len(dev_cnts) == len(axes)
@@ -66,7 +71,7 @@ def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None):
         mesh_shape.append((axis, d))
         layout_rules.append((axis, axis))
 
-    devices = GetDeviceList(devices or Prod(dev_cnts))
+    devices = GetDeviceList(devices or num_devs, num_nodes)
     return mesh_impl(mesh_shape, layout_rules, devices)
 
 
@@ -308,4 +313,26 @@ def ReplaceMeshWithReplication(new_mesh, tsr, axis, name=None):
 
 def ReplaceMeshWithRemoval(new_mesh, tsr, axis, name=None):
     return ReplaceMeshWithRemovalOperation(new_mesh, tsr, axis, name).outputs[0]
+
+
+def join_tasks(sess, task_id, num_tasks):
+    if num_tasks <= 1:
+        return
+
+    device = '/job:worker/replica:0/task:' + str(task_id) + '/device:CPU:0'
+    with tf.device(device):
+        if task_id == 0:
+            # Signal other workers that the task is done by enqueueing into 'q'
+            print('Task completed. Sending signal to other workers to terminate.')
+            for i in range(1, num_tasks):
+                q = tf.FIFOQueue(1, tf.int32, shared_name='worker_queue_' + str(i))
+                sess.run(q.enqueue(1))
+
+        else:
+            # Wait for the signal from task 0
+            q = tf.FIFOQueue(1, tf.int32, shared_name='worker_queue_' +
+                    str(task_id))
+            print('Worker ' + str(task_id) + ' waiting for signal.')
+            sess.run(q.dequeue())
+            print('Worker ' + str(task_id) + ' terminating.')
 
