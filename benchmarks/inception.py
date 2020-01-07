@@ -10,6 +10,7 @@ import argparse
 from dataloader import ImageDataLoader
 import utils
 from mtf_operations import Conv2d, MaxPool, AvgPool
+from mesh_transformations import ReplaceMeshWithIndependentAxes
 import dgx_mesh_impl
 
 log_distribution = False
@@ -154,7 +155,7 @@ def CreateMeshes(strategy, img, labels, batch_size):
             batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[1], labels, GetShape([batch_size]))
 
-    else:
+    elif strategy == 2:
         # mesh0
         mesh = Mesh()
         mesh_to_impl[mesh] = GetMeshImpl([8])
@@ -162,6 +163,23 @@ def CreateMeshes(strategy, img, labels, batch_size):
         mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
             batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[0], labels, GetShape([batch_size]))
+
+    elif strategy == 3:
+        mesh = mtf.Mesh(graph, 'mesh0')
+        meshes.append(mesh)
+        mesh_to_impl[mesh] = GetMeshImpl([8])
+
+        mesh = mtf.Mesh(graph, 'mesh1')
+        meshes.append(mesh)
+        mesh_to_impl[mesh] = GetMeshImpl([1])
+
+        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
+            batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
+                GetShape([batch_size]))
+
+    else:
+        assert False
 
     return graph, meshes, mesh_to_impl, mtf_img, mtf_labels
 
@@ -399,6 +417,11 @@ def Inception(img, labels, args):
         elif strategy == 2:
             mean = mtf.rename_dimension(mean, 'axis0', mtf_labels.shape[0].name)
             dim_name = 'axis0'
+        elif strategy == 3:
+            assert mean.shape[0].name == 'axis0'
+            dim_names = mean.shape.rename_dimension('axis0', mtf_labels.shape[0].name)
+            mean = ReplaceMeshWithIndependentAxes(mean, meshes[1], dim_names)
+            dim_name = RandName()
         else:
             dim_name = RandName()
         fc = mtf.layers.dense(mean, mtf.Dimension(dim_name, num_classes))
@@ -449,8 +472,8 @@ def main():
     parser.add_argument('--max_steps', type=int, required=False, default=100,
             help='Maximum no. of steps to execute')
     parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
-            choices=list(range(3)), 
-            help="Strategy to use. 0: DataParallel, 1: Optimized, 2: Expert")
+            choices=list(range(4)),
+            help="Strategy to use. 0: DataParallel, 1: Optimized, 2: Expert, 3: Flexflow")
     parser.add_argument('--dataset_dir', type=str, required=False, default=None,
             help='Dataset directory')
     parser.add_argument('--labels_filename', type=str, required=False,

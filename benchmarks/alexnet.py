@@ -160,6 +160,7 @@ def Alexnet(img, labels, args):
         elif strategy == 2:
             pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name, RandName())
         elif strategy == 3:
+            assert mean.shape[0].name == 'axis0'
             dim_names = pool5.shape.rename_dimension('axis0', RandName())
             pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1], dim_names)
 
