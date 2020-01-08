@@ -315,24 +315,53 @@ def ReplaceMeshWithRemoval(new_mesh, tsr, axis, name=None):
     return ReplaceMeshWithRemovalOperation(new_mesh, tsr, axis, name).outputs[0]
 
 
-def join_tasks(sess, task_id, num_tasks):
-    if num_tasks <= 1:
+def join_tasks(task_id, hostlist, port=5555):
+    if len(hostlist) <= 1:
         return
 
-    device = '/job:worker/replica:0/task:' + str(task_id) + '/device:CPU:0'
-    with tf.device(device):
-        if task_id == 0:
-            # Signal other workers that the task is done by enqueueing into 'q'
-            print('Task completed. Sending signal to other workers to terminate.')
-            for i in range(1, num_tasks):
-                q = tf.FIFOQueue(1, tf.int32, shared_name='worker_queue_' + str(i))
-                sess.run(q.enqueue(1))
+    import socket
+    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    hostname = socket.gethostname().split('.')[0]
+    assert hostname in hostlist
 
-        else:
-            # Wait for the signal from task 0
-            q = tf.FIFOQueue(1, tf.int32, shared_name='worker_queue_' +
-                    str(task_id))
-            print('Worker ' + str(task_id) + ' waiting for signal.')
-            sess.run(q.dequeue())
-            print('Worker ' + str(task_id) + ' terminating.')
+    def connect_and_send(hostname):
+        while True:
+            try:
+                conn.connect((hostname, port))
+                conn.close()
+                break
+            except (ConnectionRefusedError, FileNotFoundError) as e:
+                pass
+
+    if task_id == 0:
+        for host in hostlist:
+            if host != hostname:
+                connect_and_send(host)
+
+    else:
+        conn.bind(('', port))
+        conn.listen(1)
+        conn.accept()
+        conn.close()
+
+#def join_tasks(sess, task_id, num_tasks):
+#    if num_tasks <= 1:
+#        return
+#
+#    device = '/job:worker/replica:0/task:' + str(task_id) + '/device:CPU:0'
+#    with tf.device(device):
+#        if task_id == 0:
+#            # Signal other workers that the task is done by enqueueing into 'q'
+#            print('Task completed. Sending signal to other workers to terminate.')
+#            for i in range(1, num_tasks):
+#                q = tf.FIFOQueue(1, tf.int32, shared_name='worker_queue_' + str(i))
+#                sess.run(q.enqueue(1))
+#
+#        else:
+#            # Wait for the signal from task 0
+#            q = tf.FIFOQueue(1, tf.int32, shared_name='worker_queue_' +
+#                    str(task_id))
+#            print('Worker ' + str(task_id) + ' waiting for signal.')
+#            sess.run(q.dequeue())
+#            print('Worker ' + str(task_id) + ' terminating.')
 

@@ -4,7 +4,7 @@ import mesh_tensorflow as mtf
 
 import sys
 import time
-import os
+import os, os.path
 import argparse
 import string, random
 
@@ -39,12 +39,12 @@ def CreateMeshes(img, labels, args):
 
     strategy = args.strategy
     batch_size = args.batch_size
-    num_gpus = args.procs
+    gpus_per_node = args.gpus
     num_nodes = args.nodes
-    gpus_per_node = num_gpus // num_nodes
+    num_gpus = gpus_per_node * num_nodes
 
-    def GetMeshImpl(dev_cnts):
-        return utils.GetMeshImpl(dev_cnts, num_nodes=num_nodes,
+    def GetMeshImpl(dev_cnts, node_cnt=num_nodes):
+        return utils.GetMeshImpl(dev_cnts, num_nodes=node_cnt,
                 mesh_impl=dgx_mesh_impl.DGXMeshImpl)
 
     if strategy == 0:
@@ -60,11 +60,11 @@ def CreateMeshes(img, labels, args):
     elif strategy == 1:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([8])
+        mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
         mesh = mtf.Mesh(graph, 'mesh1')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([4, 2])
+        mesh_to_impl[mesh] = GetMeshImpl([4, 4])
 
         mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
             batch_size), h, w, ch]))
@@ -74,7 +74,7 @@ def CreateMeshes(img, labels, args):
     elif strategy == 2:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([8])
+        mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
         mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('axis0', batch_size),
             h, w, ch]))
@@ -83,11 +83,11 @@ def CreateMeshes(img, labels, args):
     elif strategy == 3:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([8])
+        mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
         mesh = mtf.Mesh(graph, 'mesh1')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([1])
+        mesh_to_impl[mesh] = GetMeshImpl([1], node_cnt=1)
 
         mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
             batch_size), h, w, ch]))
@@ -115,6 +115,7 @@ def Alexnet(img, labels, args):
     RenameFC = lambda x: mtf.rename_dimension(x, x.shape[-1].name, RandName())
 
     strategy = args.strategy
+    num_gpus = args.gpus * args.nodes
     if strategy == 0:
         fc6_units = mtf.Dimension(RandName(), 4096)
         fc7_units = mtf.Dimension(RandName(), 4096)
@@ -124,6 +125,7 @@ def Alexnet(img, labels, args):
         fc7_units = mtf.Dimension('axis0', 4096)
         fc8_units = mtf.Dimension('axis1', num_classes)
     elif strategy == 2:
+        num_classes = num_classes + num_gpus - (num_classes % num_gpus)
         fc6_units = mtf.Dimension('axis0', 4096)
         fc7_units = mtf.Dimension('axis0', 4096)
         fc8_units = mtf.Dimension('axis0', num_classes)
@@ -166,7 +168,7 @@ def Alexnet(img, labels, args):
         elif strategy == 2:
             pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name, RandName())
         elif strategy == 3:
-            assert mean.shape[0].name == 'axis0'
+            assert pool5.shape[0].name == 'axis0'
             dim_names = pool5.shape.rename_dimension('axis0', RandName())
             pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1], dim_names)
 
@@ -223,10 +225,10 @@ def main():
             argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
             help="Batch size.")
-    parser.add_argument('-p', '--procs', type=int, required=False, default=8,
-            help="No. of processors.")
+    parser.add_argument('-g', '--gpus', type=int, required=False, default=8,
+            help="No. of GPUs per node.")
     parser.add_argument('-n', '--nodes', type=int, required=False, default=1,
-            help="No. of processors.")
+            help="No. of nodes.")
     parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
             help="No. of epochs")
     parser.add_argument('--display_steps', type=int, required=False, default=10,
@@ -245,11 +247,12 @@ def main():
             default='labels.txt', help='Labels filename')
     parser.add_argument('--dataset_size', type=int, required=False,
             default=1000, help='Labels filename')
+
     args = parser.parse_args()
-    num_gpus = args.procs
+    gpus_per_node = args.gpus
     num_nodes = args.nodes
-    assert num_gpus % num_nodes == 0
-    gpus_per_node = num_gpus // num_nodes
+    num_gpus = gpus_per_node * num_nodes
+    [print(f'{arg} : {val}') for arg, val in vars(args).items()]
 
     if gpus_per_node != 8:
         raise NotImplementedError('Current implementation only handles 8 GPUs.')
@@ -258,36 +261,33 @@ def main():
 
     if num_nodes > 1:
         from hostlist import expand_hostlist
-
+        
         n_tasks = int(os.environ['SLURM_NPROCS'])
         assert n_tasks == num_nodes
 
         task_index = int(os.environ['SLURM_PROCID'])
-        hostlist = [("%s:2222" % host) for host in expand_hostlist(
-            os.environ['SLURM_NODELIST'])] 
+        hostlist = expand_hostlist(os.environ['SLURM_NODELIST'])
+        hostlist_w_port = [("%s:2222" % host) for host in hostlist] 
 
-        cluster = tf.train.ClusterSpec({"worker":hostlist}).as_cluster_def()
+        cluster = tf.train.ClusterSpec({"worker":hostlist_w_port}).as_cluster_def()
         server = tf.train.Server(cluster, job_name="worker",
                 task_index=task_index)
         session_target = server.target
 
         if task_index != 0:
-            utils.join_tasks(tf.Session(session_target), task_index, num_nodes)
+            utils.join_tasks(task_index, hostlist)
             quit()
+
     else:
         task_index = 0
-        hostlist = ['localhost:2222']
+        hostlist = ['localhost']
         session_target = ''
     
-    for arg, val in vars(args).items():
-        print(str(arg) + ": " + str(val))
-    print()
-            
     # Initalize the data generator
     dataset = ImageDataLoader(args.batch_size, (227, 227), dataset_size =
             args.dataset_size, dataset_dir=args.dataset_dir,
             labels_filename=args.labels_filename)
-    train_batches_per_epoch = np.floor(dataset.dataset_size / args.batch_size).astype(np.int16)
+    train_batches_per_epoch = dataset.dataset_size // args.batch_size
     assert train_batches_per_epoch > 0
     
     # Input tensors
@@ -323,9 +323,10 @@ def main():
             tot_time += (end - start)
 
             img_per_sec = float(dataset.dataset_size * args.epochs) / tot_time
-            print("Throughout: " + str(img_per_sec) + " images / sec")
+            print("Throughput: " + str(img_per_sec) + " images / sec",
+                    flush=True)
 
-            utils.join_tasks(sess, task_index, num_nodes)
+    utils.join_tasks(task_index, hostlist)
 
 if __name__ == '__main__':
     main()
