@@ -6,6 +6,8 @@ import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf
 
+def is_power_of_2(v):
+    return ((v == 1) or not (v & (v-1)))
 
 def RandName(k=5):
     return ''.join(random.choices(string.ascii_letters + string.ascii_uppercase

@@ -5,6 +5,7 @@ import numpy as np
 import tensorflow as tf
 import mesh_tensorflow as mtf
 
+import utils
 from utils import TransposeLists, FlattenList, DeviceIndex, RandName
 
 def HasDGXLink(x, y):
@@ -233,8 +234,21 @@ class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
             for old_g, new_g in zip(old_pg, new_pg):
                 tsrs = [input_slices[p] for p in old_g]
                 if n > o:
-                    tsrs = ReplicateOnDGX(tsrs, PnumToDeviceID(new_mesh_impl,
-                        new_g))
+                    #tsrs = ReplicateOnDGX(tsrs, PnumToDeviceID(new_mesh_impl,
+                    #    new_g))
+                    assert utils.is_power_of_2(len(old_g))
+                    assert utils.is_power_of_2(len(new_g))
+                    assert all(old_mesh_impl.devices[d1] ==
+                            new_mesh_impl.devices[d2] for d1, d2 in zip(old_g,
+                                new_g))
+
+                    while len(tsrs) < len(new_g):
+                        new_tsrs = []
+                        for t, g in zip(tsrs, new_g[len(tsrs):]):
+                            with tf.device(new_mesh_impl.devices[g]):
+                                new_tsrs.append(t)
+                        tsrs += new_tsrs
+                    assert len(tsrs) == len(new_g)
                 else:
                     tsrs = tsrs[:n]
 
