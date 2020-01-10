@@ -151,26 +151,13 @@ def CreateMeshes(args, img, labels):
         mesh = Mesh()
         mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
-        if num_gpus == 8:
-            # mesh1
-            mesh = Mesh()
-            mesh_to_impl[mesh] = GetMeshImpl([4, 2])
+        # mesh1
+        mesh = Mesh()
+        mesh_to_impl[mesh] = GetMeshImpl([num_gpus // 2, 2])
 
-            mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-                batch_size), h, w, ch]))
-            mtf_labels = mtf.import_tf_tensor(meshes[1], labels, GetShape([batch_size]))
-
-        elif num_gpus == 16:
-            # mesh1
-            mesh = Mesh()
-            mesh_to_impl[mesh] = GetMeshImpl([8, 2])
-
-            mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-                batch_size), h, w, ch]))
-            mtf_labels = mtf.import_tf_tensor(meshes[1], labels, GetShape([batch_size]))
-
-        else:
-            assert False
+        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
+            batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(meshes[1], labels, GetShape([batch_size]))
 
     elif strategy == 2:
         # mesh0
@@ -432,6 +419,8 @@ def Inception(img, labels, args):
                 mean = mtf.reshape(mean, shape)
             dim_name = 'axis1'
         elif strategy == 2:
+            num_gpus = args.nodes * args.gpus
+            num_classes = num_classes + num_gpus - (num_classes % num_gpus)
             mean = mtf.rename_dimension(mean, 'axis0', mtf_labels.shape[0].name)
             dim_name = 'axis0'
         elif strategy == 3:
