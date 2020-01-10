@@ -5,9 +5,9 @@ import mesh_tensorflow as mtf
 import sys
 import time
 import os, os.path
-import argparse
 import string, random
 
+import common
 from dataloader import ImageDataLoader
 import utils
 from mesh_transformations import ReplaceMeshWithDuplicates, ReplaceMeshWithIndependentAxes
@@ -15,17 +15,13 @@ from mtf_operations import Conv2d, MaxPool
 #import dgx_mesh_impl
 
 
-def RandName(k=5):
-    return ''.join(random.choices(string.ascii_letters + string.ascii_uppercase
-        + string.digits, k=k))
-
 def GetShape(dims):
     sh = []
     for d in dims:
         try:
             name, size = d
         except (TypeError, ValueError):
-            name, size = RandName(), d
+            name, size = utils.RandName(), d
         sh.append(mtf.Dimension(name, size))
 
     sh = mtf.Shape(sh)
@@ -87,6 +83,21 @@ def CreateMeshes(img, labels, args):
             mtf_labels = mtf.import_tf_tensor(meshes[2], labels,
                     GetShape([batch_size]))
 
+        elif num_gpus == 32:
+            mesh = mtf.Mesh(graph, 'mesh1')
+            meshes.append(mesh)
+            mesh_to_impl[mesh] = mesh_impl1 = GetMeshImpl([4, 8])
+
+            mesh = mtf.Mesh(graph, 'mesh2')
+            meshes.append(mesh)
+            devices = [mesh_impl1.devices[i] for i in range(0, 32, 8)]
+            mesh_to_impl[mesh] = GetMeshImpl([4, 1], devices=devices)
+
+            mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
+                batch_size), h, w, ch]))
+            mtf_labels = mtf.import_tf_tensor(meshes[2], labels,
+                    GetShape([batch_size]))
+
         else:
             assert False
 
@@ -123,7 +134,7 @@ def GetFilterShape(img, sizes):
     return mtf.Shape([mtf.Dimension(names[0], sizes[0]),
         mtf.Dimension(names[1], sizes[1]),
         mtf.Dimension(names[2], sizes[2]),
-        mtf.Dimension(RandName(), sizes[3])])
+        mtf.Dimension(utils.RandName(), sizes[3])])
 
 def Alexnet(img, labels, args):
     num_classes = 1000
@@ -131,21 +142,21 @@ def Alexnet(img, labels, args):
     learning_rate = 0.01
     graph, meshes, mesh_to_impl, mtf_img, mtf_labels = CreateMeshes(img, labels,
             args)
-    RenameFC = lambda x: mtf.rename_dimension(x, x.shape[-1].name, RandName())
+    RenameFC = lambda x: mtf.rename_dimension(x, x.shape[-1].name, utils.RandName())
 
     strategy = args.strategy
     num_gpus = args.gpus * args.nodes
     if strategy == 0:
-        fc6_units = mtf.Dimension(RandName(), 4096)
-        fc7_units = mtf.Dimension(RandName(), 4096)
-        fc8_units = mtf.Dimension(RandName(), num_classes)
+        fc6_units = mtf.Dimension(utils.RandName(), 4096)
+        fc7_units = mtf.Dimension(utils.RandName(), 4096)
+        fc8_units = mtf.Dimension(utils.RandName(), num_classes)
 
     elif strategy == 1:
         if args.nodes == 1:
             fc6_units = mtf.Dimension('axis1', 4096)
             fc7_units = mtf.Dimension('axis0', 4096)
             fc8_units = mtf.Dimension('axis1', num_classes)
-        elif args.nodes == 2:
+        elif args.nodes >= 2:
             fc6_units = mtf.Dimension('axis0', 4096)
             fc7_units = mtf.Dimension('axis1', 4096)
             fc8_units = mtf.Dimension('axis0', num_classes)
@@ -159,9 +170,9 @@ def Alexnet(img, labels, args):
         fc8_units = mtf.Dimension('axis0', num_classes)
 
     elif strategy == 3:
-        fc6_units = mtf.Dimension(RandName(), 4096)
-        fc7_units = mtf.Dimension(RandName(), 4096)
-        fc8_units = mtf.Dimension(RandName(), num_classes)
+        fc6_units = mtf.Dimension(utils.RandName(), 4096)
+        fc7_units = mtf.Dimension(utils.RandName(), 4096)
+        fc8_units = mtf.Dimension(utils.RandName(), num_classes)
 
     with tf.variable_scope('alexnet'):
         # Conv1 + ReLU + maxpool1
@@ -189,24 +200,24 @@ def Alexnet(img, labels, args):
 
         # Rename dims
         if strategy == 1:
-            k_dim = mtf.Dimension(RandName(),
+            k_dim = mtf.Dimension(utils.RandName(),
                     utils.Prod(pool5.shape.to_integer_list[1:]))
             pool5 = mtf.reshape(pool5, mtf.Shape([pool5.shape[0], k_dim]))
             if args.nodes == 1:
                 pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1],
-                        (RandName(), 'axis0'))
-            elif args.nodes == 2:
+                        (utils.RandName(), 'axis0'))
+            elif args.nodes >= 2:
                 pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1],
-                        (RandName(), 'axis1'))
+                        (utils.RandName(), 'axis1'))
             else:
                 assert False
 
         elif strategy == 2:
-            pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name, RandName())
+            pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name, utils.RandName())
 
         elif strategy == 3:
             assert pool5.shape[0].name == 'axis0'
-            dim_names = pool5.shape.rename_dimension('axis0', RandName())
+            dim_names = pool5.shape.rename_dimension('axis0', utils.RandName())
             pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1], dim_names)
 
         # FC + ReLU + dropout
@@ -224,7 +235,7 @@ def Alexnet(img, labels, args):
         fc8 = mtf.layers.dense(fc7, fc8_units, name='fc8')
         fc8 = mtf.dropout(fc8, keep_prob)
 
-        if strategy == 1 and args.nodes == 2:
+        if strategy == 1 and args.nodes >= 2:
             assert fc8.shape[-1].name == 'axis0'
             fc8 = ReplaceMeshWithDuplicates(fc8, meshes[2])
 
@@ -262,112 +273,22 @@ def Alexnet(img, labels, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(formatter_class =
-            argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
-            help="Batch size.")
-    parser.add_argument('-g', '--gpus', type=int, required=False, default=8,
-            help="No. of GPUs per node.")
-    parser.add_argument('-n', '--nodes', type=int, required=False, default=1,
-            help="No. of nodes.")
-    parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
-            help="No. of epochs")
-    parser.add_argument('--display_steps', type=int, required=False, default=10,
-            help="No. of epochs")
-    parser.add_argument('-d', '--dropout', type=float, required=False,
-            default=0.5, help="keep_prob value for dropout layers. (Default: 0.5)")
-    parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
-            choices=list(range(4)),
-            help="Strategy to use. 0: DataParallel, \
-                    1: Optimized, \
-                    2: Expert (OWT), \
-                    3: FlexFlow")
-    parser.add_argument('--dataset_dir', type=str, required=False, default=None,
-            help='Dataset directory')
-    parser.add_argument('--labels_filename', type=str, required=False,
-            default='labels.txt', help='Labels filename')
-    parser.add_argument('--dataset_size', type=int, required=False,
-            default=1000, help='Labels filename')
+    t = common.Trainer()
 
-    args = parser.parse_args()
-    gpus_per_node = args.gpus
-    num_nodes = args.nodes
-    num_gpus = gpus_per_node * num_nodes
-    [print(f'{arg} : {val}') for arg, val in vars(args).items()]
-
-    if gpus_per_node != 8:
-        raise NotImplementedError('Current implementation only handles 8 GPUs.')
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
-                                                 range(gpus_per_node))[:-1]
-
-    if num_nodes > 1:
-        from hostlist import expand_hostlist
-        
-        n_tasks = int(os.environ['SLURM_NPROCS'])
-        assert n_tasks == num_nodes
-
-        task_index = int(os.environ['SLURM_PROCID'])
-        hostlist = expand_hostlist(os.environ['SLURM_NODELIST'])
-        hostlist_w_port = [("%s:2222" % host) for host in hostlist] 
-
-        cluster = tf.train.ClusterSpec({"worker":hostlist_w_port}).as_cluster_def()
-        server = tf.train.Server(cluster, job_name="worker",
-                task_index=task_index)
-        session_target = server.target
-
-        if task_index != 0:
-            utils.join_tasks(task_index, hostlist)
-            quit()
-
-    else:
-        task_index = 0
-        hostlist = ['localhost']
-        session_target = ''
-    
     # Initalize the data generator
+    args = t.args
     dataset = ImageDataLoader(args.batch_size, (227, 227), dataset_size =
             args.dataset_size, dataset_dir=args.dataset_dir,
             labels_filename=args.labels_filename)
-    train_batches_per_epoch = dataset.dataset_size // args.batch_size
-    assert train_batches_per_epoch > 0
     
     # Input tensors
     tf_x, tf_y = dataset.next_batch()
     tf_x.set_shape([args.batch_size, 227, 227, 3])
     tf_y.set_shape([args.batch_size])
 
-    init_ops, loss_op, grad_ops = Alexnet(tf_x, tf_y, args)
+    model = Alexnet(tf_x, tf_y, args)
+    t.train(*model, dataset)
 
-    config = tf.ConfigProto()
-    #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
-    with tf.variable_scope('train'):
-        with tf.Session(session_target, config=config) as sess:
-            dataset.reset_pointer()
-            sess.run(init_ops)
-            print('Finished initialization.')
-
-            tot_time = float(0)
-            start = time.time()
-            for epoch in range(args.epochs):
-                step = 0
-
-                for _ in range(train_batches_per_epoch):
-                    loss_val, *_ = sess.run([loss_op] + grad_ops)
-                    step += 1
-
-                    if step % args.display_steps == 0:
-                        print("Epoch: " + str(epoch) + "; Loss: " +
-                                str(loss_val))
-
-                dataset.reset_pointer()
-            end = time.time()
-            tot_time += (end - start)
-
-            img_per_sec = float(dataset.dataset_size * args.epochs) / tot_time
-            print("Throughput: " + str(img_per_sec) + " images / sec",
-                    flush=True)
-
-    utils.join_tasks(task_index, hostlist)
 
 if __name__ == '__main__':
     main()

@@ -317,16 +317,16 @@ def ReplaceMeshWithRemoval(new_mesh, tsr, axis, name=None):
     return ReplaceMeshWithRemovalOperation(new_mesh, tsr, axis, name).outputs[0]
 
 
-def join_tasks(task_id, hostlist, port=5555):
+def join_tasks(task_id, hostlist, port=3452):
     if len(hostlist) <= 1:
         return
 
     import socket
-    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     hostname = socket.gethostname().split('.')[0]
     assert hostname in hostlist
 
     def connect_and_send(hostname):
+        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         while True:
             try:
                 conn.connect((hostname, port))
@@ -339,8 +339,8 @@ def join_tasks(task_id, hostlist, port=5555):
         for host in hostlist:
             if host != hostname:
                 connect_and_send(host)
-
     else:
+        conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         conn.bind(('', port))
         conn.listen(1)
         conn.accept()
