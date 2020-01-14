@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import mesh_tensorflow as mtf
 
 import datetime
@@ -426,7 +426,8 @@ def Inception(img, labels, num_nodes, num_gpus, args):
             dim_name = utils.RandName()
         else:
             dim_name = utils.RandName()
-        fc = mtf.layers.dense(mean, mtf.Dimension(dim_name, num_classes))
+        fc = mtf.layers.dense(mean, mtf.Dimension(dim_name, num_classes),
+                reduced_dims=mean.shape[-1:])
 
         with tf.variable_scope('loss'):
             assert mtf_labels.mesh == fc.mesh

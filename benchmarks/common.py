@@ -9,7 +9,6 @@ import utils
 
 class Trainer():
     def __init__(self, parser=None):
-        tf.disable_eager_execution()
         parser = parser or argparse.ArgumentParser(
                 formatter_class = argparse.ArgumentDefaultsHelpFormatter)
         parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
@@ -26,6 +25,7 @@ class Trainer():
                         1: Optimized, \
                         2: Expert (OWT), \
                         3: FlexFlow")
+        parser.add_argument('--xla', action='store_true', help='Use TF XLA')
         parser.add_argument('--dataset_dir', type=str, required=False, default=None,
                 help='Dataset directory')
         parser.add_argument('--labels_filename', type=str, required=False,
@@ -45,6 +45,11 @@ class Trainer():
         os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
                                                      range(gpus_per_node))[:-1]
 
+        if self.args.xla:
+            os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir=' + os.environ['CUDA_HOME']
+            os.environ['TF_XLA_FLAGS'] = '--tf_xla_auto_jit=2 --tf_xla_cpu_global_jit'
+
+        tf.disable_eager_execution()
         self.setup_servers()
     
 
