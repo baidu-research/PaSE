@@ -27,7 +27,7 @@ def GetShape(dims):
     sh = mtf.Shape(sh)
     return sh
 
-def CreateMeshes(img, labels, args):
+def CreateMeshes(img, labels, num_nodes, num_gpus, args):
     h, w, ch = 227, 227, 3
     graph = mtf.Graph()
     meshes = []
@@ -35,9 +35,6 @@ def CreateMeshes(img, labels, args):
 
     strategy = args.strategy
     batch_size = args.batch_size
-    gpus_per_node = args.gpus
-    num_nodes = args.nodes
-    num_gpus = gpus_per_node * num_nodes
 
     def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
         return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
@@ -136,27 +133,26 @@ def GetFilterShape(img, sizes):
         mtf.Dimension(names[2], sizes[2]),
         mtf.Dimension(utils.RandName(), sizes[3])])
 
-def Alexnet(img, labels, args):
+def Alexnet(img, labels, num_nodes, num_gpus, args):
     num_classes = 1000
     keep_prob = 0.5
     learning_rate = 0.01
     graph, meshes, mesh_to_impl, mtf_img, mtf_labels = CreateMeshes(img, labels,
-            args)
+            num_nodes, num_gpus, args)
     RenameFC = lambda x: mtf.rename_dimension(x, x.shape[-1].name, utils.RandName())
 
     strategy = args.strategy
-    num_gpus = args.gpus * args.nodes
     if strategy == 0:
         fc6_units = mtf.Dimension(utils.RandName(), 4096)
         fc7_units = mtf.Dimension(utils.RandName(), 4096)
         fc8_units = mtf.Dimension(utils.RandName(), num_classes)
 
     elif strategy == 1:
-        if args.nodes == 1:
+        if num_nodes == 1:
             fc6_units = mtf.Dimension('axis1', 4096)
             fc7_units = mtf.Dimension('axis0', 4096)
             fc8_units = mtf.Dimension('axis1', num_classes)
-        elif args.nodes >= 2:
+        elif num_nodes >= 2:
             fc6_units = mtf.Dimension('axis0', 4096)
             fc7_units = mtf.Dimension('axis1', 4096)
             fc8_units = mtf.Dimension('axis0', num_classes)
@@ -203,10 +199,10 @@ def Alexnet(img, labels, args):
             k_dim = mtf.Dimension(utils.RandName(),
                     utils.Prod(pool5.shape.to_integer_list[1:]))
             pool5 = mtf.reshape(pool5, mtf.Shape([pool5.shape[0], k_dim]))
-            if args.nodes == 1:
+            if num_nodes == 1:
                 pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1],
                         (utils.RandName(), 'axis0'))
-            elif args.nodes >= 2:
+            elif num_nodes >= 2:
                 pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1],
                         (utils.RandName(), 'axis1'))
             else:
@@ -235,7 +231,7 @@ def Alexnet(img, labels, args):
         fc8 = mtf.layers.dense(fc7, fc8_units, name='fc8')
         fc8 = mtf.dropout(fc8, keep_prob)
 
-        if strategy == 1 and args.nodes >= 2:
+        if strategy == 1 and num_nodes >= 2:
             assert fc8.shape[-1].name == 'axis0'
             fc8 = ReplaceMeshWithDuplicates(fc8, meshes[2])
 
@@ -286,7 +282,7 @@ def main():
     tf_x.set_shape([args.batch_size, 227, 227, 3])
     tf_y.set_shape([args.batch_size])
 
-    model = Alexnet(tf_x, tf_y, args)
+    model = Alexnet(tf_x, tf_y, t.num_nodes, t.num_gpus, args)
     t.train(*model, dataset)
 
 

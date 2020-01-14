@@ -115,7 +115,7 @@ class ReplaceMesh0AndMesh1Operation(mtf.Operation):
 def ReplaceMesh0AndMesh1(x, mesh, dim_names=None, name=None):
     return ReplaceMesh0AndMesh1Operation(x, mesh, dim_names, name).outputs[0]
 
-def CreateMeshes(args, img, labels):
+def CreateMeshes(args, img, labels, num_nodes, num_gpus):
     h, w, ch = 299, 299, 3
     graph = mtf.Graph()
     meshes = []
@@ -123,9 +123,6 @@ def CreateMeshes(args, img, labels):
 
     strategy = args.strategy
     batch_size = args.batch_size
-    gpus_per_node = args.gpus
-    num_nodes = args.nodes
-    num_gpus = gpus_per_node * num_nodes
 
     def Mesh():
         mesh = mtf.Mesh(graph, 'mesh%d' % Mesh.idx)
@@ -373,10 +370,10 @@ def InceptionE(img, in_channels, strategy, meshes=None, name=None):
                 name='concat3')
 
 
-def Inception(img, labels, args):
+def Inception(img, labels, num_nodes, num_gpus, args):
     num_classes = 1000
     graph, meshes, mesh_to_impl, mtf_img, mtf_labels = CreateMeshes(args, img,
-            labels)
+            labels, num_nodes, num_gpus)
 
     strategy = args.strategy
     with tf.variable_scope('inception'):
@@ -419,7 +416,6 @@ def Inception(img, labels, args):
                 mean = mtf.reshape(mean, shape)
             dim_name = 'axis1'
         elif strategy == 2:
-            num_gpus = args.nodes * args.gpus
             num_classes = num_classes + num_gpus - (num_classes % num_gpus)
             mean = mtf.rename_dimension(mean, 'axis0', mtf_labels.shape[0].name)
             dim_name = 'axis0'
@@ -480,7 +476,7 @@ def main():
     tf_y.set_shape([args.batch_size])
 
     # Train
-    model = Inception(tf_x, tf_y, args)
+    model = Inception(tf_x, tf_y, t.num_nodes, t.num_gpus, args)
     t.train(*model, dataset)
 
 

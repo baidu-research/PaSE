@@ -9,6 +9,7 @@ import string, random
 import argparse
 import functools
 
+import common
 from dataloader import TextDataLoader
 
 def Devices(lst):
@@ -27,8 +28,10 @@ class Params():
 def AllConcatRing(xs, axis, devices=None):
   devices = devices or [x.device for x in xs]
   n = len(xs)
+  assert len(devices) == n
   if n == 1:
     return xs
+
   # [target, source]
   parts = [[xs[target] if target == source else None for source in range(n)]
            for target in range(n)]
@@ -154,7 +157,7 @@ def ParallelDense(x, w_shape, num_k_splits, num_n_splits, devices, name,
 class LSTMCell(keras.layers.Layer):
     def __init__(self, batch_size, num_units, devices, num_k_splits,
             num_n_splits, **kwargs):
-        self.num_gpus = 8
+        self.num_gpus = len(devices)
         self.num_k_splits = num_k_splits
         self.num_n_splits = num_n_splits
         self.batch_size = batch_size
@@ -169,24 +172,25 @@ class LSTMCell(keras.layers.Layer):
 
     def build(self, input_state):
         self.ws = []
-        for d in self.devices:
+        for i, d in enumerate(self.devices):
             with tf.device(d):
                 w_shape = [(2 * self.num_units) // self.num_k_splits, (4 *
                     self.num_units) // self.num_n_splits]
                 w = self.add_weight(shape=w_shape, initializer='uniform',
-                        dtype=tf.float32, name=f'w_{d.device_index}')
+                        dtype=tf.float32, name=f'w_{i}')
                 self.ws.append(w)
         super().build(input_state)
 
     def call(self, x, states):
         def SetDevices(xs):
             new_xs = []
+            assert len(xs) <= len(self.devices)
             for x, dev in zip(xs, self.devices):
                 if not x.device:
                     with tf.device(dev):
                         new_xs.append(tf.identity(x))
                 else:
-                    assert x.device == dev.to_string()
+                    assert x.device == dev
                     new_xs.append(x)
             return new_xs
 
@@ -217,16 +221,15 @@ class LSTMCell(keras.layers.Layer):
             with tf.device(h.device):
                 xhs.append(tf.concat([x, h], axis=1))
         assert len(xhs) == self.num_gpus
-        assert all(x.device == device.to_string() for x, device in zip(xhs,
-            self.devices))
+        assert all(x.device == device for x, device in zip(xhs, self.devices))
 
         # GEMM
         xhs = [xhs[i::self.num_n_splits] for i in range(self.num_n_splits)]
         ws_lst = [self.ws[i::self.num_n_splits] for i in range(self.num_n_splits)]
         ifgos = [ParallelGEMM(xs, ws) for xs, ws in zip(xhs, ws_lst)]
         assert len(ifgos) == self.num_n_splits
-        assert all(ifgo.device == device.to_string() for ifgo, device in
-                zip(ifgos, self.devices))
+        assert all(ifgo.device == device for ifgo, device in zip(ifgos,
+            self.devices))
 
         # Apply activations
         assert len(ifgos) == len(cs)
@@ -255,32 +258,49 @@ class LSTMCell(keras.layers.Layer):
             #        self.devices[::self.num_n_splits]]
 
             # TODO: Handling just this special case for now.
-            assert len(new_hs_split) == 4
-            assert all(h.device == dev.to_string() for h, dev in zip(new_hs_split,
-                self.devices[:4]))
-            split_1 = AllConcat(new_hs_split[:2], axis=1)
-            split_2 = AllConcat(new_hs_split[2:], axis=1,
-                    devices=self.devices[4:6])
+            assert self.num_k_splits == self.num_n_splits // 2
+
+            num_hs = len(new_hs_split)
+            num_devices = len(self.devices)
+            num_hs_by_2 = num_hs // 2
+            num_devices_by_2 = num_devices // 2
+            assert num_hs == self.num_n_splits
+            assert all(h.device == d for h, d in zip(new_hs_split,
+                self.devices))
+
+            split_1 = AllConcatRing(new_hs_split[:num_hs_by_2], axis=1)
+            split_2 = AllConcatRing(new_hs_split[num_hs_by_2:], axis=1,
+                    devices=self.devices[num_devices_by_2:num_devices_by_2+num_hs_by_2])
+
             new_hs = split_1[:]
-            for h, dev in zip(split_1, self.devices[2:]):
+            for h, dev in zip(split_1, self.devices[num_hs_by_2:]):
                 with tf.device(dev):
                     new_hs.append(tf.identity(h))
             new_hs += split_2
-            for h, dev in zip(split_2, self.devices[6:]):
+            for h, dev in zip(split_2, self.devices[-num_hs_by_2:]):
                 with tf.device(dev):
                     new_hs.append(tf.identity(h))
+
         elif self.num_n_splits < self.num_k_splits:
             new_hs = []
             num_splits = self.num_k_splits // self.num_n_splits
             for h in new_hs_split:
                 with tf.device(h.device):
                     new_hs += tf.split(h, num_splits, axis=1)
+
         else:
             new_hs = new_hs_split
+            full_new_hs = []
+            for i, h in enumerate(new_hs):
+                i *= self.num_n_splits
+                for j in range(i, i+self.num_k_splits):
+                    with tf.device(self.devices[j]):
+                        full_new_hs.append(tf.identity(h))
+            new_hs = full_new_hs
 
-        assert [h.device for h in new_hs] == [d.to_string() for d in
-                self.devices]
-        assert [c.device for c in new_cs] == [d.to_string() for d in
+        print([h.device for h in new_hs])
+        assert [h.device for h in new_hs] == [d for d in self.devices]
+        assert [c.device for c in new_cs] == [d for d in
                 self.devices[:self.num_n_splits]]
 
         with tf.device(self.devices[0]):
@@ -292,44 +312,42 @@ class LSTMCell(keras.layers.Layer):
 def main():
     parser = argparse.ArgumentParser(formatter_class =
             argparse.ArgumentDefaultsHelpFormatter)
-
-    parser.add_argument('-b', '--batch', type=int, required=False, default=64,
-            help="Batch size")
-    parser.add_argument('-p', '--procs', type=int, required=False, default=8,
-            help="No. of processors")
-    parser.add_argument('-t', '--epochs', type=int, required=False, default=3,
-            help="No. of epochs")
-    parser.add_argument('--max_steps', type=int, required=False, default=50,
-            help='Maximum no. of steps to execute')
-    parser.add_argument('--display_steps', type=int, required=False, default=10,
-            help="No. of epochs")
     parser.add_argument('--vocab', type=str, help="Source vocab data file.")
     parser.add_argument('--text', type=str, help="Source text data file.")
-    args = parser.parse_args()
-    params = Params(args.batch)
-    [print(f'{arg} : {val}') for arg, val in vars(args).items()]
+    parser.add_argument('--max_steps', type=int, required=False, default=50,
+            help='Maximum no. of steps to execute')
 
-    if args.procs != 8:
-        raise NotImplementedError('Current implementation only handles 8 GPUs.')
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
-                                                 range(args.procs))[:-1]
-    devices = [tf.DeviceSpec(device_type='GPU', device_index=i) for i in
-            range(args.procs)]
+    trainer = common.Trainer(parser)
+    args = trainer.args
+    params = Params(args.batch_size)
+    num_gpus = trainer.num_gpus
+    servername = 'localhost' if trainer.num_nodes == 1 else 'worker'
+    devices = [f'/job:{servername}/replica:0/task:{i}/device:GPU:{j}' for i in
+            range(trainer.num_nodes) for j in range(args.gpus)]
     
     # Initialize dataset
-    dataset = TextDataLoader(args.batch, args.vocab, None, args.text, None,
+    dataset = TextDataLoader(args.batch_size, args.vocab, None, args.text, None,
             max_seq_len=params.max_seq_len)
     inputs, labels, _, _ = dataset.next_batch()
 
     with open(args.vocab) as f:
         for vocab_size, _ in enumerate(f):
             pass
-    vocab_size = int(math.ceil(vocab_size / 8)) * int(8)
+    vocab_size = int(math.ceil(vocab_size / num_gpus)) * int(num_gpus)
     print("Vocab size: %d" % vocab_size)
 
     # RNN
-    num_k_splits = 2
-    num_n_splits = 4
+    if num_gpus == 8:
+        num_k_splits = 2
+        num_n_splits = 4
+    elif num_gpus == 16:
+        num_k_splits = 4
+        num_n_splits = 4
+    elif num_gpus == 32:
+        num_k_splits = 4
+        num_n_splits = 8
+    else:
+        assert False
     cells = [LSTMCell(params.batch_size, params.num_units, devices,
         num_k_splits, num_n_splits),
             LSTMCell(params.batch_size, params.num_units, devices, num_k_splits,
@@ -365,7 +383,8 @@ def main():
     # Model
     with tf.device(get_device_fn()):
         embedding_weights = tf.get_variable('embed_weights', shape=[vocab_size,
-            params.num_units], partitioner=tf.fixed_size_partitioner(8, axis=0))
+            params.num_units],
+            partitioner=tf.fixed_size_partitioner(num_gpus, axis=0))
     embed = tf.nn.embedding_lookup(embedding_weights, inputs)
     xs = rnn(embed, initial_state=states)
 
@@ -373,7 +392,7 @@ def main():
     ys = []
     for dev in devices:
         with tf.device(dev):
-            ys.append(keras.layers.Dense(vocab_size // 8, use_bias=False)(xs))
+            ys.append(keras.layers.Dense(vocab_size // num_gpus, use_bias=False)(xs))
     with tf.device(devices[0]):
         y = tf.concat(ys, axis=2)
         loss = tf.losses.sparse_softmax_cross_entropy(labels, y,
@@ -383,39 +402,13 @@ def main():
     assert all(g is not None for g in grads)
     grads = opt.apply_gradients(grads)
 
-    cnt = 0
+    # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
     config = tf.ConfigProto(#log_device_placement=True,
             allow_soft_placement=False)
-    with tf.Session(config=config) as sess:
-        dataset.reset_pointer()
-        sess.run(tf.global_variables_initializer())
-
-        tot_time = float(0)
-        start = time.time()
-        for epoch in range(args.epochs):
-            step = 0
-
-            while True:
-                try:
-                    loss_val, *_ = sess.run([loss, grads], options=run_options)
-                    cnt += 1
-                    step += 1
-                    if step > args.max_steps:
-                        break
-                except tf.errors.OutOfRangeError:
-                    break
-
-                if step % args.display_steps == 0 and step > 0:
-                    print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
-
-            dataset.reset_pointer()
-        end = time.time()
-        tot_time += (end - start)
-
-    samples_per_sec = (args.batch * cnt) / tot_time
-    print("Throughput: " + str(samples_per_sec) + " samples / sec")
-
+    trainer.train(tf.global_variables_initializer(), loss, [grads], dataset,
+            train_batches_per_epoch=args.max_steps, config=config,
+            run_options=run_options)
 
 
 if __name__ == '__main__':

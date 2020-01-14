@@ -8,21 +8,17 @@ import sys, time, os
 import utils
 
 class Trainer():
-    def __init__(self):
-        parser = argparse.ArgumentParser(formatter_class =
-                argparse.ArgumentDefaultsHelpFormatter)
+    def __init__(self, parser=None):
+        parser = parser or argparse.ArgumentParser(
+                formatter_class = argparse.ArgumentDefaultsHelpFormatter)
         parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
                 help="Batch size.")
         parser.add_argument('-g', '--gpus', type=int, required=False, default=8,
                 help="No. of GPUs per node.")
-        parser.add_argument('-n', '--nodes', type=int, required=False, default=1,
-                help="No. of nodes.")
         parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
                 help="No. of epochs")
         parser.add_argument('--display_steps', type=int, required=False, default=10,
                 help="No. of epochs")
-        parser.add_argument('-d', '--dropout', type=float, required=False,
-                default=0.5, help="keep_prob value for dropout layers. (Default: 0.5)")
         parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
                 choices=list(range(4)),
                 help="Strategy to use. 0: DataParallel, \
@@ -38,21 +34,23 @@ class Trainer():
     
         args = parser.parse_args()
         gpus_per_node = args.gpus
-        num_nodes = args.nodes
-        num_gpus = gpus_per_node * num_nodes
+        self.num_nodes = int(os.environ['SLURM_NNODES'])
+        assert self.num_nodes > 0
+        self.num_gpus = gpus_per_node * self.num_nodes
         self.args = args
     
         if gpus_per_node != 8:
             raise NotImplementedError('Current implementation only handles 8 GPUs.')
         os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
                                                      range(gpus_per_node))[:-1]
+
+        self.setup_servers()
     
-        if num_nodes > 1:
+
+    def setup_servers(self):
+        if self.num_nodes > 1:
             from hostlist import expand_hostlist
             
-            n_tasks = int(os.environ['SLURM_NNODES'])
-            assert n_tasks == num_nodes
-    
             task_index = int(os.environ['SLURM_PROCID'])
             hostlist = expand_hostlist(os.environ['SLURM_NODELIST'])
             hostlist_w_port = [("%s:2222" % host) for host in hostlist] 
@@ -71,18 +69,17 @@ class Trainer():
             hostlist = ['localhost']
             session_target = ''
     
-        [print(f'{arg} : {val}') for arg, val in vars(args).items()]
+        [print(f'{arg} : {val}') for arg, val in vars(self.args).items()]
         self.session_target = session_target
         self.task_index = task_index
         self.hostlist = hostlist
     
-    def train(self, init_ops, loss_op, grad_ops, dataset):
-        train_batches_per_epoch = np.floor(dataset.dataset_size /
-                self.args.batch_size).astype(np.int16)
-        assert train_batches_per_epoch > 0
-        config = tf.ConfigProto()
+    def train(self, init_ops, loss_op, grad_ops, dataset, 
+            train_batches_per_epoch=-1, config=None, run_options=None):
+        config = config or tf.ConfigProto()
 
         #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
+        cnt = 0
         with tf.variable_scope('train'):
             with tf.Session(self.session_target, config=config) as sess:
                 dataset.reset_pointer()
@@ -94,20 +91,29 @@ class Trainer():
                 for epoch in range(self.args.epochs):
                     step = 0
     
-                    for _ in range(train_batches_per_epoch):
-                        loss_val, *_ = sess.run([loss_op] + grad_ops)
-                        step += 1
-    
-                        if step % self.args.display_steps == 0:
-                            print("Epoch: " + str(epoch) + "; Loss: " +
-                                    str(loss_val))
+                    while True:
+                        try:
+                            loss_val, *_ = sess.run([loss_op] + grad_ops,
+                                    options=run_options)
+                            step += 1
+                            cnt += 1
+
+                            if step % self.args.display_steps == 0:
+                                print("Epoch: " + str(epoch) + "; Loss: " +
+                                        str(loss_val))
+
+                            if train_batches_per_epoch > 0 and (step ==
+                                    train_batches_per_epoch):
+                                break
+                        except tf.errors.OutOfRangeError:
+                            break
     
                     dataset.reset_pointer()
                 end = time.time()
                 tot_time += (end - start)
     
-                img_per_sec = float(dataset.dataset_size * self.args.epochs) / tot_time
-                print("Throughput: " + str(img_per_sec) + " images / sec",
+                samples_per_sec = float(self.args.batch_size * cnt) / tot_time
+                print("Throughput: " + str(samples_per_sec) + " samples / sec",
                         flush=True)
     
         utils.join_tasks(self.task_index, self.hostlist)

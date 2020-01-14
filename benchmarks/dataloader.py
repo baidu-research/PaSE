@@ -57,7 +57,7 @@ class ImageDataLoader():
             dataset = dataset.map(self.parse_image, num_parallel_calls =
                     num_parallel_calls)
 
-        dataset = dataset.batch(batch_size)
+        dataset = dataset.batch(batch_size, drop_remainder=True)
         dataset = dataset.prefetch(prefetches)
 
         self.dataset_iterator = dataset.make_initializable_iterator()
