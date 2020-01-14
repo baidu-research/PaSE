@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 
 class ImageDataLoader():
@@ -19,8 +19,9 @@ class ImageDataLoader():
         return image, label
 
     def __init__(self, batch_size, img_size, dataset_size=1000,
-            dataset_dir=None, labels_filename=None, num_parallel_calls = 32,
-            prefetches = 8):
+            dataset_dir=None, labels_filename=None,
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            prefetches=tf.data.experimental.AUTOTUNE):
         assert len(img_size) == 2
         self.img_size = img_size
 
@@ -30,9 +31,9 @@ class ImageDataLoader():
 
             num_elems = 1000
             assert dataset_size % num_elems == 0
-            features = tf.random_uniform([num_elems, img_size[0],
+            features = tf.random.uniform([num_elems, img_size[0],
                 img_size[1], 3], minval=0, maxval=1, dtype=tf.float32)
-            classes = tf.random_uniform([num_elems], minval=0,
+            classes = tf.random.uniform([num_elems], minval=0,
                     maxval=num_classes, dtype=tf.int32)
             dataset = tf.data.Dataset.from_tensor_slices((features,
                 classes)).repeat(int(dataset_size / num_elems))
@@ -59,7 +60,6 @@ class ImageDataLoader():
 
         dataset = dataset.batch(batch_size, drop_remainder=True)
         dataset = dataset.prefetch(prefetches)
-
         self.dataset_iterator = dataset.make_initializable_iterator()
         self.initializer = self.dataset_iterator.initializer
 

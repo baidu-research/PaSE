@@ -1,6 +1,6 @@
 import argparse
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 import datetime
 import sys, time, os
@@ -9,6 +9,7 @@ import utils
 
 class Trainer():
     def __init__(self, parser=None):
+        tf.disable_eager_execution()
         parser = parser or argparse.ArgumentParser(
                 formatter_class = argparse.ArgumentDefaultsHelpFormatter)
         parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
@@ -56,7 +57,7 @@ class Trainer():
             hostlist_w_port = [("%s:2222" % host) for host in hostlist] 
     
             cluster = tf.train.ClusterSpec({"worker":hostlist_w_port}).as_cluster_def()
-            server = tf.train.Server(cluster, job_name="worker",
+            server = tf.distribute.Server(cluster, job_name="worker",
                     task_index=task_index)
             session_target = server.target
     
@@ -105,7 +106,7 @@ class Trainer():
                             if train_batches_per_epoch > 0 and (step ==
                                     train_batches_per_epoch):
                                 break
-                        except tf.errors.OutOfRangeError:
+                        except (tf.errors.OutOfRangeError, StopIteration):
                             break
     
                     dataset.reset_pointer()

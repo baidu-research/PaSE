@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import mesh_tensorflow as mtf
 
 import sys
@@ -224,11 +224,11 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
             fc6 = RenameFC(fc6)
 
         fc7 = mtf.layers.dense(fc6, fc7_units, activation=fc_activation,
-                name='fc7')
+                reduced_dims=fc6.shape.dims[-1:], name='fc7')
         if strategy == 2:
             fc7 = RenameFC(fc7)
 
-        fc8 = mtf.layers.dense(fc7, fc8_units, name='fc8')
+        fc8 = mtf.layers.dense(fc7, fc8_units, reduced_dims=fc7.shape.dims[-1:], name='fc8')
         fc8 = mtf.dropout(fc8, keep_prob)
 
         if strategy == 1 and num_nodes >= 2:
