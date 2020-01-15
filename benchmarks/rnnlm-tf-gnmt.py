@@ -21,13 +21,13 @@ class Params():
 
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, batch_size, num_gpus, num_units, device, layer, **kwargs):
+    def __init__(self, batch_size, num_units, device, layer, **kwargs):
         self.batch_size = batch_size
-        self.num_gpus = num_gpus
         self.num_units = num_units
         self.device = device
         self.layer = layer
         self.state_size = [num_units, num_units]
+        self.counter = 0
 
         super().__init__(**kwargs)
 
@@ -39,11 +39,7 @@ class LSTMCell(keras.layers.Layer):
             super().build(input_state)
 
     def call(self, x, states):
-        device_name = self.device.split(':')
-        device_name[-1] = str(int(device_name[-1]) + (self.layer *
-            (self.num_gpus // 2)))
-        device_name = ':'.join(device_name)
-        with tf.device(device_name):
+        with tf.device(self.exec_device):
             h, c = states
             xh = tf.concat([x, h], axis=1)
 
@@ -92,15 +88,22 @@ def main():
     # Model
     dev = devices[0]
     with tf.device(dev):
-        cell0 = LSTMCell(params.batch_size, trainer.num_gpus, params.num_units,
-                dev, layer=0)
+        cell0 = LSTMCell(params.batch_size, params.num_units, dev, layer=0)
     dev = devices[num_gpus_by_2]
     with tf.device(dev):
-        cell1 = LSTMCell(params.batch_size, trainer.num_gpus, params.num_units,
-                dev, layer=1)
+        cell1 = LSTMCell(params.batch_size, params.num_units, dev, layer=1)
     cells = [cell0, cell1]
     rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
     dense = keras.layers.Dense(vocab_size, use_bias=False)
+
+    def get_next_layer_device(dev):
+        dev = dev.split(':')
+        dev_id = int(dev[-1]) + num_gpus_by_2
+        assert dev_id < trainer.num_gpus
+
+        dev[-1] = str(dev_id)
+        dev = ':'.join(dev)
+        return dev
 
     num_data_parallel = num_gpus_by_2
     xs = tf.split(inputs, num_data_parallel, axis=0)
@@ -110,6 +113,8 @@ def main():
     for x, dev in zip(xs, devices):
         with tf.device(dev):
             x = tf.nn.embedding_lookup(embedding_weights, x)
+            cells[0].exec_device = dev
+            cells[1].exec_device = get_next_layer_device(dev)
             ys.append(dense(rnn(x)))
     y = tf.concat(ys, axis=0)
 
