@@ -160,7 +160,7 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
             assert False
 
     elif strategy == 2:
-        num_classes = num_classes + num_gpus - (num_classes % num_gpus)
+        num_classes = utils.RoundUp(num_classes, num_gpus)
         fc6_units = mtf.Dimension('axis0', 4096)
         fc7_units = mtf.Dimension('axis0', 4096)
         fc8_units = mtf.Dimension('axis0', num_classes)
@@ -283,7 +283,7 @@ def main():
     tf_y.set_shape([args.batch_size])
 
     model = Alexnet(tf_x, tf_y, t.num_nodes, t.num_gpus, args)
-    t.train(*model, dataset)
+    t.train(*model, dataset, config=tf.ConfigProto(allow_soft_placement=False))
 
 
 if __name__ == '__main__':

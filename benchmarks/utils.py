@@ -18,6 +18,12 @@ def Prod(lst):
     return reduce(mul, lst, 1)
 
 
+def RoundUp(n, m):
+    assert n > 0 and m > 0
+    rem = n % m
+    return (n + m - rem) if rem else n
+
+
 def GetDeviceList(gpus, num_nodes=1):
     if isinstance(gpus, list):
         assert all(isinstance(g, str) for g in gpus)

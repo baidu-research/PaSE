@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import mesh_tensorflow as mtf 
 
 import math
@@ -8,16 +8,13 @@ import sys, time, os
 import string, random
 import argparse
 
+import common
 from dataloader import TextDataLoader
 import utils
+from utils import RandName
 from mesh_transformations import ReplaceMeshWithIndependentAxes, \
         ReplaceMeshWithDuplicates
 import dgx_mesh_impl
-
-
-def RandName(k=5):
-    return ''.join(random.choices(string.ascii_letters + string.ascii_uppercase
-        + string.digits, k=k))
 
 
 def GetShape(dims):
@@ -34,17 +31,27 @@ def GetShape(dims):
 
 
 class Params():
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, max_seq_len):
         self.batch_size = batch_size
         self.nx = 6
-        self.max_seq_len = 256
+        self.max_seq_len = max_seq_len
         self.d_model = 1024
         self.heads = 8
         self.d_ff = 4096 #self.heads * 512
         self.d_k = 64
 
+def get_mesh_dims(num_gpus):
+    if num_gpus == 8:
+        return 2, 4
+    elif num_gpus == 16:
+        return 4, 4
+    elif num_gpus == 32:
+        return 4, 8
+    else:
+        assert False
+        return -1, -1
 
-def CreateMeshes(strategy, src, tgt, params):
+def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
@@ -54,12 +61,14 @@ def CreateMeshes(strategy, src, tgt, params):
         meshes.append(mesh)
         return mesh
 
-    def GetMeshImpl(dev_cnts, devices=None):
-        return utils.GetMeshImpl(dev_cnts, devices=devices)
+    def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
+        return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
+
+    mesh_dim1, mesh_dim2 = get_mesh_dims(num_gpus)
 
     if strategy == 0: # Data-parallel
         mesh = Mesh(0)
-        mesh_to_impl[mesh] = GetMeshImpl([8])
+        mesh_to_impl[mesh] = GetMeshImpl([num_nodes])
 
         shape = GetShape([('axis0', params.batch_size), params.max_seq_len])
         mtf_src = mtf.import_tf_tensor(mesh, src, shape)
@@ -69,11 +78,12 @@ def CreateMeshes(strategy, src, tgt, params):
 
     elif strategy == 1: # Opt strategy from the tool
         mesh = Mesh(0)
-        mesh_to_impl[mesh] = GetMeshImpl([8])
+        mesh_to_impl[mesh] = GetMeshImpl([num_nodes])
+
         mesh = Mesh(1)
-        mesh_to_impl[mesh] = GetMeshImpl([2, 4])
+        mesh_to_impl[mesh] = GetMeshImpl([mesh_dim1, mesh_dim2])
         mesh = Mesh(2)
-        mesh_to_impl[mesh] = GetMeshImpl([4])
+        mesh_to_impl[mesh] = GetMeshImpl([mesh_dim2])
 
         shape = GetShape([params.batch_size, params.max_seq_len])
         mtf_src = mtf.cast(mtf.import_tf_tensor(meshes[0], src, shape), tf.int32)
@@ -81,7 +91,7 @@ def CreateMeshes(strategy, src, tgt, params):
 
     elif strategy == 2: # Strategy from mesh-tensorflow paper
         mesh = Mesh(0)
-        mesh_to_impl[mesh] = GetMeshImpl([2, 4])
+        mesh_to_impl[mesh] = GetMeshImpl([mesh_dim1, mesh_dim2])
 
         shape = GetShape([('axis0', params.batch_size), params.max_seq_len])
         mtf_src = mtf.import_tf_tensor(mesh, src, shape)
@@ -95,10 +105,10 @@ def CreateMeshes(strategy, src, tgt, params):
     return graph, meshes, mesh_to_impl, mtf_src, mtf_tgt
 
 
-def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
-    strategy = args.strategy
+def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
+        num_nodes, num_gpus):
     graph, meshes, mesh_to_impl, mtf_src, mtf_tgt = CreateMeshes(strategy, src,
-            tgt, params)
+            tgt, num_nodes, num_gpus, params)
 
     # mtf dimensions
     if strategy == 0:
@@ -111,8 +121,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         final_proj_dim = tgt_vocab_dim
 
     elif strategy == 1:
-        src_vocab_size = int(math.ceil(src_vocab_size / 8)) * int(8)
-        tgt_vocab_size = int(math.ceil(tgt_vocab_size / 8)) * int(8)
+        src_vocab_size = utils.RoundUp(src_vocab_size, num_gpus)
+        tgt_vocab_size = utils.RoundUp(tgt_vocab_size, num_gpus)
         d_k_dim = mtf.Dimension(RandName(), params.d_k)
         heads_dim = mtf.Dimension('axis0', params.heads)
         d_ff_dim = mtf.Dimension('axis0', params.d_ff)
@@ -122,10 +132,12 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         #final_proj_dim = mtf.Dimension('axis0', tgt_vocab_size)
         final_proj_dim = mtf.Dimension('axis1', tgt_vocab_size)
 
-    else:
+    elif strategy == 2:
         # Make the vocabulary size a multiple of mesh size
-        src_vocab_size = int(math.ceil(src_vocab_size / 4)) * int(4)
-        tgt_vocab_size = int(math.ceil(tgt_vocab_size / 4)) * int(4)
+        src_vocab_size = utils.RoundUp(src_vocab_size,
+                get_mesh_dims(num_gpus)[1])
+        tgt_vocab_size = utils.RoundUp(tgt_vocab_size,
+                get_mesh_dims(num_gpus)[1])
         d_k_dim = mtf.Dimension(RandName(), params.d_k)
         heads_dim = mtf.Dimension('axis1', params.heads)
         d_ff_dim = mtf.Dimension('axis1', params.d_ff)
@@ -133,6 +145,9 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         src_vocab_dim = mtf.Dimension('axis1', src_vocab_size)
         tgt_vocab_dim = mtf.Dimension('axis1', tgt_vocab_size)
         final_proj_dim = tgt_vocab_dim
+
+    else:
+        assert False
 
     seq_len_dim = mtf_src.shape[-1]
     assert mtf_src.shape[-1] == mtf_tgt.shape[-1]
@@ -275,8 +290,9 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
         embed = mtf.layers.embedding(mtf_src, src_vocab_dim, d_model_dim,
                 tf.float32, name='enc_embedding')
         if strategy == 1:
+            assert len(embed.shape) == 3
             embed = ReplaceMeshWithIndependentAxes(embed, meshes[2], ('axis0',
-                None, RandName()), name='replace_embed_mesh')
+                embed.shape[1].name, RandName()), name='replace_embed_mesh')
 
         # Values for positional encoder
         pos = np.array(tuple(range(params.max_seq_len))).reshape(-1, 1)
@@ -309,8 +325,10 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                 tf.float32, name='dec_embedding')
         if strategy == 1:
             assert not enc_output.shape[-1].name.startswith('axis')
+            assert len(embed.shape) == 3
             embed = ReplaceMeshWithIndependentAxes(embed, meshes[2], ('axis0',
-                None, enc_output.shape[-1].name), name='replace_embed_mesh')
+                embed.shape[1].name, enc_output.shape[-1].name),
+                name='replace_embed_mesh')
         assert embed.shape[1:] == pos_enc.shape.dims
         x = (embed * math.sqrt(params.d_model)) + pos_enc
 
@@ -341,7 +359,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
                     dec_output.shape.dimension_names[:-1],
                     name='replace_dec_out_mesh')
         out = mtf.layers.dense(dec_output, final_proj_dim, use_bias=False,
-                name='final_projection')
+                reduced_dims=dec_output.shape[-1:], name='final_projection')
         one_hot_labels = mtf.one_hot(mtf_tgt, out.shape[-1], dtype=out.dtype)
         out = mtf.layers.softmax_cross_entropy_with_logits(out, one_hot_labels,
                 out.shape[-1])
@@ -375,41 +393,19 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, args):
 def main():
     parser = argparse.ArgumentParser(formatter_class =
             argparse.ArgumentDefaultsHelpFormatter)
-
-    parser.add_argument('-b', '--batch', type=int, required=False, default=64,
-            help="Batch size")
-    parser.add_argument('-p', '--procs', type=int, required=False, default=8,
-            help="No. of processors")
-    parser.add_argument('-t', '--epochs', type=int, required=False, default=3,
-            help="No. of epochs")
-    parser.add_argument('--max_steps', type=int, required=False, default=500,
-            help='Maximum no. of steps to execute')
-    parser.add_argument('--display_steps', type=int, required=False, default=10,
-            help="No. of epochs")
-    parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
-            choices=list(range(3)), 
-            help="Strategy to use. 0: DataParallel, \
-                    1: Optimized, \
-                    2: Expert defined.")
     parser.add_argument('--src_vocab', type=str, help="Source vocab data file.")
     parser.add_argument('--tgt_vocab', type=str, help="Target vocab data file.")
     parser.add_argument('--src_text', type=str, help="Source text data file.")
     parser.add_argument('--tgt_text', type=str, help="Target text data file.")
-    args = parser.parse_args()
-    params = Params(args.batch)
+    parser.add_argument('--seq_len', type=int, required=False, default=256,
+            help='Maximum sequence length')
+    trainer = common.Trainer(parser)
+    args = trainer.args
+    params = Params(args.batch_size, args.seq_len)
 
-    if args.procs != 8:
-        raise NotImplementedError('Current implementation only handles 8 GPUs.')
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
-                                                 range(args.procs))[:-1]
-
-    for arg, val in vars(args).items():
-        print(str(arg) + ": " + str(val))
-    print()
-            
     # Initialize dataset
-    dataset = TextDataLoader(args.batch, args.src_vocab, args.tgt_vocab,
-            args.src_text, args.tgt_text, max_seq_len = params.max_seq_len)
+    dataset = TextDataLoader(args.batch_size, args.src_vocab, args.tgt_vocab,
+            args.src_text, args.tgt_text, max_seq_len=params.max_seq_len)
     src_pad_id = tf.cast(dataset.src_pad_id, tf.int32)
     enc_inputs, dec_inputs, _, _ = dataset.next_batch()
 
@@ -422,46 +418,16 @@ def main():
     print("Source vocab size: %d" % src_vocab_size)
     print("Target vocab size: %d" % tgt_vocab_size)
 
+    # Model
     init_ops, loss_op, grad_ops = Transformer(enc_inputs, dec_inputs, params,
-            src_vocab_size, tgt_vocab_size, args)
+            src_vocab_size, tgt_vocab_size, args.strategy, trainer.num_nodes,
+            trainer.num_gpus)
  
-    cnt = 0
+    # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
-    #run_options = tf.RunOptions(trace_level=tf.RunOptions.SOFTWARE_TRACE)
-    config = tf.ConfigProto()
-    #config = tf.ConfigProto(log_device_placement=True,
-    #        allow_soft_placement=False)
-    #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
-    with tf.variable_scope('train'):
-        with tf.Session(config=config) as sess:
-            dataset.reset_pointer()
-            sess.run(init_ops)
-
-            tot_time = float(0)
-            start = time.time()
-            for epoch in range(args.epochs):
-                step = 0
-
-                while True:
-                    try:
-                        loss_val, *_ = sess.run([loss_op] + grad_ops,
-                                options=run_options)
-                        cnt += 1
-                        step += 1
-                        if step > args.max_steps:
-                            break
-                    except tf.errors.OutOfRangeError:
-                        break
-
-                    if step % args.display_steps == 0 and step > 0:
-                        print("Epoch: " + str(epoch) + "; Loss: " + str(loss_val))
-
-                dataset.reset_pointer()
-            end = time.time()
-            tot_time += (end - start)
-
-    samples_per_sec = (args.batch * cnt) / tot_time
-    print("Throughput: " + str(samples_per_sec) + " samples / sec")
+    config = tf.ConfigProto(allow_soft_placement=False)
+    trainer.train(init_ops, loss_op, grad_ops, dataset, config=config,
+            run_options=run_options)
 
 
 if __name__ == '__main__':

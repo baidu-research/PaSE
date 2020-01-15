@@ -478,7 +478,7 @@ def main():
 
     # Train
     model = Inception(tf_x, tf_y, t.num_nodes, t.num_gpus, args)
-    t.train(*model, dataset)
+    t.train(*model, dataset, config=tf.ConfigProto(allow_soft_placement=False))
 
 
 if __name__ == '__main__':

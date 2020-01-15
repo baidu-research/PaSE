@@ -315,8 +315,6 @@ def main():
     parser.add_argument('--text', type=str, help="Source text data file.")
     parser.add_argument('--seq_len', type=int, required=False, default=256,
             help='Maximum sequence length')
-    parser.add_argument('--max_steps', type=int, required=False, default=50,
-            help='Maximum no. of steps to execute')
 
     trainer = common.Trainer(parser)
     args = trainer.args
@@ -408,8 +406,7 @@ def main():
     config = tf.ConfigProto(#log_device_placement=True,
             allow_soft_placement=True)
     trainer.train(tf.global_variables_initializer(), loss, [grads], dataset,
-            train_batches_per_epoch=args.max_steps, config=config,
-            run_options=run_options)
+            config=config, run_options=run_options)
 
 
 if __name__ == '__main__':

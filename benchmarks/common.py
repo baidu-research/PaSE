@@ -17,6 +17,8 @@ class Trainer():
                 help="No. of GPUs per node.")
         parser.add_argument('-t', '--epochs', type=int, required=False, default=100,
                 help="No. of epochs")
+        parser.add_argument('--max_steps', type=int, required=False,
+                default=-1, help='Maximum no. of steps to execute')
         parser.add_argument('--display_steps', type=int, required=False, default=10,
                 help="No. of epochs")
         parser.add_argument('-s', '--strategy', type=int, required=False, default=0,
@@ -80,8 +82,8 @@ class Trainer():
         self.task_index = task_index
         self.hostlist = hostlist
     
-    def train(self, init_ops, loss_op, grad_ops, dataset, 
-            train_batches_per_epoch=-1, config=None, run_options=None):
+    def train(self, init_ops, loss_op, grad_ops, dataset, config=None,
+            run_options=None):
         config = config or tf.ConfigProto()
 
         #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
@@ -108,8 +110,8 @@ class Trainer():
                                 print("Epoch: " + str(epoch) + "; Loss: " +
                                         str(loss_val))
 
-                            if train_batches_per_epoch > 0 and (step ==
-                                    train_batches_per_epoch):
+                            if self.args.max_steps > 0 and (step ==
+                                    self.args.max_steps):
                                 break
                         except (tf.errors.OutOfRangeError, StopIteration):
                             break
