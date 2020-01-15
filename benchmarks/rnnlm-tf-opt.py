@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import tensorflow.keras as keras
 
 import math
@@ -369,7 +369,7 @@ def main():
                 num_n_splits], dtype=tf.float32))
             cs1.append(tf.zeros([params.batch_size, params.num_units //
                 num_n_splits], dtype=tf.float32))
-    states = hs0 + cs0 + hs1 + cs1
+    states = [hs0 + cs0, hs1 + cs1]
 
     def get_device_fn():
         i = 0
@@ -405,7 +405,7 @@ def main():
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
     config = tf.ConfigProto(#log_device_placement=True,
-            allow_soft_placement=False)
+            allow_soft_placement=True)
     trainer.train(tf.global_variables_initializer(), loss, [grads], dataset,
             train_batches_per_epoch=args.max_steps, config=config,
             run_options=run_options)

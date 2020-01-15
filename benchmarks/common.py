@@ -47,7 +47,7 @@ class Trainer():
 
         if self.args.xla:
             os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir=' + os.environ['CUDA_HOME']
-            os.environ['TF_XLA_FLAGS'] = '--tf_xla_auto_jit=2 --tf_xla_cpu_global_jit'
+            os.environ['TF_XLA_FLAGS'] = '--tf_xla_auto_jit=2'
 
         tf.disable_eager_execution()
         self.setup_servers()
@@ -88,7 +88,7 @@ class Trainer():
         cnt = 0
         with tf.variable_scope('train'):
             with tf.Session(self.session_target, config=config) as sess:
-                dataset.reset_pointer()
+                dataset.reset_pointer(sess)
                 sess.run(init_ops)
                 print('Finished initialization.')
     
@@ -114,7 +114,7 @@ class Trainer():
                         except (tf.errors.OutOfRangeError, StopIteration):
                             break
     
-                    dataset.reset_pointer()
+                    dataset.reset_pointer(sess)
                 end = time.time()
                 tot_time += (end - start)
     

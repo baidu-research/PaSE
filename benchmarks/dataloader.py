@@ -58,7 +58,7 @@ class ImageDataLoader():
             dataset = dataset.map(self.parse_image, num_parallel_calls =
                     num_parallel_calls)
 
-        dataset = dataset.batch(batch_size, drop_remainder=True)
+        dataset = dataset.batch(batch_size, drop_remainder=True).cache()
         dataset = dataset.prefetch(prefetches)
         self.dataset_iterator = dataset.make_initializable_iterator()
         self.initializer = self.dataset_iterator.initializer
@@ -66,15 +66,15 @@ class ImageDataLoader():
     def next_batch(self):
         return self.dataset_iterator.get_next()
 
-    def reset_pointer(self):
-        tf.get_default_session().run(self.initializer)
+    def reset_pointer(self, sess):
+        sess.run(self.initializer)
  
 
 class TextDataLoader():
     def parse_text(self, sentence, label=None):
         # Split sentence into words, and convert it into ids
         sentence_split = tf.string_split([sentence]).values
-        if self.max_seq_len is not None: # Trim the sentence to max_seq_len
+        if self.max_seq_len: # Trim the sentence to max_seq_len
             sentence_split = sentence_split[:self.max_seq_len]
         src_seq_len = tf.size(sentence_split)
         sentence = self.src_vocab.lookup(sentence_split)
@@ -96,40 +96,37 @@ class TextDataLoader():
 
     def __init__(self, batch_size, src_vocab_filename, tgt_vocab_filename,
             src_text_filename, tgt_text_filename, max_seq_len = None,
-            num_parallel_calls = 32, prefetches = 8):
+            num_parallel_calls = tf.data.experimental.AUTOTUNE, prefetches =
+            tf.data.experimental.AUTOTUNE):
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
         # Vocab to id table
-        src_vocab = tf.contrib.lookup.index_table_from_file(src_vocab_filename)
-        tgt_vocab = tf.contrib.lookup.index_table_from_file(
-                tgt_vocab_filename) if tgt_vocab_filename is not None \
-                        else src_vocab
+        src_vocab = tf.lookup.StaticHashTable(
+                tf.lookup.TextFileInitializer(src_vocab_filename, tf.string,
+                    tf.lookup.TextFileIndex.WHOLE_LINE, tf.int64,
+                    tf.lookup.TextFileIndex.LINE_NUMBER), -1)
+        if tgt_vocab_filename:
+            tgt_vocab = tf.lookup.StaticHashTable(
+                    tf.lookup.TextFileInitializer(tgt_vocab_filename, tf.string,
+                        tf.lookup.TextFileIndex.WHOLE_LINE, tf.int64,
+                        tf.lookup.TextFileIndex.LINE_NUMBER), -1)
+        else:
+            tgt_vocab = src_vocab
+
         self.src_vocab = src_vocab
         self.tgt_vocab = tgt_vocab
 
-        def Lookup(vocab, word, default=tf.constant(0, tf.int64)):
-            try:
-                return vocab.lookup(tf.constant(word))
-            except ValueError:
-                return default
-
-        self.src_pad_id = Lookup(src_vocab, '<pad>')
-        self.tgt_pad_id = Lookup(tgt_vocab, '<pad>')
-        #self.src_sos = Lookup(src_vocab, '<sos>')
-        #self.tgt_sos = Lookup(tgt_vocab, '<sos>')
-        #self.src_eos = Lookup(src_vocab, '<eos>')
-        #self.tgt_eos = Lookup(tgt_vocab, '<eos>')
+        self.src_pad_id = src_vocab.lookup(tf.constant('<pad>'))
+        self.tgt_pad_id = tgt_vocab.lookup(tf.constant('<pad>'))
 
         # Sentences and labels datasets
-        num_parallel_reads = 8
         sentences = tf.data.TextLineDataset(src_text_filename)
-        if tgt_text_filename is not None:
+        if tgt_text_filename:
             labels = tf.data.TextLineDataset(tgt_text_filename)
             dataset = tf.data.Dataset.zip((sentences, labels))
         else:
             dataset = tf.data.Dataset.zip(sentences)
-
         dataset = dataset.map(self.parse_text, num_parallel_calls =
                 num_parallel_calls)
 
@@ -153,8 +150,7 @@ class TextDataLoader():
     def next_batch(self):
         return self.dataset_iterator.get_next()
 
-    def reset_pointer(self):
-        sess = tf.get_default_session()
+    def reset_pointer(self, sess):
         if not self.tbl_initialized:
             sess.run(tf.tables_initializer())
             self.tbl_initialized = True
