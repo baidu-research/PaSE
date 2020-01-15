@@ -32,11 +32,8 @@ def GetDeviceList(gpus, num_nodes=1):
     assert gpus % num_nodes == 0
     gpus_per_node = gpus // num_nodes
 
-    if num_nodes == 1:
-        return [f'/device:GPU:{i}' for i in range(gpus_per_node)]
-    else:
-        return [f'/job:worker/replica:0/task:{i}/device:GPU:{j}' for i in
-                range(num_nodes) for j in range(gpus_per_node)]
+    return [f'/job:localhost/replica:0/task:{i}/device:GPU:{j}' for i in
+            range(num_nodes) for j in range(gpus_per_node)]
 
 
 def DeviceIndex(gpu):

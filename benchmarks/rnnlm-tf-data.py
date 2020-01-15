@@ -62,8 +62,7 @@ def main():
     trainer = common.Trainer(parser)
     args = trainer.args
     params = Params(args.batch_size, args.seq_len)
-    servername = 'localhost' if trainer.num_nodes == 1 else 'worker'
-    devices = [f'/job:{servername}/replica:0/task:{i}/device:GPU:{j}' for i in
+    devices = [f'/job:localhost/replica:0/task:{i}/device:GPU:{j}' for i in
             range(trainer.num_nodes) for j in range(args.gpus)]
 
     # Initialize dataset

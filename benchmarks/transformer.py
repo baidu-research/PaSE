@@ -78,12 +78,12 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
 
     elif strategy == 1: # Opt strategy from the tool
         mesh = Mesh(0)
-        mesh_to_impl[mesh] = GetMeshImpl([num_nodes])
+        mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
         mesh = Mesh(1)
         mesh_to_impl[mesh] = GetMeshImpl([mesh_dim1, mesh_dim2])
         mesh = Mesh(2)
-        mesh_to_impl[mesh] = GetMeshImpl([mesh_dim2])
+        mesh_to_impl[mesh] = GetMeshImpl([mesh_dim2], node_cnt=1)
 
         shape = GetShape([params.batch_size, params.max_seq_len])
         mtf_src = mtf.cast(mtf.import_tf_tensor(meshes[0], src, shape), tf.int32)
@@ -165,7 +165,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
         new_names = x.shape.dimension_names
         assert new_names[0] == 'axis0'
         new_names[0] = 'axis1'
-        return  ReplaceMeshWithDuplicates(x, meshes[1], new_names, axis=0,
+        return ReplaceMeshWithDuplicates(x, meshes[1], new_names, axis=0,
                 name=name)
 
     # Layers

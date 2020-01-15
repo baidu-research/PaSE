@@ -63,8 +63,8 @@ class Trainer():
             hostlist = expand_hostlist(os.environ['SLURM_NODELIST'])
             hostlist_w_port = [("%s:2222" % host) for host in hostlist] 
     
-            cluster = tf.train.ClusterSpec({"worker":hostlist_w_port}).as_cluster_def()
-            server = tf.distribute.Server(cluster, job_name="worker",
+            cluster = tf.train.ClusterSpec({"localhost":hostlist_w_port}).as_cluster_def()
+            server = tf.distribute.Server(cluster, job_name="localhost",
                     task_index=task_index)
             session_target = server.target
     
