@@ -13,10 +13,10 @@ import common
 from dataloader import TextDataLoader
 
 class Params():
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, max_seq_len):
         self.batch_size = batch_size
         self.num_units = 2048
-        self.max_seq_len = 256
+        self.max_seq_len = max_seq_len
         self.num_layers = 2
 
 
@@ -56,12 +56,14 @@ def main():
             argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--vocab', type=str, help="Source vocab data file.")
     parser.add_argument('--text', type=str, help="Source text data file.")
+    parser.add_argument('--seq_len', type=int, required=False, default=256,
+            help='Maximum sequence length')
     parser.add_argument('--max_steps', type=int, required=False, default=50,
             help='Maximum no. of steps to execute')
 
     trainer = common.Trainer(parser)
     args = trainer.args
-    params = Params(args.batch_size)
+    params = Params(args.batch_size, args.seq_len)
     servername = 'localhost' if trainer.num_nodes == 1 else 'worker'
     devices = [f'/job:{servername}/replica:0/task:{i}/device:GPU:{j}' for i in
             range(trainer.num_nodes) for j in range(args.gpus)]

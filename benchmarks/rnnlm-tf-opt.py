@@ -19,10 +19,10 @@ def FlattenList(l):
    return [item for sublist in l for item in sublist]
 
 class Params():
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, max_seq_len):
         self.batch_size = batch_size
         self.num_units = 2048
-        self.max_seq_len = 256
+        self.max_seq_len = max_seq_len
         self.num_layers = 2
 
 def AllConcatRing(xs, axis, devices=None):
@@ -298,7 +298,6 @@ class LSTMCell(keras.layers.Layer):
                         full_new_hs.append(tf.identity(h))
             new_hs = full_new_hs
 
-        print([h.device for h in new_hs])
         assert [h.device for h in new_hs] == [d for d in self.devices]
         assert [c.device for c in new_cs] == [d for d in
                 self.devices[:self.num_n_splits]]
@@ -314,12 +313,14 @@ def main():
             argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--vocab', type=str, help="Source vocab data file.")
     parser.add_argument('--text', type=str, help="Source text data file.")
+    parser.add_argument('--seq_len', type=int, required=False, default=256,
+            help='Maximum sequence length')
     parser.add_argument('--max_steps', type=int, required=False, default=50,
             help='Maximum no. of steps to execute')
 
     trainer = common.Trainer(parser)
     args = trainer.args
-    params = Params(args.batch_size)
+    params = Params(args.batch_size, args.seq_len)
     num_gpus = trainer.num_gpus
     servername = 'localhost' if trainer.num_nodes == 1 else 'worker'
     devices = [f'/job:{servername}/replica:0/task:{i}/device:GPU:{j}' for i in
