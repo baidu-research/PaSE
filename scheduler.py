@@ -114,11 +114,13 @@ class Processor:
                 node_dict[v] = s
                 node_tbl[v, 1] = len(s)
 
+    # Convert configuration series to dataframe
+    def CfgToDf(self, v):
+        return pd.DataFrame().assign(**{str(v) :
+            self.vert_ops[v].dom_config_tuples})
+
     # Generates table for vertex 'v'
     def GenerateTable(self, v, p_neigh, up_neigh):
-        cfg_to_df = lambda x : pd.DataFrame().assign(**{str(x) :
-            self.vert_ops[x].dom_config_tuples})
-
         # Merge tables of processed neighbors and add configurations of 'v' to 'tbl'
         if p_neigh:
             it = iter(p_neigh)
@@ -128,13 +130,13 @@ class Processor:
             assert(tbl.shape[0] > 0)
             assert str(v) in tbl.columns
         else:
-            tbl = cfg_to_df(v)
+            tbl = self.CfgToDf(v)
 
         # Add all combinations of configurations of unprocessed neighbors
         cols = set(tbl.columns)
         for n in up_neigh:
             if str(n) not in cols:
-                tbl = MergeTables(tbl, cfg_to_df(n))
+                tbl = MergeTables(tbl, self.CfgToDf(n))
 
         assert(tbl.shape[0] > 0)
         return tbl
@@ -211,6 +213,54 @@ class Processor:
         assert(len(tbl.columns) == self.n_nodes + 1)
         return tbl
 
+    def ProcessVerticesNaive(self, vs, tbl):
+        vs_labels = list(str(v) for v in vs)
+        next_vs = []
+        self.processed_nodes.update(vs)
+        self.processed_node_labels.update(vs_labels)
+
+        # Add vertex and edge costs for vertices in 'vs
+        vs_set = set(vs)
+        for v in vs:
+            tbl = MergeTables(tbl, self.CfgToDf(v))
+
+        for v in vs:
+            tbl = AddVertexCosts(v, self.vert_costs[v], tbl)
+
+            # Add edge cost with predecessors 'p', only when 'p' has been
+            # processed, and not part of 'vs'
+            for p in self.G.predecessors(v):
+                if p in self.processed_nodes:
+                    if p not in vs_set:
+                        tbl = AddEdgeCosts(p, v, self.edge_costs[(p, v)], tbl)
+                else:
+                    next_vs.append(p)
+
+            # Add edge cost with processed successors, including those in 'vs'
+            for s in self.G.successors(v):
+                if s in self.processed_nodes:
+                    tbl = AddEdgeCosts(v, s, self.edge_costs[(v, s)], tbl)
+                else:
+                    next_vs.append(s)
+
+        if __debug__:
+            print("Processing vertices " + str(vs) + "; Table size: " +
+                    str(tbl.shape[0]))
+        tbl = ReduceTable(tbl, vs_labels, 'costs')
+        if __debug__:
+            print("Processed vertices " + str(vs) + "; Table size: " +
+                    str(tbl.shape[0]) + "\n")
+        return next_vs, tbl
+
+    def ProcessGraphNaive(self):
+        q = [0]
+        tbl = self.CfgToDf(0)
+        while q:
+            q, tbl = self.ProcessVerticesNaive(q, tbl)
+        tbl = ReduceTable(tbl, None, 'costs')
+
+        assert len(tbl.columns) == (self.n_nodes + 1)
+        return tbl
 
 def main():
     parser = ArgumentParser()
@@ -233,6 +283,8 @@ def main():
     parser.add_argument("-d", "--dump-graph", dest="dump_graph",
             action='store_true', help="Dump the graph in dot format to the file "
             "graph.dot in the working directory.")
+    parser.add_argument('--algo', type=int, required=False, default=0,
+            choices=[0, 1], help='Algorithm to be used to compute strategy')
     parser.set_defaults(profile=False)
     args = vars(parser.parse_args())
 
@@ -270,11 +322,18 @@ def main():
         warmup=0
         repeats=1
 
+    if args['algo'] == 0:
+        Process = lambda g: Processor(g).ProcessGraph()
+    elif args['algo'] == 1:
+        Process = lambda g: Processor(g).ProcessGraphNaive()
+    else:
+        assert False
+
     for i in range(warmup):
-        g_tbl = Processor(G).ProcessGraph()
+        g_tbl = Process(G)
     start = dt.datetime.now()
     for i in range(repeats):
-        g_tbl = Processor(G).ProcessGraph()
+        g_tbl = Process(G)
     end = dt.datetime.now()
     print("Processing time: ", (end-start)/float(repeats))
     print("")
@@ -290,7 +349,7 @@ def main():
         try:
             cols.append(int(c))
         except ValueError:
-            assert c.startswith('costs_')
+            assert c.startswith('costs')
             cost = g_tbl.iloc[0][c]
             g_tbl.drop(c, 1, inplace=True)
     g_tbl.columns = cols
