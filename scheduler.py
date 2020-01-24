@@ -174,8 +174,9 @@ class Processor:
         tbl = self.GenerateTable(v, p_neigh, up_neigh)
         tbl = self.ComputeCosts(tbl, v, up_preds, up_scsrs)
 
-        print("Processing vertex " + str(v) + "; Table size: " +
-                str(tbl.shape[0]))
+        if __debug__:
+            print("Processing vertex " + str(v) + "; Table size: " +
+                    str(tbl.shape[0]))
 
         # Add individual sub-strategy costs to get complete sub-strategy costs
         # for 'tbl'
@@ -197,8 +198,9 @@ class Processor:
             except ValueError:
                 assert(c.startswith('costs_'))
 
-        print("Processed vertex " + str(v) + "; Table size: " +
-                str(tbl.shape[0]) + "\n")
+        if __debug__:
+            print("Processed vertex " + str(v) + "; Table size: " +
+                    str(tbl.shape[0]) + "\n")
         return tbl
 
     def ProcessGraph(self):
@@ -225,6 +227,8 @@ def main():
             choices=[0, 1], help='Architecture. 0: P100, 1: DGX')
     parser.add_argument("--profile", dest="profile", action='store_true',
             help="Turn on/off profiling.")
+    parser.add_argument("--measure", dest="measure", action='store_true',
+            help="Turn on/off measurement.")
     parser.add_argument("-d", "--dump-graph", dest="dump_graph",
             action='store_true', help="Dump the graph in dot format to the file "
             "graph.dot in the working directory.")
@@ -257,7 +261,21 @@ def main():
     # Process the vertices
     if args['profile']:
         pr.enable()
-    g_tbl = Processor(G).ProcessGraph()
+
+    if args['measure']:
+        warmup=2
+        repeats=5
+    else:
+        warmup=0
+        repeats=1
+
+    for i in range(warmup):
+        g_tbl = Processor(G).ProcessGraph()
+    start = dt.datetime.now()
+    for i in range(repeats):
+        g_tbl = Processor(G).ProcessGraph()
+    end = dt.datetime.now()
+    print("Processing time: ", (end-start)/float(repeats))
     print("")
     if args['profile']:
         pr.disable()
