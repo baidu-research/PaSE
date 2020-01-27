@@ -36,7 +36,7 @@ class ImageDataLoader():
             classes = tf.random.uniform([num_elems], minval=0,
                     maxval=num_classes, dtype=tf.int32)
             dataset = tf.data.Dataset.from_tensor_slices((features,
-                classes)).repeat(int(dataset_size / num_elems))
+                classes)).take(num_elems).cache().repeat(int(dataset_size / num_elems))
 
         else:
             assert dataset_dir is not None
@@ -58,7 +58,7 @@ class ImageDataLoader():
             dataset = dataset.map(self.parse_image, num_parallel_calls =
                     num_parallel_calls)
 
-        dataset = dataset.batch(batch_size, drop_remainder=True).cache()
+        dataset = dataset.batch(batch_size, drop_remainder=True)
         dataset = dataset.prefetch(prefetches)
         self.dataset_iterator = dataset.make_initializable_iterator()
         self.initializer = self.dataset_iterator.initializer

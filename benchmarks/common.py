@@ -41,7 +41,7 @@ class Trainer():
         assert self.num_nodes > 0
         self.num_gpus = gpus_per_node * self.num_nodes
         self.args = args
-    
+
         if gpus_per_node != 8:
             raise NotImplementedError('Current implementation only handles 8 GPUs.')
         os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
@@ -65,7 +65,7 @@ class Trainer():
     
             cluster = tf.train.ClusterSpec({"localhost":hostlist_w_port}).as_cluster_def()
             server = tf.distribute.Server(cluster, job_name="localhost",
-                    task_index=task_index)
+                    task_index=task_index, protocol='grpc+mpi')
             session_target = server.target
     
             if task_index != 0:
@@ -85,6 +85,13 @@ class Trainer():
     def train(self, init_ops, loss_op, grad_ops, dataset, config=None,
             run_options=None):
         config = config or tf.ConfigProto()
+
+        # Workaround to prevent MPI from crashing due to 'StopIteration'
+        if self.args.max_steps < 1:
+            try:
+                self.args.max_steps = dataset.dataset_size // self.args.batch_size
+            except KeyError:
+                pass
 
         #config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
         cnt = 0
