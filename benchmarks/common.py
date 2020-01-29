@@ -34,6 +34,18 @@ class Trainer():
                 default='labels.txt', help='Labels filename')
         parser.add_argument('--dataset_size', type=int, required=False,
                 default=1000, help='Labels filename')
+        parser.add_argument('--src_vocab_size', type=int, required=False,
+                default=None)
+        parser.add_argument('--tgt_vocab_size', type=int, required=False,
+                default=None)
+        parser.add_argument('--sentences_size', type=int, required=False,
+                default=None)
+        parser.add_argument('--vocab', required=False, default=None, type=str,
+                help="Source vocab data file.")
+        parser.add_argument('--text', required=False, default=None, type=str,
+                help="Source text data file.")
+        parser.add_argument('--seq_len', type=int, required=False, default=256,
+                help='Maximum sequence length')
     
         args = parser.parse_args()
         gpus_per_node = args.gpus

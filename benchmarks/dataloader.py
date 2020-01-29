@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import tensorflow.compat.v1 as tf
+import utils
 
 
 class ImageDataLoader():
@@ -29,14 +30,13 @@ class ImageDataLoader():
             self.dataset_size = dataset_size
             num_classes = 1000
 
-            num_elems = 1000
-            assert dataset_size % num_elems == 0
-            features = tf.random.uniform([num_elems, img_size[0],
+            features = tf.random.uniform([batch_size, img_size[0],
                 img_size[1], 3], minval=0, maxval=1, dtype=tf.float32)
-            classes = tf.random.uniform([num_elems], minval=0,
+            classes = tf.random.uniform([batch_size], minval=0,
                     maxval=num_classes, dtype=tf.int32)
             dataset = tf.data.Dataset.from_tensor_slices((features,
-                classes)).take(num_elems).cache().repeat(int(dataset_size / num_elems))
+                classes)).take(batch_size).cache().repeat(utils.RoundUp(dataset_size,
+                    batch_size))
 
         else:
             assert dataset_dir is not None
@@ -56,7 +56,7 @@ class ImageDataLoader():
             dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
             #dataset = dataset.shuffle(len(filenames))
             dataset = dataset.map(self.parse_image, num_parallel_calls =
-                    num_parallel_calls)
+                    num_parallel_calls).cache()
 
         dataset = dataset.batch(batch_size, drop_remainder=True)
         dataset = dataset.prefetch(prefetches)
@@ -94,41 +94,72 @@ class TextDataLoader():
 
         return sentence, label, src_seq_len, tgt_seq_len
 
-    def __init__(self, batch_size, src_vocab_filename, tgt_vocab_filename,
-            src_text_filename, tgt_text_filename, max_seq_len = None,
-            num_parallel_calls = tf.data.experimental.AUTOTUNE, prefetches =
-            tf.data.experimental.AUTOTUNE):
+    def __init__(self, batch_size, src_vocab_filename=None,
+            tgt_vocab_filename=None, src_text_filename=None,
+            tgt_text_filename=None, max_seq_len=None,
+            src_vocab_size=None, tgt_vocab_size=None, sentences_size=None,
+            num_parallel_calls=tf.data.experimental.AUTOTUNE,
+            prefetches=tf.data.experimental.AUTOTUNE):
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
-        # Vocab to id table
-        src_vocab = tf.lookup.StaticHashTable(
-                tf.lookup.TextFileInitializer(src_vocab_filename, tf.string,
-                    tf.lookup.TextFileIndex.WHOLE_LINE, tf.int64,
-                    tf.lookup.TextFileIndex.LINE_NUMBER), -1)
-        if tgt_vocab_filename:
-            tgt_vocab = tf.lookup.StaticHashTable(
-                    tf.lookup.TextFileInitializer(tgt_vocab_filename, tf.string,
+        if src_vocab_filename:
+            # Vocab to id table
+            src_vocab = tf.lookup.StaticHashTable(
+                    tf.lookup.TextFileInitializer(src_vocab_filename, tf.string,
                         tf.lookup.TextFileIndex.WHOLE_LINE, tf.int64,
                         tf.lookup.TextFileIndex.LINE_NUMBER), -1)
+            if tgt_vocab_filename:
+                tgt_vocab = tf.lookup.StaticHashTable(
+                        tf.lookup.TextFileInitializer(tgt_vocab_filename, tf.string,
+                            tf.lookup.TextFileIndex.WHOLE_LINE, tf.int64,
+                            tf.lookup.TextFileIndex.LINE_NUMBER), -1)
+            else:
+                tgt_vocab = src_vocab
+
+            self.src_vocab = src_vocab
+            self.tgt_vocab = tgt_vocab
+
+            self.src_pad_id = src_vocab.lookup(tf.constant('<pad>'))
+            self.tgt_pad_id = tgt_vocab.lookup(tf.constant('<pad>'))
+
+            # Sentences and labels datasets
+            sentences = tf.data.TextLineDataset(src_text_filename)
+            if tgt_text_filename:
+                labels = tf.data.TextLineDataset(tgt_text_filename)
+                dataset = tf.data.Dataset.zip((sentences, labels))
+            else:
+                dataset = tf.data.Dataset.zip(sentences)
+            dataset = dataset.map(self.parse_text, num_parallel_calls =
+                    num_parallel_calls).cache()
+
+            self.dataset_size = sum(1 for _ in open(src_text_filename, 'r'))
+            self.src_vocab_size = sum(1 for _ in open(src_vocab_filename, 'r'))
+            if tgt_vocab_filename:
+                self.tgt_vocab_size = sum(1 for _ in open(tgt_vocab_filename, 'r'))
+
         else:
-            tgt_vocab = src_vocab
+            assert src_vocab_size
+            assert sentences_size
+            assert max_seq_len
 
-        self.src_vocab = src_vocab
-        self.tgt_vocab = tgt_vocab
+            sentences = tf.random.uniform([batch_size, max_seq_len], minval=0,
+                    maxval=src_vocab_size, dtype=tf.int32)
+            if tgt_vocab_size:
+                labels = tf.random.uniform([batch_size, max_seq_len], minval=0,
+                        maxval=tgt_vocab_size, dtype=tf.int32)
+            else:
+                labels = sentences
+            seq_len_tsr = tf.constant(max_seq_len, shape=[batch_size], dtype=tf.int32)
+            dataset = tf.data.Dataset.from_tensor_slices((sentences, labels,
+                seq_len_tsr, seq_len_tsr))
+            dataset = dataset.take(batch_size).cache().repeat(utils.RoundUp(sentences_size,
+                batch_size))
+            self.src_pad_id = self.tgt_pad_id = 0
 
-        self.src_pad_id = src_vocab.lookup(tf.constant('<pad>'))
-        self.tgt_pad_id = tgt_vocab.lookup(tf.constant('<pad>'))
-
-        # Sentences and labels datasets
-        sentences = tf.data.TextLineDataset(src_text_filename)
-        if tgt_text_filename:
-            labels = tf.data.TextLineDataset(tgt_text_filename)
-            dataset = tf.data.Dataset.zip((sentences, labels))
-        else:
-            dataset = tf.data.Dataset.zip(sentences)
-        dataset = dataset.map(self.parse_text, num_parallel_calls =
-                num_parallel_calls)
+            self.src_vocab_size = src_vocab_size
+            self.tgt_vocab_size = src_vocab_size
+            self.dataset_size = sentences_size
 
         # Shape: sentence, label, src_seq_len, tgt_seq_len
         padded_shapes = (tf.TensorShape([max_seq_len]),
