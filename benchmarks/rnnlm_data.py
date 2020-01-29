@@ -33,29 +33,30 @@ class LSTMCell(keras.layers.Layer):
         return h, [h, c]
 
 def model(params, inputs, labels):
+    devices = params.devices
+    num_gpus = len(devices)
+
+    embedding = keras.layers.Embedding(params.vocab_size, params.num_units,
+            input_length=params.max_seq_len)
     cells = [LSTMCell(params.batch_size, params.num_units),
             LSTMCell(params.batch_size, params.num_units)]
     rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
     dense = keras.layers.Dense(params.vocab_size, use_bias=False)
 
-    devices = params.devices
-    num_gpus = len(devices)
-    with tf.device(devices[0]):
-        xs = tf.split(inputs, num_gpus, axis=0)
-        embedding_weights = tf.get_variable('embed_weights',
-                shape=[params.vocab_size, params.num_units])
+    assert params.batch_size % num_gpus == 0
+    stride = params.batch_size // num_gpus
+    start, end = 0, stride
     ys = []
-    assert len(xs) == num_gpus
-    for x, dev in zip(xs, devices):
+    for dev in devices:
         with tf.device(dev):
-            x = tf.nn.embedding_lookup(embedding_weights, x)
-            ys.append(dense(rnn(x)))
-
-    with tf.device(devices[0]):
-        y = tf.concat(ys, axis=0)
+            ys.append(dense(rnn(embedding(inputs[start:end, ...]))))
+            start = end
+            end += stride
+    assert start == params.batch_size
 
     # Loss
     with tf.device(devices[0]):
+        y = tf.concat(ys, axis=0)
         loss = tf.losses.sparse_softmax_cross_entropy(labels, y,
                 reduction=tf.losses.Reduction.MEAN)
         opt = tf.train.GradientDescentOptimizer(learning_rate=0.01)
