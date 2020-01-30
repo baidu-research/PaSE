@@ -2,6 +2,8 @@ import numpy as np
 import tensorflow.compat.v1 as tf
 import tensorflow.keras as keras
 
+import utils
+
 class LSTMCell(keras.layers.Layer):
     def __init__(self, batch_size, num_units, device, layer, **kwargs):
         self.batch_size = batch_size
@@ -17,7 +19,7 @@ class LSTMCell(keras.layers.Layer):
         w_shape = [2 * self.num_units, 4 * self.num_units]
         with tf.device(self.device):
             self.w = self.add_weight(shape=w_shape, initializer='uniform',
-                    name='w', dtype=tf.float32)
+                    name=f'w_l{self.layer}', dtype=tf.float32)
             super().build(input_state)
 
     def call(self, x, states):
@@ -44,6 +46,8 @@ def model(params, inputs, labels):
     assert (num_gpus % 2 == 0)
     num_gpus_by_2 = num_gpus // 2
 
+    embedding = keras.layers.Embedding(params.vocab_size, params.num_units,
+            input_length=params.max_seq_len)
     dev = devices[0]
     with tf.device(dev):
         cell0 = LSTMCell(params.batch_size, params.num_units, dev, layer=0)
@@ -52,48 +56,50 @@ def model(params, inputs, labels):
         cell1 = LSTMCell(params.batch_size, params.num_units, dev, layer=1)
     cells = [cell0, cell1]
     rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
-    dense = keras.layers.Dense(params.vocab_size // num_gpus, use_bias=False,
-            activation=keras.activations.softmax)
+    dense = lambda x: keras.layers.Dense(params.vocab_size // num_gpus,
+            use_bias=False)(x)
 
     def get_next_layer_device(dev):
-        dev = dev.split(':')
-        dev_id = int(dev[-1]) + num_gpus_by_2
-        assert dev_id < num_gpus
+        idx = devices.index(dev) + num_gpus_by_2
+        assert idx < num_gpus
+        return devices[idx]
 
-        dev[-1] = str(dev_id)
-        dev = ':'.join(dev)
-        return dev
-
-    # Embedding layer
-    num_data_parallel = num_gpus_by_2
     with tf.device(devices[0]):
-        x = keras.layers.Embedding(params.vocab_size, params.num_units,
-                input_length=params.max_seq_len)(inputs)
-        xs = tf.split(x, num_data_parallel, axis=0)
+        x = embedding(inputs)
 
-    # RNN layers
+    num_data_parallel = num_gpus_by_2
+    assert (params.batch_size % num_data_parallel == 0)
+    stride = params.batch_size // num_data_parallel
+    start, end = 0, stride
     ys = []
-    for x, dev in zip(xs, devices):
+    for dev in devices[:num_data_parallel]:
+        next_dev = get_next_layer_device(dev)
         with tf.device(dev):
             cells[0].exec_device = dev
-            cells[1].exec_device = get_next_layer_device(dev)
-            ys.append(rnn(x))
+            cells[1].exec_device = next_dev
+            ys.append(rnn(x[start:end, ...]))
+            start = end
+            end += stride
+    assert start == params.batch_size
 
-    # Dense + softmax
-    with tf.device(devices[0]):
-        y = tf.concat(ys, axis=0)
-        assert len(y.shape) == 3
-        ys = tf.split(y, num_gpus, axis=-1)
-    new_ys = []
-    for y, dev in zip(ys, devices):
+    slices = []
+    for y in ys:
+        with tf.device(y.device):
+            slices.append(tf.split(y, num_gpus, axis=-1))
+    slices = utils.TransposeLists(slices)
+
+    ys = []
+    assert len(slices) == num_gpus
+    for dev, s in zip(devices, slices):
         with tf.device(dev):
-            new_ys.append(dense(y))
+            x = tf.concat(s, axis=0)
+            ys.append(dense(x))
 
     # Loss
     with tf.device(devices[0]):
-        y = tf.concat(new_ys, axis=-1)
-        loss = keras.losses.SparseCategoricalCrossentropy(
-                from_logits=True)(labels, y)
+        y = tf.concat(ys, axis=-1)
+        loss = tf.losses.sparse_softmax_cross_entropy(labels, y,
+                reduction=tf.losses.Reduction.MEAN)
     opt = tf.train.GradientDescentOptimizer(learning_rate=0.01)
     grads = opt.compute_gradients(loss, colocate_gradients_with_ops=True)
     assert all(g is not None for g in grads)
