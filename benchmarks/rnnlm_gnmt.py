@@ -16,7 +16,7 @@ class LSTMCell(keras.layers.Layer):
         w_shape = [2 * self.num_units, 4 * self.num_units]
         with tf.device(self.device):
             self.w = self.add_weight(shape=w_shape, initializer='uniform',
-                    name='w', dtype=tf.float32)
+                    name=f'w_l{self.layer}', dtype=tf.float32)
             super().build(input_state)
 
     def call(self, x, states):
@@ -43,6 +43,8 @@ def model(params, inputs, labels):
     assert (num_gpus % 2 == 0)
     num_gpus_by_2 = num_gpus // 2
 
+    embedding = keras.layers.Embedding(params.vocab_size, params.num_units,
+            input_length=params.max_seq_len)
     dev = devices[0]
     with tf.device(dev):
         cell0 = LSTMCell(params.batch_size, params.num_units, dev, layer=0)
@@ -51,32 +53,34 @@ def model(params, inputs, labels):
         cell1 = LSTMCell(params.batch_size, params.num_units, dev, layer=1)
     cells = [cell0, cell1]
     rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
-    dense = keras.layers.Dense(params.vocab_size, use_bias=False)
+    dense = keras.layers.Dense(params.vocab_size, use_bias=False, name='proj')
 
     def get_next_layer_device(dev):
-        dev = dev.split(':')
-        dev_id = int(dev[-1]) + num_gpus_by_2
-        assert dev_id < num_gpus
-
-        dev[-1] = str(dev_id)
-        dev = ':'.join(dev)
-        return dev
+        idx = devices.index(dev) + num_gpus_by_2
+        assert idx < num_gpus
+        return devices[idx]
 
     num_data_parallel = num_gpus_by_2
-    xs = tf.split(inputs, num_data_parallel, axis=0)
-    embedding_weights = tf.get_variable('embed_weights',
-            shape=[params.vocab_size, params.num_units])
+    assert (params.batch_size % num_data_parallel == 0)
+    stride = params.batch_size // num_data_parallel
+    start, end = 0, stride
     ys = []
-    for x, dev in zip(xs, devices):
+    for dev in devices[:num_data_parallel]:
+        next_layer_dev = get_next_layer_device(dev)
         with tf.device(dev):
-            x = tf.nn.embedding_lookup(embedding_weights, x)
             cells[0].exec_device = dev
-            cells[1].exec_device = get_next_layer_device(dev)
-            ys.append(dense(rnn(x)))
-    y = tf.concat(ys, axis=0)
+            cells[1].exec_device = next_layer_dev
+            x = rnn(embedding(inputs[start:end, ...]))
+
+        with tf.device(next_layer_dev):
+            ys.append(dense(x))
+            start = end
+            end += stride
+    assert start == params.batch_size
 
     # Loss
     with tf.device(devices[num_gpus_by_2]):
+        y = tf.concat(ys, axis=0)
         loss = tf.losses.sparse_softmax_cross_entropy(labels, y,
                 reduction=tf.losses.Reduction.MEAN)
     opt = tf.train.GradientDescentOptimizer(learning_rate=0.01)
