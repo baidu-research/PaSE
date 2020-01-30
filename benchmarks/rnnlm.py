@@ -48,7 +48,7 @@ def main():
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
-    config = tf.ConfigProto(log_device_placement=False,
+    config = tf.ConfigProto(log_device_placement=True,
             allow_soft_placement=True)
     trainer.train(tf.global_variables_initializer(), loss, [grads], dataset,
             config=config, run_options=run_options)

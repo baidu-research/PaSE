@@ -137,12 +137,13 @@ def ParallelDense(x, w_shape, num_k_splits, num_n_splits, devices, name,
 
 class LSTMCell(keras.layers.Layer):
     def __init__(self, batch_size, num_units, devices, num_k_splits,
-            num_n_splits, **kwargs):
+            num_n_splits, layer, **kwargs):
         self.num_gpus = len(devices)
         self.num_k_splits = num_k_splits
         self.num_n_splits = num_n_splits
         self.batch_size = batch_size
         self.num_units = num_units
+        self.layer = layer
 
         h_state_size = [num_units // self.num_k_splits] * self.num_gpus
         c_state_size = [num_units // self.num_n_splits] * self.num_n_splits
@@ -158,7 +159,7 @@ class LSTMCell(keras.layers.Layer):
                 w_shape = [(2 * self.num_units) // self.num_k_splits, (4 *
                     self.num_units) // self.num_n_splits]
                 w = self.add_weight(shape=w_shape, initializer='uniform',
-                        dtype=tf.float32, name=f'w_{i}')
+                        dtype=tf.float32, name=f'w_l{self.layer}_{i}')
                 self.ws.append(w)
         super().build(input_state)
 
@@ -304,9 +305,9 @@ def model(params, inputs, labels):
     else:
         assert False
     cells = [LSTMCell(params.batch_size, params.num_units, devices,
-        num_k_splits, num_n_splits),
+        num_k_splits, num_n_splits, layer=0),
             LSTMCell(params.batch_size, params.num_units, devices, num_k_splits,
-                num_n_splits)]
+                num_n_splits, layer=1)]
     rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Initial states

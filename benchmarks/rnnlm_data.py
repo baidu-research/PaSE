@@ -2,17 +2,18 @@ import tensorflow.compat.v1 as tf
 import tensorflow.keras as keras
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, batch_size, num_units, **kwargs):
+    def __init__(self, batch_size, num_units, layer, **kwargs):
         self.batch_size = batch_size
         self.num_units = num_units
         self.state_size = [num_units, num_units]
+        self.layer = layer
 
         super().__init__(**kwargs)
 
     def build(self, input_state):
         w_shape = [2 * self.num_units, 4 * self.num_units]
-        self.w = self.add_weight(shape=w_shape, initializer='uniform', name='w',
-                dtype=tf.float32)
+        self.w = self.add_weight(shape=w_shape, initializer='uniform',
+                name=f'w_l{self.layer}', dtype=tf.float32)
         super().build(input_state)
 
     def call(self, x, states):
@@ -38,8 +39,8 @@ def model(params, inputs, labels):
 
     embedding = keras.layers.Embedding(params.vocab_size, params.num_units,
             input_length=params.max_seq_len)
-    cells = [LSTMCell(params.batch_size, params.num_units),
-            LSTMCell(params.batch_size, params.num_units)]
+    cells = [LSTMCell(params.batch_size, params.num_units, layer=0),
+            LSTMCell(params.batch_size, params.num_units, layer=1)]
     rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
     dense = keras.layers.Dense(params.vocab_size, use_bias=False)
 
