@@ -53,50 +53,29 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
     elif strategy == 1:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
+        mesh_to_impl[mesh] = m2i = GetMeshImpl([num_gpus])
 
-        if num_gpus == 8:
-            mesh = mtf.Mesh(graph, 'mesh1')
-            meshes.append(mesh)
-            mesh_to_impl[mesh] = GetMeshImpl([4, 2]) 
-
-            mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-                batch_size), h, w, ch]))
-            mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
-                    GetShape([batch_size]))
-
-        elif num_gpus == 16:
-            mesh = mtf.Mesh(graph, 'mesh1')
-            meshes.append(mesh)
-            mesh_to_impl[mesh] = mesh_impl1 = GetMeshImpl([2, 8])
-
-            mesh = mtf.Mesh(graph, 'mesh2')
-            meshes.append(mesh)
-            devices = [mesh_impl1.devices[0], mesh_impl1.devices[8]]
-            mesh_to_impl[mesh] = GetMeshImpl([2, 1], devices=devices)
-
-            mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-                batch_size), h, w, ch]))
-            mtf_labels = mtf.import_tf_tensor(meshes[2], labels,
-                    GetShape([batch_size]))
-
-        elif num_gpus == 32:
-            mesh = mtf.Mesh(graph, 'mesh1')
-            meshes.append(mesh)
-            mesh_to_impl[mesh] = mesh_impl1 = GetMeshImpl([4, 8])
-
-            mesh = mtf.Mesh(graph, 'mesh2')
-            meshes.append(mesh)
-            devices = [mesh_impl1.devices[i] for i in range(0, 32, 8)]
-            mesh_to_impl[mesh] = GetMeshImpl([4, 1], devices=devices)
-
-            mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-                batch_size), h, w, ch]))
-            mtf_labels = mtf.import_tf_tensor(meshes[2], labels,
-                    GetShape([batch_size]))
-
+        if num_nodes == 1:
+            dim1, dim2 = 4, 2
+        elif num_nodes == 2:
+            dim1, dim2 = 8, 2
+        elif num_nodes == 4:
+            dim1, dim2 = 8, 4
         else:
             assert False
+
+        mesh = mtf.Mesh(graph, 'mesh1')
+        meshes.append(mesh)
+        mesh_to_impl[mesh] = m2i = GetMeshImpl([dim1, dim2], node_cnt=num_nodes)
+
+        mesh = mtf.Mesh(graph, 'mesh2')
+        meshes.append(mesh)
+        mesh_to_impl[mesh] = GetMeshImpl([1, dim2], node_cnt=1)
+
+        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
+            batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(meshes[-1], labels,
+                GetShape([batch_size]))
 
     elif strategy == 2:
         mesh = mtf.Mesh(graph, 'mesh0')
@@ -148,16 +127,9 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
         fc8_units = mtf.Dimension(utils.RandName(), num_classes)
 
     elif strategy == 1:
-        if num_nodes == 1:
-            fc6_units = mtf.Dimension('axis1', 4096)
-            fc7_units = mtf.Dimension('axis0', 4096)
-            fc8_units = mtf.Dimension('axis1', num_classes)
-        elif num_nodes >= 2:
-            fc6_units = mtf.Dimension('axis0', 4096)
-            fc7_units = mtf.Dimension('axis1', 4096)
-            fc8_units = mtf.Dimension('axis0', num_classes)
-        else:
-            assert False
+        fc6_units = mtf.Dimension('axis1', 4096)
+        fc7_units = mtf.Dimension('axis0', 4096)
+        fc8_units = mtf.Dimension('axis1', num_classes)
 
     elif strategy == 2:
         num_classes = utils.RoundUp(num_classes, num_gpus)
@@ -199,14 +171,8 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
             k_dim = mtf.Dimension(utils.RandName(),
                     utils.Prod(pool5.shape.to_integer_list[1:]))
             pool5 = mtf.reshape(pool5, mtf.Shape([pool5.shape[0], k_dim]))
-            if num_nodes == 1:
-                pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1],
-                        (utils.RandName(), 'axis0'))
-            elif num_nodes >= 2:
-                pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1],
-                        (utils.RandName(), 'axis1'))
-            else:
-                assert False
+            pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1],
+                    (utils.RandName(), 'axis0'))
 
         elif strategy == 2:
             pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name, utils.RandName())
@@ -231,8 +197,8 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
         fc8 = mtf.layers.dense(fc7, fc8_units, reduced_dims=fc7.shape.dims[-1:], name='fc8')
         fc8 = mtf.dropout(fc8, keep_prob)
 
-        if strategy == 1 and num_nodes >= 2:
-            assert fc8.shape[-1].name == 'axis0'
+        if strategy == 1:
+            assert fc8.shape[-1].name == 'axis1'
             fc8 = ReplaceMeshWithDuplicates(fc8, meshes[2])
 
     with tf.variable_scope('loss'):
