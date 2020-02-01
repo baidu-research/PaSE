@@ -8,9 +8,9 @@ import sys, time, os
 import utils
 
 class Trainer():
-    def __init__(self, parser=None):
-        parser = parser or argparse.ArgumentParser(
-                formatter_class = argparse.ArgumentDefaultsHelpFormatter)
+    def __init__(self):
+        parser = argparse.ArgumentParser(formatter_class =
+                argparse.ArgumentDefaultsHelpFormatter)
         parser.add_argument('-b', '--batch_size', type=int, required=False, default=256,
                 help="Batch size.")
         parser.add_argument('-g', '--gpus', type=int, required=False, default=8,
@@ -40,10 +40,10 @@ class Trainer():
                 default=None)
         parser.add_argument('--sentences_size', type=int, required=False,
                 default=None)
-        parser.add_argument('--vocab', required=False, default=None, type=str,
-                help="Source vocab data file.")
-        parser.add_argument('--text', required=False, default=None, type=str,
-                help="Source text data file.")
+        parser.add_argument('--src_vocab', type=str, help="Source vocab data file.")
+        parser.add_argument('--tgt_vocab', type=str, help="Target vocab data file.")
+        parser.add_argument('--src_text', type=str, help="Source text data file.")
+        parser.add_argument('--tgt_text', type=str, help="Target text data file.")
         parser.add_argument('--seq_len', type=int, required=False, default=256,
                 help='Maximum sequence length')
     
@@ -77,7 +77,7 @@ class Trainer():
     
             cluster = tf.train.ClusterSpec({"localhost":hostlist_w_port}).as_cluster_def()
             server = tf.distribute.Server(cluster, job_name="localhost",
-                    task_index=task_index, protocol='grpc+mpi')
+                    task_index=task_index, protocol='grpc+verbs')
             session_target = server.target
     
             if task_index != 0:

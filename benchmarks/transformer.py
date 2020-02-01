@@ -14,7 +14,6 @@ import utils
 from utils import RandName
 from mesh_transformations import ReplaceMeshWithIndependentAxes, \
         ReplaceMeshWithDuplicates
-import dgx_mesh_impl
 
 
 def GetShape(dims):
@@ -391,15 +390,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
 
 
 def main():
-    parser = argparse.ArgumentParser(formatter_class =
-            argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--src_vocab', type=str, help="Source vocab data file.")
-    parser.add_argument('--tgt_vocab', type=str, help="Target vocab data file.")
-    parser.add_argument('--src_text', type=str, help="Source text data file.")
-    parser.add_argument('--tgt_text', type=str, help="Target text data file.")
-    parser.add_argument('--seq_len', type=int, required=False, default=256,
-            help='Maximum sequence length')
-    trainer = common.Trainer(parser)
+    trainer = common.Trainer()
     args = trainer.args
     params = Params(args.batch_size, args.seq_len)
 

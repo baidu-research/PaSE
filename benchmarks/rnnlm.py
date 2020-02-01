@@ -21,9 +21,9 @@ def main():
             range(trainer.num_nodes) for j in range(args.gpus)]
 
     # Initialize dataset
-    dataset = TextDataLoader(args.batch_size, args.vocab, None, args.text, None,
-            args.seq_len, args.src_vocab_size, args.tgt_vocab_size,
-            args.sentences_size)
+    dataset = TextDataLoader(args.batch_size, args.src_vocab, None,
+            args.src_text, None, args.seq_len, args.src_vocab_size,
+            args.tgt_vocab_size, args.sentences_size)
     inputs, labels, _, _ = dataset.next_batch()
 
     vocab_size = utils.RoundUp(dataset.src_vocab_size, 8)
