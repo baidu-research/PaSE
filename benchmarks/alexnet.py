@@ -55,14 +55,17 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
         meshes.append(mesh)
         mesh_to_impl[mesh] = m2i = GetMeshImpl([num_gpus])
 
-        if num_nodes == 1:
+        if num_gpus == 4:
+            dim1, dim2 = 4, 1
+        elif num_gpus == 8:
             dim1, dim2 = 4, 2
-        elif num_nodes == 2:
+        elif num_gpus == 16:
             dim1, dim2 = 8, 2
-        elif num_nodes == 4:
+        elif num_gpus == 32:
             dim1, dim2 = 8, 4
         else:
             assert False
+        assert ((dim1 * dim2) == num_gpus)
 
         mesh = mtf.Mesh(graph, 'mesh1')
         meshes.append(mesh)

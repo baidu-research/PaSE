@@ -53,9 +53,6 @@ class Trainer():
         assert self.num_nodes > 0
         self.num_gpus = gpus_per_node * self.num_nodes
         self.args = args
-
-        if gpus_per_node != 8:
-            raise NotImplementedError('Current implementation only handles 8 GPUs.')
         os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
                                                      range(gpus_per_node))[:-1]
 
