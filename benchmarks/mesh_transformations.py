@@ -8,6 +8,7 @@ import mesh_tensorflow as mtf
 import utils
 from utils import TransposeLists, FlattenList, DeviceIndex, RandName
 
+'''
 def HasDGXLink(x, y):
     return (x//4 == y//4) or (y == x+4)
 
@@ -53,6 +54,7 @@ def ReplicateOnDGX(tsrs, gpu_ids):
 
     assert len(tsrs) == num_gpus
     return tsrs
+'''
 
 class ReplaceMeshOperation(mtf.Operation):
     def __init__(self, x, mesh, dim_names=None, name=None):
@@ -140,61 +142,6 @@ class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
         assert old_mesh_impl.slice_shape(x.shape)  \
                 == new_mesh_impl.slice_shape(self.new_shape)
 
-        '''
-        # Normalize the mesh shapes of two meshes
-        old_len = old_mesh_shape.ndims
-        new_len = new_mesh_shape.ndims
-        old_mesh_names = old_mesh_shape.dimension_names
-        new_mesh_names = new_mesh_shape.dimension_names
-        assert abs(old_len - new_len) <= 1 # TODO: This can be relaxed later
-        if old_len < new_len:
-            assert replicate
-            old_mesh_shape_norm = []
-            for dim in new_mesh_shape:
-                name = dim.name
-                try:
-                    idx = old_mesh_names.index(name)
-                    old_mesh_shape_norm.append(old_mesh_shape[idx])
-                except ValueError:
-                    old_mesh_shape_norm.append(dim._replace(size=1))
-            old_mesh_shape_norm = mtf.Shape(old_mesh_shape_norm)
-            new_mesh_shape_norm = new_mesh_shape
-
-        elif old_len > new_len:
-            assert not replicate
-            new_mesh_shape_norm = []
-            for dim in old_mesh_shape:
-                name = dim.name
-                try:
-                    idx = new_mesh_names.index(name)
-                    new_mesh_shape_norm.append(new_mesh_shape[idx])
-                except ValueError:
-                    new_mesh_shape_norm.append(dim._replace(size=1))
-            old_mesh_shape_norm = old_mesh_shape
-            new_mesh_shape_norm = mtf.Shape(new_mesh_shape_norm)
-
-        else:
-            old_mesh_shape_norm = old_mesh_shape
-            new_mesh_shape_norm = new_mesh_shape
-        if __debug__:
-            # Make sure mesh dimensions are in the same order in original and
-            # normalized shapes
-            idx = -1
-            norm_names = old_mesh_shape_norm.dimension_names
-            for name in old_mesh_names:
-                i = norm_names.index(name)
-                assert i > idx
-                idx = i
-            idx = -1
-            norm_names = new_mesh_shape_norm.dimension_names
-            for name in new_mesh_names:
-                i = norm_names.index(name)
-                assert i > idx
-                idx = i
-
-        old_mesh_dims = old_mesh_shape_norm.to_integer_list
-        new_mesh_dims = new_mesh_shape_norm.to_integer_list
-        '''
         assert (old_mesh_shape.ndims == new_mesh_shape.ndims) or (self.axis >= 0
                 and abs(old_mesh_shape.ndims - new_mesh_shape.ndims) == 1)
         if old_mesh_shape.ndims < new_mesh_shape.ndims:
@@ -315,45 +262,6 @@ class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
             if old_axis is not None and new_axis is not None:
                 raise ValueError('Parallel axes for the tensor in the old and new \
                         meshes should be independent.')
-
-        '''
-        def GetParallelDims(mesh_impl, dims):
-            axes = []
-            for i, d in enumerate(dims):
-                axis = mesh_impl.tensor_dimension_to_mesh_axis(d)
-                if axis is not None:
-                    axes.append(i)
-            return axes
-
-        # Find the tensor dimensions along which to concat, and split.
-        # We need to concatenate along the axes that were split in old_mesh.
-        # We need to split along new axes.
-        concat_axes = GetParallelDims(old_mesh_impl, x.shape.dims)
-        split_axes = GetParallelDims(new_mesh_impl, self.new_shape)
-        if not (set(concat_axes) & set(split_axes)):
-            raise ValueError('Parallel axes for the tensor in the old and new \
-                    meshes should be independent.')
-
-        # Split along new axes
-        def Split(t, name='split'):
-            ma2ta = new_mesh_impl.tensor_layout(self.new_shape) \
-                    .mesh_axis_to_tensor_axis(new_mesh_shape.ndims)
-            split_slices = [t]
-            for i, ta, num_splits in enumerate(zip(ma2ta, new_mesh_shape)):
-                if ta is None:
-                    split_slices *= num_splits
-                else:
-                    tmp_slices = []
-                    for slice in split_slices:
-                        with tf.device(slice.device):
-                            tmp_slices.append(tf.split(slice, num_splits,
-                                axis=i, name={name}_{i}))
-                    split_slices = FlattenList(TransposeLists(tmp_slices))
-
-            assert len(split_slices) == new_mesh_shape.size
-            return split_slices
-        split_slices = [Split(slice) for slice in input_slices]
-        '''
 
         # Split along new axes
         slice_shape = mtf.Shape([mtf.Dimension(name, size) for name, size in
