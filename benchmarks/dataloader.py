@@ -7,7 +7,6 @@ import utils
 class ImageDataLoader():
     def parse_image(self, filename, label):
         image_string = tf.read_file(filename)
-    
         image = tf.image.decode_jpeg(image_string, channels=3)
     
         # This will convert to float values in [0, 1]
@@ -21,10 +20,12 @@ class ImageDataLoader():
 
     def __init__(self, batch_size, img_size, dataset_size=1000,
             dataset_dir=None, labels_filename=None,
-            num_parallel_calls=tf.data.experimental.AUTOTUNE,
-            prefetches=tf.data.experimental.AUTOTUNE):
+            num_parallel_calls=None, prefetches=None):
         assert len(img_size) == 2
         self.img_size = img_size
+
+        num_parallel_calls = num_parallel_calls or tf.data.experimental.AUTOTUNE
+        prefetches = prefetches or tf.data.experimental.AUTOTUNE
 
         if dataset_dir is None:
             self.dataset_size = dataset_size
@@ -56,7 +57,7 @@ class ImageDataLoader():
             dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
             #dataset = dataset.shuffle(len(filenames))
             dataset = dataset.map(self.parse_image, num_parallel_calls =
-                    num_parallel_calls).cache()
+                    num_parallel_calls)
 
         dataset = dataset.batch(batch_size, drop_remainder=True)
         dataset = dataset.prefetch(prefetches)
@@ -98,10 +99,12 @@ class TextDataLoader():
             tgt_vocab_filename=None, src_text_filename=None,
             tgt_text_filename=None, max_seq_len=None,
             src_vocab_size=None, tgt_vocab_size=None, sentences_size=None,
-            num_parallel_calls=tf.data.experimental.AUTOTUNE,
-            prefetches=tf.data.experimental.AUTOTUNE):
+            num_parallel_calls=None, prefetches=None):
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
+
+        num_parallel_calls = num_parallel_calls or tf.data.experimental.AUTOTUNE
+        prefetches = prefetches or tf.data.experimental.AUTOTUNE
 
         if src_vocab_filename:
             # Vocab to id table
@@ -131,7 +134,7 @@ class TextDataLoader():
             else:
                 dataset = tf.data.Dataset.zip(sentences)
             dataset = dataset.map(self.parse_text, num_parallel_calls =
-                    num_parallel_calls).cache()
+                    num_parallel_calls)
 
             self.dataset_size = sum(1 for _ in open(src_text_filename, 'r'))
             self.src_vocab_size = sum(1 for _ in open(src_vocab_filename, 'r'))
