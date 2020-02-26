@@ -132,6 +132,7 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
     Mesh.idx = 0
 
     def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
+        assert utils.Prod(dev_cnts) <= ((num_gpus // num_nodes) * node_cnt)
         return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
 
     if strategy == 0:

@@ -64,7 +64,9 @@ def RenameDims(shape, axes, names):
 
 def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None, num_nodes=1):
     num_devs = Prod(dev_cnts)
-    assert num_devs % num_nodes == 0
+    assert num_devs % num_nodes == 0, (
+            f'Device count is not a multiple of node count. '
+            f'Device count: {num_devs}; node count: {num_nodes}.')
 
     mesh_impl = mesh_impl or mtf.placement_mesh_impl.PlacementMeshImpl
     axes = axes or ['axis%d' % i for i in range(len(dev_cnts))]

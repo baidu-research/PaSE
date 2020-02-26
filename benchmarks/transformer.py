@@ -40,20 +40,25 @@ class Params():
         self.d_k = 64
 
 def get_mesh_dims(num_gpus):
-    if num_gpus == 8:
-        return 2, 4
+    if num_gpus == 4:
+        dim1, dim2 = 2, 2
+    elif num_gpus == 8:
+        dim1, dim2 = 2, 4
     elif num_gpus == 16:
-        return 4, 4
+        dim1, dim2 = 4, 4
     elif num_gpus == 32:
-        return 4, 8
+        dim1, dim2 = 4, 8
     else:
         assert False
-        return -1, -1
+
+    assert ((dim1 * dim2) == num_gpus)
+    return dim1, dim2
 
 def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
+    gpus_per_node = num_gpus // num_nodes
 
     def Mesh(idx):
         mesh = mtf.Mesh(graph, 'mesh%d' % idx)
@@ -61,6 +66,7 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
         return mesh
 
     def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
+        assert utils.Prod(dev_cnts) <= (gpus_per_node * node_cnt)
         return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
 
     mesh_dim1, mesh_dim2 = get_mesh_dims(num_gpus)
@@ -81,8 +87,10 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
 
         mesh = Mesh(1)
         mesh_to_impl[mesh] = GetMeshImpl([mesh_dim1, mesh_dim2])
+
         mesh = Mesh(2)
-        mesh_to_impl[mesh] = GetMeshImpl([mesh_dim2], node_cnt=1)
+        node_cnt = (mesh_dim2 + gpus_per_node - 1) // gpus_per_node
+        mesh_to_impl[mesh] = GetMeshImpl([mesh_dim2], node_cnt=node_cnt)
 
         shape = GetShape([params.batch_size, params.max_seq_len])
         mtf_src = mtf.cast(mtf.import_tf_tensor(meshes[0], src, shape), tf.int32)
