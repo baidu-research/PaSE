@@ -65,6 +65,8 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
             dim1, dim2 = 8, 2
         elif num_gpus == 32:
             dim1, dim2 = 8, 4
+        elif num_gpus == 64:
+            dim1, dim2 = 8, 8
         else:
             assert False
         assert ((dim1 * dim2) == num_gpus)
@@ -143,6 +145,7 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
         fc8_units = mtf.Dimension('axis0', num_classes)
 
     elif strategy == 3:
+        num_classes = utils.RoundUp(num_classes, num_gpus // 2)
         fc6_units = mtf.Dimension('axis1', 4096)
         fc7_units = mtf.Dimension('axis1', 4096)
         fc8_units = mtf.Dimension('axis1', num_classes)
