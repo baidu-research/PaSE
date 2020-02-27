@@ -10,7 +10,8 @@ import string, random
 import common
 from dataloader import ImageDataLoader
 import utils
-from mesh_transformations import ReplaceMeshWithDuplicates, ReplaceMeshWithIndependentAxes
+from mesh_transformations import ReplaceMeshWithDuplicates, \
+        ReplaceMeshWithIndependentAxes, ReplaceMeshWithConcatSplit
 from mtf_operations import Conv2d, MaxPool
 #import dgx_mesh_impl
 
@@ -54,7 +55,7 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
     elif strategy == 1:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = m2i = GetMeshImpl([num_gpus])
+        mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
         if num_gpus == 4:
             dim1, dim2 = 4, 1
@@ -70,7 +71,7 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
 
         mesh = mtf.Mesh(graph, 'mesh1')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = m2i = GetMeshImpl([dim1, dim2], node_cnt=num_nodes)
+        mesh_to_impl[mesh] = GetMeshImpl([dim1, dim2], node_cnt=num_nodes)
 
         mesh = mtf.Mesh(graph, 'mesh2')
         meshes.append(mesh)
@@ -97,7 +98,7 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
 
         mesh = mtf.Mesh(graph, 'mesh1')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([1], node_cnt=1)
+        mesh_to_impl[mesh] = GetMeshImpl([2, num_gpus // 2])
 
         mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
             batch_size), h, w, ch]))
@@ -142,9 +143,9 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
         fc8_units = mtf.Dimension('axis0', num_classes)
 
     elif strategy == 3:
-        fc6_units = mtf.Dimension(utils.RandName(), 4096)
-        fc7_units = mtf.Dimension(utils.RandName(), 4096)
-        fc8_units = mtf.Dimension(utils.RandName(), num_classes)
+        fc6_units = mtf.Dimension('axis1', 4096)
+        fc7_units = mtf.Dimension('axis1', 4096)
+        fc8_units = mtf.Dimension('axis1', num_classes)
 
     with tf.variable_scope('alexnet'):
         # Conv1 + ReLU + maxpool1
@@ -183,8 +184,9 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
 
         elif strategy == 3:
             assert pool5.shape[0].name == 'axis0'
-            dim_names = pool5.shape.rename_dimension('axis0', utils.RandName())
-            pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1], dim_names)
+            #dim_names = pool5.shape.rename_dimension('axis0', utils.RandName())
+            #pool5 = ReplaceMeshWithIndependentAxes(pool5, meshes[1], dim_names)
+            pool5 = ReplaceMeshWithConcatSplit(pool5, meshes[1])
 
         # FC + ReLU + dropout
         fc_activation = lambda x: mtf.dropout(mtf.relu(x), keep_prob)
@@ -192,10 +194,14 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
                 reduced_dims=pool5.shape[1:], name='fc6')
         if strategy == 2:
             fc6 = RenameFC(fc6)
+        elif strategy == 3:
+            fc6 = RenameFC(fc6)
 
         fc7 = mtf.layers.dense(fc6, fc7_units, activation=fc_activation,
                 reduced_dims=fc6.shape.dims[-1:], name='fc7')
         if strategy == 2:
+            fc7 = RenameFC(fc7)
+        elif strategy == 3:
             fc7 = RenameFC(fc7)
 
         fc8 = mtf.layers.dense(fc7, fc8_units, reduced_dims=fc7.shape.dims[-1:], name='fc8')
