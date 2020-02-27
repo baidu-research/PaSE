@@ -293,6 +293,8 @@ def ReplaceMeshWithIndependentAxes(x, mesh, dim_names=None, name=None):
             name=name).outputs[0]
 
 
+# Split/concat slices along a mesh axis. We only consider tensors distributed
+# along one axis for now.
 class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
     def __init__(self, x, mesh, dim_names=None, name=None):
         self.old_mesh = x.mesh
@@ -308,8 +310,8 @@ class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
         self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
 
     def gradient(self, grad_ys):
-        return ReplaceMeshWithConcatSplitOperation(grad_ys[0],
-                self.old_mesh, self.inputs[0].shape.dimension_names).outputs
+        return ReplaceMeshWithConcatSplitOperation(grad_ys[0], self.old_mesh,
+                self.inputs[0].shape.dimension_names).outputs
 
     def lower(self, lowering):
         x = self.inputs[0]
@@ -320,9 +322,9 @@ class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
         new_mesh_shape = new_mesh_impl.shape
         old_mesh_ndims = old_mesh_shape.ndims
         new_mesh_ndims = new_mesh_shape.ndims
-        old_num_gpus = old_mesh_impl.shape.size
-        new_num_gpus = new_mesh_impl.shape.size
-        assert old_mesh_ndims == new_mesh_ndims
+
+        num_gpus = old_mesh_impl.shape.size
+        assert num_gpus == new_mesh_impl.shape.size
 
         old_ta2ma = old_mesh_impl.tensor_layout(
                 x.shape).tensor_axis_to_mesh_axis
@@ -330,72 +332,76 @@ class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
                 self.new_shape).tensor_axis_to_mesh_axis
         assert old_ta2ma == new_ta2ma
 
-        concat_mesh_dim = -1
-        concat_tensor_dim = -1
-        concat = False
-        for i, dim in enumerate(old_ta2ma):
-            if dim == None:
+        axis = -1
+        old_mesh_axis = -1
+        new_mesh_axis = -1
+        for i, (ma1, ma2) in enumerate(zip(old_ta2ma, new_ta2ma)):
+            # Either both ma1 and ma2 are none, or neither is none
+            if ma1 is None:
+                assert ma2 is None
                 continue
+            assert ma2 is not None
 
-            size1 = old_mesh_shape[dim].size
-            size2 = new_mesh_shape[dim].size
-            if size1 == size2:
-                continue
+            # We consider only the case where tensor is distributed along only
+            # one axis.
+            assert axis == old_mesh_axis == new_mesh_axis == -1
+            old_mesh_axis, new_mesh_axis = ma1, ma2
+            axis = i
 
-            assert concat_mesh_dim == -1
-            concat_tensor_dim = i
-            concat_mesh_dim = dim
-            if size1 > size2:
-                concat = True
+        old_axis_size = old_mesh_shape[old_mesh_axis].size
+        new_axis_size = new_mesh_shape[new_mesh_axis].size
 
-        assert concat_mesh_dim != -1
-        old_groups = mtf.processor_groups(old_mesh_shape, [concat_mesh_dim])
-        new_groups = mtf.processor_groups(new_mesh_shape, [concat_mesh_dim])
-        assert len(old_groups) == len(new_groups)
-        assert all(len(old_groups[0]) == len(group) for group in old_groups)
-        assert all(len(new_groups[0]) == len(group) for group in new_groups)
-        old_gpus = [DeviceIndex(d) for d in old_mesh_impl.devices]
-        new_gpus = [DeviceIndex(d) for d in new_mesh_impl.devices]
+        if old_axis_size == new_axis_size:
+            # If old and new axis sizes are same, there is nothing to
+            # concat/split.  Just return the original slices
+            output_slices = input_slices
 
-        if concat:
-            assert len(old_groups[0]) % len(new_groups[0]) == 0
-            num_splits = len(old_groups[0]) // len(new_groups[0])
+        elif old_axis_size > new_axis_size:
+            # We only consider the case where there is no replication in old
+            # mesh.
+            assert old_axis_size == num_gpus
+
+            assert old_axis_size % new_axis_size == 0
+            ratio = old_axis_size // new_axis_size
+
+            # We only consider this case for now, so we don't have to shuffle
+            # the concatenated slices
+            assert new_mesh_axis == 0
+
+            # Concat 'ratio' slices together
+            output_slices = []
+            for i in range(0, old_axis_size, ratio):
+                devices = [new_mesh_impl.devices[j] for j in range(i, i+ratio)]
+                output_slices += mtf.placement_mesh_impl.allconcat_ring(
+                        [input_slices[j] for j in range(i, i+ratio)],
+                        devices, axis)
+
         else:
-            assert len(new_groups[0]) % len(old_groups[0]) == 0
-            num_splits = len(new_groups[0]) // len(old_groups[0])
+            # We only consider the case where there is no replication in new
+            # mesh.
+            assert new_axis_size == num_gpus
 
-        output_slices = [None] * new_num_gpus
-        for old_group, new_group in zip(old_groups, new_groups):
-            if concat:
-                for idx1, idx2 in enumerate(range(0, len(old_group),
-                    num_splits)):
-                    slices = [input_slices[p] for p in
-                            old_group[idx2:idx2+num_splits]]
-                    assert output_slices[new_group[idx1]] == None
-                    assert old_gpus[old_group[idx2]] == new_gpus[new_group[idx1]]
+            assert new_axis_size % old_axis_size == 0
+            ratio = new_axis_size // old_axis_size
 
-                    with tf.device(new_mesh_impl.devices[new_group[idx1]]):
-                        output_slices[new_group[idx1]] = tf.concat(slices,
-                                axis=concat_tensor_dim)
+            output_slices = []
+            t_size = input_slices[0].shape[axis]
+            for i in range(0, new_axis_size, ratio):
+                start = 0
+                assert t_size % ratio == 0
+                step = t_size // ratio
+                slices = [slice(None) for _ in x.shape.dims]
+                slices[axis] = slice(start, start+step)
 
-            else:
-                for idx1, idx2 in enumerate(range(0, len(new_group),
-                    num_splits)):
-                    slice = input_slices[old_group[idx1]]
-                    assert all(output_slices[p] == None for p in
-                            new_group[idx2:idx2+num_splits])
-                    assert old_gpus[old_group[idx1]] == new_gpus[new_group[idx2]]
+                for j in range(i, i+ratio):
+                    t = input_slices[j]
+                    assert t.device == new_mesh_impl.devices[j]
 
-                    with tf.device(new_mesh_impl.devices[new_group[idx2]]):
-                        slices = tf.split(slice, num_splits,
-                                axis=concat_tensor_dim)
+                    with tf.device(t.device):
+                        output_slices.append(t[slices])
+                    start += step
+                assert start == t_size
 
-                    for p, slice in zip(new_group[idx2:idx2+num_splits], slices):
-                        with tf.device(new_mesh_impl.devices[p]):
-                            assert output_slices[p] == None
-                            output_slices[p] = tf.identity(slice)
-
-        assert all(s is not None for s in output_slices)
         laid_out_tensor = lowering.mesh_impl(
                 self).LaidOutTensor.from_tensor_list(output_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
