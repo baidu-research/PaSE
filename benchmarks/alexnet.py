@@ -36,6 +36,7 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
 
     strategy = args.strategy
     batch_size = args.batch_size
+    gpus_per_node = (num_gpus // num_nodes)
 
     def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
         assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==

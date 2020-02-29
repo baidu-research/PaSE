@@ -122,11 +122,10 @@ def model(params, inputs, labels):
     tf_init_vars = utils.FlattenList([
                 lowering.variables[var].laid_out_tensor.all_slices for var in
                 graph.trainable_variables])
-    init_op = tf.trainable_variables()
+    init_op = []
     for v in tf_init_vars:
         with tf.device(v.device):
             init_op.append(v.initializer)
-    print(init_op)
 
     return init_op, tf_loss, tf_grad_updates
 
