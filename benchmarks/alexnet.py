@@ -38,9 +38,9 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
     batch_size = args.batch_size
 
     def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
-        assert utils.Prod(dev_cnts) <= ((num_gpus // num_nodes) * node_cnt)
+        assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==
+                (gpus_per_node * num_nodes))
         return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
-                #mesh_impl=dgx_mesh_impl.DGXMeshImpl)
 
     if strategy == 0:
         mesh = mtf.Mesh(graph, 'mesh0')
@@ -105,7 +105,7 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
         mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
             batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
-                GetShape([batch_size]))
+                GetShape([('axis0', batch_size)]))
 
     else:
         assert False

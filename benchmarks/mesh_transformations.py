@@ -356,7 +356,7 @@ class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
             # concat/split.  Just return the original slices
             output_slices = input_slices
 
-        elif old_axis_size > new_axis_size:
+        elif old_axis_size > new_axis_size: # Concat
             # We only consider the case where there is no replication in old
             # mesh.
             assert old_axis_size == num_gpus
@@ -376,7 +376,7 @@ class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
                         [input_slices[j] for j in range(i, i+ratio)],
                         devices, axis)
 
-        else:
+        else: # Split
             # We only consider the case where there is no replication in new
             # mesh.
             assert new_axis_size == num_gpus

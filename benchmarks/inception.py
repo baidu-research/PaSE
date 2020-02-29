@@ -50,6 +50,7 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
 
     strategy = args.strategy
     batch_size = args.batch_size
+    gpus_per_node = (num_gpus // num_nodes)
 
     def Mesh():
         mesh = mtf.Mesh(graph, 'mesh%d' % Mesh.idx)
@@ -59,7 +60,8 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
     Mesh.idx = 0
 
     def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
-        assert utils.Prod(dev_cnts) <= ((num_gpus // num_nodes) * node_cnt)
+        assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==
+                (gpus_per_node * num_nodes))
         return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
 
     if strategy == 0:
@@ -100,12 +102,12 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
 
         mesh = mtf.Mesh(graph, 'mesh1')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([1], node_cnt=1)
+        mesh_to_impl[mesh] = GetMeshImpl([2, num_gpus // 2])
 
         mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
             batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
-                GetShape([batch_size]))
+                GetShape([('axis0', batch_size)]))
 
     else:
         assert False
@@ -343,15 +345,19 @@ def Inception(img, labels, num_nodes, num_gpus, args):
             with tf.variable_scope('reshape_mean'):
                 mean = mtf.reshape(mean, shape)
             dim_name = 'axis1'
+
         elif strategy == 2:
-            num_classes = num_classes + num_gpus - (num_classes % num_gpus)
+            num_classes = utils.RoundUp(num_classes, num_gpus)
             mean = mtf.rename_dimension(mean, 'axis0', mtf_labels.shape[0].name)
             dim_name = 'axis0'
+
         elif strategy == 3:
+            num_classes = utils.RoundUp(num_classes, num_gpus)
             assert mean.shape[0].name == 'axis0'
             dim_names = mean.shape.rename_dimension('axis0', mtf_labels.shape[0].name)
-            mean = ReplaceMeshWithIndependentAxes(mean, meshes[1], dim_names)
-            dim_name = utils.RandName()
+            mean = ReplaceMeshWithConcatSplit(mean, meshes[1], dim_names)
+            dim_name = 'axis1'
+
         else:
             dim_name = utils.RandName()
         fc = mtf.layers.dense(mean, mtf.Dimension(dim_name, num_classes),
