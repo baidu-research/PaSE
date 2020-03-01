@@ -43,8 +43,7 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, batch_size, num_units, layer, **kwargs):
-        self.batch_size = batch_size
+    def __init__(self, num_units, layer, **kwargs):
         self.num_units = num_units
         self.state_size = [num_units, num_units]
         self.layer = layer
@@ -80,8 +79,8 @@ def model(params, inputs, labels):
     learning_rate = 0.01
 
     # RNN cells
-    cells = [LSTMCell(params.batch_size, params.num_units, layer=0),
-            LSTMCell(params.batch_size, params.num_units, layer=1)]
+    cells = [LSTMCell(params.num_units, layer=0),
+             LSTMCell(params.num_units, layer=1)]
     rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Mtf mesh
