@@ -121,6 +121,7 @@ def model(params, inputs, labels):
     tf_rnn = lowering.tensors[mtf_rnn].tensor_list
     tf_rnn_vars = rnn.weights
     tf_rnn_output_grads = lowering.tensors[rnn_grad].tensor_list
+    assert len(tf_rnn) == len(tf_rnn_output_grads)
     tf_rnn_grads = tf.gradients(tf_rnn, tf_rnn_vars, grad_ys=tf_rnn_output_grads)
     assert len(tf_rnn_grads) == len(tf_rnn_vars)
     tf_grad_updates += [tf.assign_sub(v, lr * g) for v, g in zip(tf_rnn_vars,
