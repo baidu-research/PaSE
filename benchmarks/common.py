@@ -93,7 +93,8 @@ class Trainer():
     
     def train(self, init_ops, loss_op, grad_ops, dataset, config=None,
             run_options=None):
-        config = config or tf.ConfigProto()
+        config = config or tf.ConfigProto(allow_soft_placement=False)
+        assert all(grad is not None for grad in grad_ops)
 
         # Workaround to prevent MPI from crashing due to 'StopIteration'
         if self.args.max_steps < 1:
@@ -107,6 +108,7 @@ class Trainer():
         with tf.variable_scope('train'):
             with tf.Session(self.session_target, config=config) as sess:
                 dataset.reset_pointer(sess)
+                sess.run(tf.global_variables_initializer())
                 sess.run(init_ops)
                 print('Finished initialization.')
     

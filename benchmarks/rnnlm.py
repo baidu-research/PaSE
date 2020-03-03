@@ -34,23 +34,21 @@ def main():
 
     # Model
     if args.strategy == 0:
-        import rnnlm_data
-        init_ops, loss, grads = rnnlm_data.model(params, inputs, labels)
+        import rnnlm_data as rnn
     elif args.strategy == 1:
-        import rnnlm_opt
-        loss, grads = rnnlm_opt.model(params, inputs, labels)
+        import rnnlm_opt as rnn
     elif args.strategy == 2:
-        import rnnlm_gnmt
-        loss, grads = rnnlm_gnmt.model(params, inputs, labels)
+        import rnnlm_gnmt as rnn
     elif args.strategy == 3:
-        import rnnlm_flexflow
-        loss, grads = rnnlm_flexflow.model(params, inputs, labels)
+        import rnnlm_flexflow as rnn
     else:
         assert False
+    init_ops, loss, grads = rnn.model(params, inputs, labels)
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
     config = tf.ConfigProto(allow_soft_placement=False)
+            #log_device_placement=True)
     trainer.train(init_ops, loss, [grads], dataset, config=config,
             run_options=run_options)
 

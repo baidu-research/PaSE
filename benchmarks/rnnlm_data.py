@@ -26,7 +26,7 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
 
     def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
         assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==
-                (gpus_per_node * num_nodes))
+                (gpus_per_node * node_cnt))
         return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
 
     mesh = mtf.Mesh(graph, 'mesh0')
@@ -44,11 +44,10 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
 
 class LSTMCell(keras.layers.Layer):
     def __init__(self, num_units, layer, **kwargs):
+        super().__init__(**kwargs)
         self.num_units = num_units
         self.state_size = [num_units, num_units]
         self.layer = layer
-
-        super().__init__(**kwargs)
 
     def build(self, input_state):
         w_shape = [2 * self.num_units, 4 * self.num_units]
@@ -76,7 +75,7 @@ class LSTMCell(keras.layers.Layer):
 def model(params, inputs, labels):
     devices = params.devices
     num_gpus = len(devices)
-    learning_rate = 0.01
+    lr = 0.01
 
     # RNN cells
     cells = [LSTMCell(params.num_units, layer=0),
@@ -95,36 +94,38 @@ def model(params, inputs, labels):
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
-    y = mtf.slicewise(rnn, [embedding], output_shape=embedding.shape,
+    mtf_rnn = mtf.slicewise(rnn, [embedding], output_shape=embedding.shape,
             output_dtype=embedding.dtype, splittable_dims=embedding.shape[:1])
-    y = mtf.layers.dense(y, vocab_dim, reduced_dims=y.shape[-1:],
+    y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
             use_bias=False)
     mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(y, mtf_labels,
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
     # Optimize
-    with tf.variable_scope('optimize'):
-        grads = mtf.gradients([mtf_loss], [v.outputs[0] for v in
-            graph.trainable_variables])
-        opt = mtf.optimize.SgdOptimizer(learning_rate)
-        grad_updates = opt.apply_grads(grads, graph.trainable_variables)
+    mtf_trainable_vars = [v.outputs[0] for v in graph.trainable_variables]
+    *grads, rnn_grad = mtf.gradients([mtf_loss], mtf_trainable_vars + [mtf_rnn])
+    opt = mtf.optimize.SgdOptimizer(lr)
+    grad_updates = opt.apply_grads(grads, graph.trainable_variables)
 
-
+    # Lower
     print('Beginning to lower mtf graph...', flush=True)
     lowering = mtf.Lowering(graph, mesh_to_impl)
     print('Finished lowering.', flush=True)
+
+    # Loss and gradients
     tf_loss = lowering.export_to_tf_tensor(mtf_loss)
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
-    # Initializer
-    tf_init_vars = utils.FlattenList([
-                lowering.variables[var].laid_out_tensor.all_slices for var in
-                graph.trainable_variables])
-    init_op = []
-    for v in tf_init_vars:
-        with tf.device(v.device):
-            init_op.append(v.initializer)
+    # RNN weight update
+    tf_rnn = lowering.tensors[mtf_rnn].tensor_list
+    tf_rnn_vars = rnn.weights
+    tf_rnn_output_grads = lowering.tensors[rnn_grad].tensor_list
+    tf_rnn_grads = tf.gradients(tf_rnn, tf_rnn_vars, grad_ys=tf_rnn_output_grads)
+    assert len(tf_rnn_grads) == len(tf_rnn_vars)
+    tf_grad_updates += [tf.assign_sub(v, lr * g) for v, g in zip(tf_rnn_vars,
+        tf_rnn_grads)]
 
+    init_op = lowering.copy_masters_to_slices()
     return init_op, tf_loss, tf_grad_updates
 
