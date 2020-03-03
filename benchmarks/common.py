@@ -91,10 +91,10 @@ class Trainer():
         self.task_index = task_index
         self.hostlist = hostlist
     
-    def train(self, init_ops, loss_op, grad_ops, dataset, config=None,
+    def train(self, init_ops, loss_op, weight_updates, dataset, config=None,
             run_options=None):
         config = config or tf.ConfigProto(allow_soft_placement=False)
-        assert all(grad is not None for grad in grad_ops)
+        assert all(w is not None for w in weight_updates)
 
         # Workaround to prevent MPI from crashing due to 'StopIteration'
         if self.args.max_steps < 1:
@@ -119,7 +119,7 @@ class Trainer():
     
                     while True:
                         try:
-                            loss_val, *_ = sess.run([loss_op] + grad_ops,
+                            loss_val, *_ = sess.run([loss_op] + weight_updates,
                                     options=run_options)
                             step += 1
                             cnt += 1
