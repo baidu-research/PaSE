@@ -69,14 +69,14 @@ class LSTMCell(keras.layers.Layer):
 
         assert len(mesh_impl.shape) == 2
         self.axis_n, self.axis_k = 0, 1
-        self.part_n = mesh_impl.shape.to_integer_list[self.axis_n]
-        self.part_k = mesh_impl.shape.to_integer_list[self.axis_k]
+        part_n = mesh_impl.shape.to_integer_list[self.axis_n]
+        part_k = mesh_impl.shape.to_integer_list[self.axis_k]
         self.num_gpus = mesh_impl.size
 
-        assert num_units % k == 0
-        assert num_units % n == 0
-        self.part_k_size = num_units // k
-        self.part_n_size = num_units // n
+        assert num_units % part_k == 0
+        assert num_units % part_n == 0
+        self.part_k_size = num_units // part_k
+        self.part_n_size = num_units // part_n
 
         h_state_sizes = [self.part_k_size] * self.num_gpus
         c_state_sizes = [self.part_n_size] * self.num_gpus
@@ -141,17 +141,24 @@ class LSTMCell(keras.layers.Layer):
         return hs, hs + cs
 
 class RNNOperation(mtf.Operation):
-    def __init__(self, inputs, name=None):
-        ...
+    def __init__(self, x, rnn_op, name=None):
+        super().__init__([x], name=name or 'rnn')
+        self._outputs = [mtf.Tensor(self, x.shape, x.dtype)]
+        self.rnn_op = rnn_op
 
     def gradient(self, grad_ys):
-        ...
+        mtf.GenericGradOperation(self, grad_ys).outputs
 
     def lower(self, lowering):
-        ...
+        mesh_impl = lowering.mesh_impl(self)
+        input_slices = lowering.tensors[
+                self.inputs[0]].to_laid_out_tensor().tensor_list
 
-def rnn():
-    ...
+        y = self.rnn_op(input_slices)
+        lowering.set_tensor_lowering(self.outputs[0], y)
+
+def rnn(x, rnn_op):
+    return RNNOperation(x, rnn_op).outputs[0]
 
 def model(params, inputs, labels):
     devices = params.devices
@@ -167,13 +174,20 @@ def model(params, inputs, labels):
     vocab_dim = mtf.Dimension('axis1', params.vocab_size)
     embed_dim = mtf.Dimension('axis0', params.num_units)
 
+    # RNN
+    mesh_impl = mesh_to_impl[meshes[0]]
+    cells = [LSTMCell(params.num_units, 0, mesh_impl), 
+             LSTMCell(params.num_units, 1, mesh_impl)]
+    rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
+
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
-    mtf_rnn = rnn(embedding)
+    mtf_rnn = rnn(embedding, rnn_op)
     assert mtf_rnn.shape[-1] == embed_dim
-    y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=y.shape[-1:],
+    y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
             use_bias=False)
+    # TODO: change mesh
     mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(y, mtf_labels,
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
@@ -195,7 +209,7 @@ def model(params, inputs, labels):
 
     # RNN weight update
     tf_rnn = lowering.tensors[mtf_rnn].tensor_list
-    tf_rnn_vars = rnn.weights
+    tf_rnn_vars = rnn_op.weights
     tf_rnn_output_grads = lowering.tensors[rnn_grad].tensor_list
     assert len(tf_rnn) == len(tf_rnn_output_grads)
     tf_rnn_grads = tf.gradients(tf_rnn, tf_rnn_vars, grad_ys=tf_rnn_output_grads)
