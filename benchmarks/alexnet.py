@@ -236,15 +236,7 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
     tf_loss = lowering.export_to_tf_tensor(mtf_loss)
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
-    # Initializer
-    tf_init_vars = \
-            utils.FlattenList([lowering.variables[var].laid_out_tensor.all_slices
-                for var in graph.trainable_variables])
-    init_op = []
-    for v in tf_init_vars:
-        with tf.device(v.device):
-            init_op.append(v.initializer)
-
+    init_op = lowering.copy_masters_to_slices()
     return init_op, tf_loss, tf_grad_updates
 
 
