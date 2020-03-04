@@ -54,16 +54,14 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     assert inputs.shape == labels.shape
 
     mtf_shape = GetShape(inputs.get_shape().as_list())
-    mtf_inputs = mtf.import_tf_tensor(mesh, inputs, mtf_shape)
-    mtf_labels = mtf.import_tf_tensor(mesh, labels, mtf_shape)
+    mtf_inputs = mtf.import_tf_tensor(meshes[0], inputs, mtf_shape)
+    mtf_labels = mtf.import_tf_tensor(meshes[1], labels, mtf_shape)
 
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 class LSTMCell(keras.layers.Layer):
     def __init__(self, num_units, layer, mesh_impl, **kwargs):
-        super().__init__(**kwargs)
         self.num_units = num_units
-        self.state_size = [num_units, num_units]
         self.layer = layer
         self.mesh_impl = mesh_impl
 
@@ -82,11 +80,12 @@ class LSTMCell(keras.layers.Layer):
         c_state_sizes = [self.part_n_size] * self.num_gpus
         self.state_size = h_state_sizes + c_state_sizes
         self.output_size = h_state_sizes
+        super().__init__(**kwargs)
 
     def build(self, input_shapes):
         w_shape = [2 * self.part_k_size, 4 * self.part_n_size]
         ws = []
-        for i, dev in enumerate(self.devices):
+        for i, dev in enumerate(self.mesh_impl.devices):
             with tf.device(dev):
                 ws.append(self.add_weight(
                     shape=w_shape,
@@ -100,17 +99,18 @@ class LSTMCell(keras.layers.Layer):
         mesh_impl = self.mesh_impl
         assert len(xs) == self.num_gpus
         assert len(states) == 2 * self.num_gpus
-        assert [x.device for x in xs] == mesh_impl.devices
+        #assert [x.device for x in xs] == mesh_impl.devices, (
+        #        [x.device for x in xs], mesh_impl.devices)
 
         # State tensors
         hs, cs = states[:self.num_gpus], states[self.num_gpus:]
-        assert [h.device for h in hs] == mesh_impl.devices
-        assert [c.device for c in cs] == mesh_impl.devices
+        #assert [h.device for h in hs] == mesh_impl.devices
+        #assert [c.device for c in cs] == mesh_impl.devices
 
         # Laid out tensors
-        laid_out_x = mesh_impl.LaidOutTensor(xs)
-        laid_out_h = mesh_impl.LaidOutTensor(hs)
-        laid_out_c = mesh_impl.LaidOutTensor(cs)
+        laid_out_x = mesh_impl.LaidOutTensor(list(xs))
+        laid_out_h = mesh_impl.LaidOutTensor(list(hs))
+        laid_out_c = mesh_impl.LaidOutTensor(list(cs))
 
         # Concat x and h
         concat_fn = lambda x, y: tf.concat([x, y], axis=1)
@@ -147,14 +147,14 @@ class RNNOperation(mtf.Operation):
         self.rnn_op = rnn_op
 
     def gradient(self, grad_ys):
-        mtf.GenericGradOperation(self, grad_ys).outputs
+        return mtf.GenericGradOperation(self, grad_ys).outputs
 
     def lower(self, lowering):
         mesh_impl = lowering.mesh_impl(self)
         input_slices = lowering.tensors[
                 self.inputs[0]].to_laid_out_tensor().tensor_list
 
-        y = self.rnn_op(input_slices)
+        y = self.rnn_op(tuple(input_slices))
         lowering.set_tensor_lowering(self.outputs[0], y)
 
 def rnn(x, rnn_op):
@@ -171,8 +171,8 @@ def model(params, inputs, labels):
             inputs, labels, params.num_nodes, num_gpus, params.batch_size)
 
     # Embedding dimensions
-    vocab_dim = mtf.Dimension('axis1', params.vocab_size)
-    embed_dim = mtf.Dimension('axis0', params.num_units)
+    vocab_dim = mtf.Dimension('axis0', params.vocab_size)
+    embed_dim = mtf.Dimension('axis1', params.num_units)
 
     # RNN
     mesh_impl = mesh_to_impl[meshes[0]]
@@ -183,10 +183,12 @@ def model(params, inputs, labels):
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
+    assert embedding.shape[-1].name == 'axis1'
+
     mtf_rnn = rnn(embedding, rnn_op)
-    assert mtf_rnn.shape[-1] == embed_dim
     y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
             use_bias=False)
+
     # TODO: change mesh
     mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(y, mtf_labels,
             vocab_dim)

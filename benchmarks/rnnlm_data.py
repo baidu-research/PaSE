@@ -44,10 +44,10 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
 
 class LSTMCell(keras.layers.Layer):
     def __init__(self, num_units, layer, **kwargs):
-        super().__init__(**kwargs)
         self.num_units = num_units
         self.state_size = [num_units, num_units]
         self.layer = layer
+        super().__init__(**kwargs)
 
     def build(self, input_state):
         w_shape = [2 * self.num_units, 4 * self.num_units]
