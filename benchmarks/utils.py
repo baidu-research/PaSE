@@ -95,6 +95,12 @@ def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None, num_nodes=1):
     return mesh_impl(mesh_shape, layout_rules, devices)
 
 
+def Optimize(graph, loss, lr=0.01):
+    grads = mtf.gradients([loss], [v.outputs[0] for v in
+        graph.trainable_variables])
+    opt = mtf.optimize.SgdOptimizer(lr)
+    return opt.apply_grads(grads, graph.trainable_variables)
+
 '''
 def GetMeshImpls(graph, devices_list):
     meshes = []

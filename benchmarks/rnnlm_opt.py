@@ -4,17 +4,11 @@ import tensorflow.keras as keras
 import string
 import utils
 from mesh_transformations import ReplaceMeshWithIndependentAxes
-import mtf_operations as mt
-
-_debug_grads = True
 
 def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
-
-    assert num_gpus % num_nodes == 0
-    gpus_per_node = num_gpus // num_nodes
 
     if num_gpus == 4:
         n, k = 2, 2
@@ -29,23 +23,18 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     else:
         assert False
 
-    def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
-        assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==
-                (gpus_per_node * node_cnt))
-        return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
-
     mesh = mtf.Mesh(graph, 'mesh0')
     meshes.append(mesh)
-    mesh_to_impl[mesh] = GetMeshImpl([n, k])
+    mesh_to_impl[mesh] = utils.GetMeshImpl([n, k], num_nodes=num_nodes)
 
     mesh = mtf.Mesh(graph, 'mesh1')
     meshes.append(mesh)
-    mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
+    mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus], num_nodes=num_nodes)
 
     assert len(inputs.shape) == 2
     assert inputs.shape == labels.shape
 
-    mtf_shape = utils.ConvertToShape(inputs.get_shape().as_list())
+    mtf_shape = utils.ConvertToShape(inputs.shape.as_list())
     mtf_inputs = mtf.import_tf_tensor(meshes[0], inputs, mtf_shape)
     mtf_labels = mtf.import_tf_tensor(meshes[1], labels, mtf_shape)
 
@@ -121,6 +110,10 @@ class LSTMCell(keras.layers.Layer):
             return h, c
 
         # Apply activation and elementwise ops
+        # We use the trick of (implicitly) shuffling columns of weight matrix,
+        # so that the correct corresponding slices of 'i,f,g,o' end up on same
+        # devices, so that no communication is necessary for elementwise
+        # operations
         laid_out_h, laid_out_c = mesh_impl.slicewise(act_fn, laid_out_y,
                 laid_out_c)
 
@@ -132,33 +125,51 @@ class LSTMCell(keras.layers.Layer):
         cs = laid_out_c.tensor_list
         return hs, hs + cs
 
+class RNNGradOperation(mtf.GenericGradOperation):
+    def lower(self, lowering):
+        rnn_op = self._forward_op
+        tf_rnn_op = rnn_op._tf_rnn_op
+        assert (len(rnn_op.inputs) == len(rnn_op.outputs) 
+                == len(self._grad_ys) == 1)
+
+        get_tensor_list = lambda x: lowering.tensors[
+                x].to_laid_out_tensor().tensor_list
+
+        ys = get_tensor_list(rnn_op.outputs[0])
+        xs = get_tensor_list(rnn_op.inputs[0])
+        ws = tf_rnn_op.weights
+        grad_ys = get_tensor_list(self._grad_ys[0])
+
+        grad_xs_ws = tf.gradients(ys, xs + ws, grad_ys=grad_ys)
+        assert len(grad_xs_ws) == (len(xs) + len(ws))
+        self.graph.rnn_grad_ws = grad_xs_ws[len(xs):]
+        lowering.set_tensor_lowering(self.outputs[0],
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(
+                    grad_xs_ws[:len(xs)]))
+
 class RNNOperation(mtf.Operation):
-    def __init__(self, x, rnn_op, name=None):
+    def __init__(self, x, tf_rnn_op, name=None):
         super().__init__([x], name=name or 'rnn')
         self._outputs = [mtf.Tensor(self, x.shape, x.dtype)]
-        self.rnn_op = rnn_op
+        self._tf_rnn_op = tf_rnn_op
 
     def gradient(self, grad_ys):
-        return mt.GenericGradOperation(self, grad_ys).outputs
+        return RNNGradOperation(self, grad_ys, name='rnn_grad').outputs
 
     def lower(self, lowering):
         mesh_impl = lowering.mesh_impl(self)
         input_slices = lowering.tensors[
                 self.inputs[0]].to_laid_out_tensor().tensor_list
 
-        ys = self.rnn_op(tuple(input_slices))
+        ys = self._tf_rnn_op(tuple(input_slices))
         assert len(ys) == len(mesh_impl.devices)
         laid_out_y = mesh_impl.LaidOutTensor(list(ys))
 
         lowering.set_tensor_lowering(self.outputs[0], laid_out_y)
 
-def rnn(x, rnn_op):
-    return RNNOperation(x, rnn_op).outputs[0]
-
 def model(params, inputs, labels):
     devices = params.devices
     num_gpus = len(devices)
-    lr = 0.01
 
     # MTF mesh
     assert len(inputs.shape) == 2
@@ -169,7 +180,7 @@ def model(params, inputs, labels):
     vocab_dim = mtf.Dimension('axis0', params.vocab_size)
     embed_dim = mtf.Dimension('axis1', params.num_units)
 
-    # RNN
+    # Keras RNN
     mesh_impl = mesh_to_impl[meshes[0]]
     cells = [LSTMCell(params.num_units, 0, mesh_impl), 
              LSTMCell(params.num_units, 1, mesh_impl)]
@@ -179,7 +190,7 @@ def model(params, inputs, labels):
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
     assert embedding.shape[-1].name == 'axis1'
-    mtf_rnn = rnn(embedding, rnn_op)
+    mtf_rnn = RNNOperation(embedding, rnn_op).outputs[0]
 
     assert mtf_rnn.shape[-1].name == 'axis1'
     dim_names = mtf_rnn.shape.rename_dimension('axis1',
@@ -192,50 +203,4 @@ def model(params, inputs, labels):
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
-    # Optimize
-    mtf_trainable_vars = [v.outputs[0] for v in graph.trainable_variables]
-    if _debug_grads:
-        *grads, rnn_grad_ys, rnn_grad_xs = mtf.gradients([mtf_loss],
-                mtf_trainable_vars + [mtf_rnn, embedding])
-    else:
-        *grads, rnn_grad_ys = mtf.gradients([mtf_loss], mtf_trainable_vars +
-                [mtf_rnn])
-    opt = mtf.optimize.SgdOptimizer(lr)
-    grad_updates = opt.apply_grads(grads, graph.trainable_variables)
-
-    # Lower
-    print('Beginning to lower mtf graph...', flush=True)
-    lowering = mtf.Lowering(graph, mesh_to_impl)
-    print('Finished lowering.', flush=True)
-
-    # Loss and gradients
-    tf_loss = lowering.export_to_tf_tensor(mtf_loss)
-    tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
-
-    # RNN weight update
-    assert mtf_rnn
-    tf_rnn_ys = lowering.tensors[mtf_rnn].to_laid_out_tensor().tensor_list
-    tf_rnn_weights = rnn_op.weights
-    tf_rnn_grad_ys = lowering.tensors[
-            rnn_grad_ys].to_laid_out_tensor().tensor_list
-    assert len(tf_rnn_ys) == len(tf_rnn_grad_ys)
-    tf_rnn_grad_ws = tf.gradients(tf_rnn_ys, tf_rnn_weights, grad_ys=tf_rnn_grad_ys)
-    assert len(tf_rnn_grad_ws) == len(tf_rnn_weights)
-    tf_grad_updates += [tf.assign_sub(v, lr * g) for v, g in zip(tf_rnn_weights,
-        tf_rnn_grad_ws)]
-
-    if _debug_grads:
-        tf_rnn_xs = lowering.tensors[embedding].to_laid_out_tensor().tensor_list
-        tf_rnn_grad_xs = tf.gradients(tf_rnn_ys, tf_rnn_xs,
-                grad_ys=tf_rnn_grad_ys)
-        mtf_rnn_grad_xs = lowering.tensors[
-                rnn_grad_xs].to_laid_out_tensor().tensor_list
-        assert len(tf_rnn_grad_xs) == len(mtf_rnn_grad_xs) == len(tf_rnn_xs)
-        tf_asserts = tf.group([tf.assert_near(x1, x2) for x1, x2 in
-            zip(mtf_rnn_grad_xs, tf_rnn_grad_xs)])
-        with tf.control_dependencies([tf_asserts]):
-            tf_loss = tf.identity(tf_loss)
-
-    init_op = lowering.copy_masters_to_slices()
-    return init_op, tf_loss, tf_grad_updates
-
+    return graph, mesh_to_impl, mtf_loss

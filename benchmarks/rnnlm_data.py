@@ -4,30 +4,20 @@ import tensorflow.keras as keras
 import mesh_tensorflow as mtf
 import utils
 
-_debug_grads = True
-
 def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
 
-    assert num_gpus % num_nodes == 0
-    gpus_per_node = num_gpus // num_nodes
-
-    def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
-        assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==
-                (gpus_per_node * node_cnt))
-        return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
-
     mesh = mtf.Mesh(graph, 'mesh0')
     meshes.append(mesh)
-    mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
+    mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus], num_nodes=num_nodes)
 
     assert len(inputs.shape) == 2
     assert inputs.shape == labels.shape
 
     shape = utils.ConvertToShape([('axis0', batch_size),
-        inputs.get_shape().as_list()[1]])
+        inputs.shape.as_list()[1]])
     mtf_inputs = mtf.import_tf_tensor(mesh, inputs, shape)
     mtf_labels = mtf.import_tf_tensor(mesh, labels, shape)
 
@@ -63,10 +53,42 @@ class LSTMCell(keras.layers.Layer):
         h = o * tf.tanh(c)
         return h, [h, c]
 
+class RNNGradOperation(mtf.GenericGradOperation):
+    def lower(self, lowering):
+        rnn_op = self._forward_op
+        tf_rnn_op = rnn_op._tf_fn
+        assert (len(rnn_op.inputs) == len(rnn_op.outputs) 
+                == len(self._grad_ys) == 1)
+
+        get_tensor_list = lambda x: lowering.tensors[
+                x].to_laid_out_tensor().tensor_list
+
+        ys = get_tensor_list(rnn_op.outputs[0])
+        xs = get_tensor_list(rnn_op.inputs[0])
+        ws = tf_rnn_op.weights
+        grad_ys = get_tensor_list(self._grad_ys[0])
+
+        # Since we perform RNN as slicewise operation, dy_i/dx_j for i!=j is zero.
+        # So we only compute dy_i/dx_i for various slices
+        assert len(ys) == len(xs) == len(grad_ys)
+        assert len(ws) == 2
+        grad_xs_ws = [tf.gradients(y, [x] + ws, grad_ys=grad_y) for y, x, grad_y in
+                zip(ys, xs, grad_ys)]
+        assert all(len(g) == 3 for g in grad_xs_ws)
+        grad_xs, grad_w0s, grad_w1s = utils.TransposeLists(grad_xs_ws)
+
+        # Accumulate dy_i/dw_j for different w_j
+        self.graph.rnn_grad_ws = [tf.add_n(grad_w0s), tf.add_n(grad_w1s)]
+        lowering.set_tensor_lowering(self.outputs[0],
+                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(
+                    grad_xs))
+
+def RNNGradFn(forward_op, grad_y):
+    return RNNGradOperation(forward_op, [grad_y]).outputs
+
 def model(params, inputs, labels):
     devices = params.devices
     num_gpus = len(devices)
-    lr = 0.01
 
     # RNN cells
     cells = [LSTMCell(params.num_units, layer=0),
@@ -86,57 +108,12 @@ def model(params, inputs, labels):
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
     mtf_rnn = mtf.slicewise(rnn_op, [embedding], output_shape=embedding.shape,
-            output_dtype=embedding.dtype, splittable_dims=embedding.shape[:1])
+            grad_function=RNNGradFn, output_dtype=embedding.dtype,
+            splittable_dims=embedding.shape[:1])
     y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
             use_bias=False)
     mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(y, mtf_labels,
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
-    # Optimize
-    mtf_trainable_vars = [v.outputs[0] for v in graph.trainable_variables]
-    if _debug_grads:
-        *grads, rnn_grad_ys, rnn_grad_xs = mtf.gradients([mtf_loss],
-                mtf_trainable_vars + [mtf_rnn, embedding])
-    else:
-        *grads, rnn_grad_ys = mtf.gradients([mtf_loss], mtf_trainable_vars +
-                [mtf_rnn])
-    opt = mtf.optimize.SgdOptimizer(lr)
-    grad_updates = opt.apply_grads(grads, graph.trainable_variables)
-
-    # Lower
-    print('Beginning to lower mtf graph...', flush=True)
-    lowering = mtf.Lowering(graph, mesh_to_impl)
-    print('Finished lowering.', flush=True)
-
-    # Loss and gradients
-    tf_loss = lowering.export_to_tf_tensor(mtf_loss)
-    tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
-
-    # RNN weight update
-    assert mtf_rnn
-    tf_rnn_ys = lowering.tensors[mtf_rnn].to_laid_out_tensor().tensor_list
-    tf_rnn_weights = rnn_op.weights
-    tf_rnn_grad_ys = lowering.tensors[
-            rnn_grad_ys].to_laid_out_tensor().tensor_list
-    assert len(tf_rnn_ys) == len(tf_rnn_grad_ys)
-    tf_rnn_grad_xs = tf.gradients(tf_rnn_ys, tf_rnn_weights, grad_ys=tf_rnn_grad_ys)
-    assert len(tf_rnn_grad_xs) == len(tf_rnn_weights)
-    tf_grad_updates += [tf.assign_sub(v, lr * g) for v, g in zip(tf_rnn_weights,
-        tf_rnn_grad_xs)]
-
-    if _debug_grads:
-        tf_rnn_xs = lowering.tensors[embedding].to_laid_out_tensor().tensor_list
-        tf_rnn_grad_xs = tf.gradients(tf_rnn_ys, tf_rnn_xs,
-                grad_ys=tf_rnn_grad_ys)
-        mtf_rnn_grad_xs = lowering.tensors[
-                rnn_grad_xs].to_laid_out_tensor().tensor_list
-        assert len(tf_rnn_grad_xs) == len(mtf_rnn_grad_xs) == len(tf_rnn_xs)
-        tf_asserts = tf.group([tf.assert_near(x1, x2) for x1, x2 in
-            zip(mtf_rnn_grad_xs, tf_rnn_grad_xs)])
-        with tf.control_dependencies([tf_asserts]):
-            tf_loss = tf.identity(tf_loss)
-
-    init_op = lowering.copy_masters_to_slices()
-    return init_op, tf_loss, tf_grad_updates
-
+    return graph, mesh_to_impl, mtf_loss

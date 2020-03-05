@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow.compat.v1 as tf
+import mesh_tensorflow as mtf
 
 import common
 import utils
@@ -43,13 +44,27 @@ def main():
         import rnnlm_flexflow as rnn
     else:
         assert False
-    init_ops, loss, grads = rnn.model(params, inputs, labels)
+    graph, mesh_to_impl, mtf_loss = rnn.model(params, inputs, labels)
+
+    # Optimize
+    grad_updates = utils.Optimize(graph, mtf_loss)
+
+    # Lower
+    print('Beginning to lower mtf graph...', flush=True)
+    lowering = mtf.Lowering(graph, mesh_to_impl)
+    print('Finished lowering.', flush=True)
+
+    # Loss and gradients
+    init_ops = lowering.copy_masters_to_slices()
+    tf_loss = lowering.export_to_tf_tensor(mtf_loss)
+    tf_grad_updates = [lowering.lowered_operation(
+        op) for op in grad_updates] + graph.rnn_grad_ws
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
     config = tf.ConfigProto(allow_soft_placement=False)
             #log_device_placement=True)
-    trainer.train(init_ops, loss, [grads], dataset, config=config,
+    trainer.train(init_ops, tf_loss, tf_grad_updates, dataset, config=config,
             run_options=run_options)
 
 
