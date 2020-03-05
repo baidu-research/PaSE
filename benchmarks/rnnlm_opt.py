@@ -3,6 +3,8 @@ import tensorflow.compat.v1 as tf
 import tensorflow.keras as keras
 import string
 import utils
+from mesh_transformations import ReplaceMeshWithIndependentAxes
+import mtf_operations as mt
 
 def GetShape(dims):
     sh = []
@@ -135,9 +137,13 @@ class LSTMCell(keras.layers.Layer):
         # Apply activation and elementwise ops
         laid_out_h, laid_out_c = mesh_impl.slicewise(act_fn, laid_out_y,
                 laid_out_c)
+
+        # Map last dim of 'hs' from 'axis0' to 'axis1'
+        laid_out_h = mesh_impl.allconcat(laid_out_h, self.axis_n, 1)
+        laid_out_h = mesh_impl.allsplit(laid_out_h, self.axis_k, 1)
+
         hs = laid_out_h.tensor_list
         cs = laid_out_c.tensor_list
-
         return hs, hs + cs
 
 class RNNOperation(mtf.Operation):
@@ -147,15 +153,18 @@ class RNNOperation(mtf.Operation):
         self.rnn_op = rnn_op
 
     def gradient(self, grad_ys):
-        return mtf.GenericGradOperation(self, grad_ys).outputs
+        return mt.GenericGradOperation(self, grad_ys).outputs
 
     def lower(self, lowering):
         mesh_impl = lowering.mesh_impl(self)
         input_slices = lowering.tensors[
                 self.inputs[0]].to_laid_out_tensor().tensor_list
 
-        y = self.rnn_op(tuple(input_slices))
-        lowering.set_tensor_lowering(self.outputs[0], y)
+        ys = self.rnn_op(tuple(input_slices))
+        assert len(ys) == len(mesh_impl.devices)
+        laid_out_y = mesh_impl.LaidOutTensor(list(ys))
+
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_y)
 
 def rnn(x, rnn_op):
     return RNNOperation(x, rnn_op).outputs[0]
@@ -184,12 +193,15 @@ def model(params, inputs, labels):
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
     assert embedding.shape[-1].name == 'axis1'
-
     mtf_rnn = rnn(embedding, rnn_op)
+
+    assert mtf_rnn.shape[-1].name == 'axis1'
+    dim_names = mtf_rnn.shape.rename_dimension('axis1',
+            utils.RandName()).dimension_names
+    mtf_rnn = ReplaceMeshWithIndependentAxes(mtf_rnn, meshes[1], dim_names)
+
     y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
             use_bias=False)
-
-    # TODO: change mesh
     mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(y, mtf_labels,
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
@@ -210,9 +222,10 @@ def model(params, inputs, labels):
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
     # RNN weight update
-    tf_rnn = lowering.tensors[mtf_rnn].tensor_list
+    tf_rnn = lowering.tensors[mtf_rnn].to_laid_out_tensor().tensor_list
     tf_rnn_vars = rnn_op.weights
-    tf_rnn_output_grads = lowering.tensors[rnn_grad].tensor_list
+    tf_rnn_output_grads = lowering.tensors[
+            rnn_grad].to_laid_out_tensor().tensor_list
     assert len(tf_rnn) == len(tf_rnn_output_grads)
     tf_rnn_grads = tf.gradients(tf_rnn, tf_rnn_vars, grad_ys=tf_rnn_output_grads)
     assert len(tf_rnn_grads) == len(tf_rnn_vars)
