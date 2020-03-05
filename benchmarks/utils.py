@@ -24,6 +24,19 @@ def RoundUp(n, m):
     return (n + m - rem) if rem else n
 
 
+def ConvertToShape(dims):
+    sh = []
+    for d in dims:
+        try:
+            name, size = d
+        except (TypeError, ValueError):
+            name, size = RandName(), d
+        sh.append(mtf.Dimension(name, size))
+
+    sh = mtf.Shape(sh)
+    return sh
+
+
 def GetDeviceList(gpus, num_nodes=1):
     if isinstance(gpus, list):
         assert all(isinstance(g, str) for g in gpus)

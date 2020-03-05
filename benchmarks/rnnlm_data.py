@@ -4,17 +4,7 @@ import tensorflow.keras as keras
 import mesh_tensorflow as mtf
 import utils
 
-def GetShape(dims):
-    sh = []
-    for d in dims:
-        try:
-            name, size = d
-        except (TypeError, ValueError):
-            name, size = utils.RandName(), d
-        sh.append(mtf.Dimension(name, size))
-
-    sh = mtf.Shape(sh)
-    return sh
+_debug_grads = True
 
 def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
@@ -36,7 +26,8 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     assert len(inputs.shape) == 2
     assert inputs.shape == labels.shape
 
-    shape = GetShape([('axis0', batch_size), inputs.get_shape().as_list()[1]])
+    shape = utils.ConvertToShape([('axis0', batch_size),
+        inputs.get_shape().as_list()[1]])
     mtf_inputs = mtf.import_tf_tensor(mesh, inputs, shape)
     mtf_labels = mtf.import_tf_tensor(mesh, labels, shape)
 
@@ -80,7 +71,7 @@ def model(params, inputs, labels):
     # RNN cells
     cells = [LSTMCell(params.num_units, layer=0),
              LSTMCell(params.num_units, layer=1)]
-    rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
+    rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Mtf mesh
     assert len(inputs.shape) == 2
@@ -94,7 +85,7 @@ def model(params, inputs, labels):
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
-    mtf_rnn = mtf.slicewise(rnn, [embedding], output_shape=embedding.shape,
+    mtf_rnn = mtf.slicewise(rnn_op, [embedding], output_shape=embedding.shape,
             output_dtype=embedding.dtype, splittable_dims=embedding.shape[:1])
     y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
             use_bias=False)
@@ -104,7 +95,12 @@ def model(params, inputs, labels):
 
     # Optimize
     mtf_trainable_vars = [v.outputs[0] for v in graph.trainable_variables]
-    *grads, rnn_grad = mtf.gradients([mtf_loss], mtf_trainable_vars + [mtf_rnn])
+    if _debug_grads:
+        *grads, rnn_grad_ys, rnn_grad_xs = mtf.gradients([mtf_loss],
+                mtf_trainable_vars + [mtf_rnn, embedding])
+    else:
+        *grads, rnn_grad_ys = mtf.gradients([mtf_loss], mtf_trainable_vars +
+                [mtf_rnn])
     opt = mtf.optimize.SgdOptimizer(lr)
     grad_updates = opt.apply_grads(grads, graph.trainable_variables)
 
@@ -118,14 +114,28 @@ def model(params, inputs, labels):
     tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
 
     # RNN weight update
-    tf_rnn = lowering.tensors[mtf_rnn].tensor_list
-    tf_rnn_vars = rnn.weights
-    tf_rnn_output_grads = lowering.tensors[rnn_grad].tensor_list
-    assert len(tf_rnn) == len(tf_rnn_output_grads)
-    tf_rnn_grads = tf.gradients(tf_rnn, tf_rnn_vars, grad_ys=tf_rnn_output_grads)
-    assert len(tf_rnn_grads) == len(tf_rnn_vars)
-    tf_grad_updates += [tf.assign_sub(v, lr * g) for v, g in zip(tf_rnn_vars,
-        tf_rnn_grads)]
+    assert mtf_rnn
+    tf_rnn_ys = lowering.tensors[mtf_rnn].to_laid_out_tensor().tensor_list
+    tf_rnn_weights = rnn_op.weights
+    tf_rnn_grad_ys = lowering.tensors[
+            rnn_grad_ys].to_laid_out_tensor().tensor_list
+    assert len(tf_rnn_ys) == len(tf_rnn_grad_ys)
+    tf_rnn_grad_xs = tf.gradients(tf_rnn_ys, tf_rnn_weights, grad_ys=tf_rnn_grad_ys)
+    assert len(tf_rnn_grad_xs) == len(tf_rnn_weights)
+    tf_grad_updates += [tf.assign_sub(v, lr * g) for v, g in zip(tf_rnn_weights,
+        tf_rnn_grad_xs)]
+
+    if _debug_grads:
+        tf_rnn_xs = lowering.tensors[embedding].to_laid_out_tensor().tensor_list
+        tf_rnn_grad_xs = tf.gradients(tf_rnn_ys, tf_rnn_xs,
+                grad_ys=tf_rnn_grad_ys)
+        mtf_rnn_grad_xs = lowering.tensors[
+                rnn_grad_xs].to_laid_out_tensor().tensor_list
+        assert len(tf_rnn_grad_xs) == len(mtf_rnn_grad_xs) == len(tf_rnn_xs)
+        tf_asserts = tf.group([tf.assert_near(x1, x2) for x1, x2 in
+            zip(mtf_rnn_grad_xs, tf_rnn_grad_xs)])
+        with tf.control_dependencies([tf_asserts]):
+            tf_loss = tf.identity(tf_loss)
 
     init_op = lowering.copy_masters_to_slices()
     return init_op, tf_loss, tf_grad_updates
