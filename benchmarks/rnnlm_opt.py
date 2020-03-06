@@ -142,7 +142,7 @@ class RNNGradOperation(mtf.GenericGradOperation):
 
         grad_xs_ws = tf.gradients(ys, xs + ws, grad_ys=grad_ys)
         assert len(grad_xs_ws) == (len(xs) + len(ws))
-        self.graph.rnn_grad_ws = grad_xs_ws[len(xs):]
+        tf_rnn_op.grad_ws = grad_xs_ws[len(xs):]
         lowering.set_tensor_lowering(self.outputs[0],
                 lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(
                     grad_xs_ws[:len(xs)]))
@@ -184,13 +184,13 @@ def model(params, inputs, labels):
     mesh_impl = mesh_to_impl[meshes[0]]
     cells = [LSTMCell(params.num_units, 0, mesh_impl), 
              LSTMCell(params.num_units, 1, mesh_impl)]
-    rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
+    tf_rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
     assert embedding.shape[-1].name == 'axis1'
-    mtf_rnn = RNNOperation(embedding, rnn_op).outputs[0]
+    mtf_rnn = RNNOperation(embedding, tf_rnn_op).outputs[0]
 
     assert mtf_rnn.shape[-1].name == 'axis1'
     dim_names = mtf_rnn.shape.rename_dimension('axis1',
@@ -203,4 +203,4 @@ def model(params, inputs, labels):
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
-    return graph, mesh_to_impl, mtf_loss
+    return graph, mesh_to_impl, mtf_loss, tf_rnn_op

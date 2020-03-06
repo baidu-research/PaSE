@@ -19,6 +19,7 @@ class Params():
 def main():
     trainer = common.Trainer()
     args = trainer.args
+    lr = 0.01
     devices = [f'/job:localhost/replica:0/task:{i}/device:GPU:{j}' for i in
             range(trainer.num_nodes) for j in range(args.gpus)]
 
@@ -44,7 +45,8 @@ def main():
         import rnnlm_flexflow as rnn
     else:
         assert False
-    graph, mesh_to_impl, mtf_loss = rnn.model(params, inputs, labels)
+    graph, mesh_to_impl, mtf_loss, tf_rnn = rnn.model(
+            params, inputs, labels)
 
     # Optimize
     grad_updates = utils.Optimize(graph, mtf_loss)
@@ -57,8 +59,12 @@ def main():
     # Loss and gradients
     init_ops = lowering.copy_masters_to_slices()
     tf_loss = lowering.export_to_tf_tensor(mtf_loss)
+    rnn_ws, rnn_grad_ws = tf_rnn.weights, tf_rnn.grad_ws
+    assert len(rnn_ws) == len(rnn_grad_ws)
+    rnn_grad_updates = [tf.assign_sub(v, lr * g) for v, g in zip(
+        rnn_ws, rnn_grad_ws)]
     tf_grad_updates = [lowering.lowered_operation(
-        op) for op in grad_updates] + graph.rnn_grad_ws
+        op) for op in grad_updates] + rnn_grad_updates
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)

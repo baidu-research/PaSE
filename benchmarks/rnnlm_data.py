@@ -78,7 +78,7 @@ class RNNGradOperation(mtf.GenericGradOperation):
         grad_xs, grad_w0s, grad_w1s = utils.TransposeLists(grad_xs_ws)
 
         # Accumulate dy_i/dw_j for different w_j
-        self.graph.rnn_grad_ws = [tf.add_n(grad_w0s), tf.add_n(grad_w1s)]
+        tf_rnn_op.grad_ws = [tf.add_n(grad_w0s), tf.add_n(grad_w1s)]
         lowering.set_tensor_lowering(self.outputs[0],
                 lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(
                     grad_xs))
@@ -93,7 +93,7 @@ def model(params, inputs, labels):
     # RNN cells
     cells = [LSTMCell(params.num_units, layer=0),
              LSTMCell(params.num_units, layer=1)]
-    rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
+    tf_rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Mtf mesh
     assert len(inputs.shape) == 2
@@ -107,7 +107,7 @@ def model(params, inputs, labels):
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
-    mtf_rnn = mtf.slicewise(rnn_op, [embedding], output_shape=embedding.shape,
+    mtf_rnn = mtf.slicewise(tf_rnn_op, [embedding], output_shape=embedding.shape,
             grad_function=RNNGradFn, output_dtype=embedding.dtype,
             splittable_dims=embedding.shape[:1])
     y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
@@ -116,4 +116,4 @@ def model(params, inputs, labels):
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
-    return graph, mesh_to_impl, mtf_loss
+    return graph, mesh_to_impl, mtf_loss, tf_rnn_op
