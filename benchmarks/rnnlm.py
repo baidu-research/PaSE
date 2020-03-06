@@ -29,6 +29,11 @@ def main():
             args.tgt_vocab_size, args.sentences_size)
     inputs, labels, _, _ = dataset.next_batch()
 
+    # Convert inputs and labels to int32, due to a bug in mtf.one_hot that leads
+    # to TypeError due to type mismatch
+    inputs = tf.cast(inputs, tf.int32)
+    labels = tf.cast(labels, tf.int32)
+
     vocab_size = utils.RoundUp(dataset.src_vocab_size, 8)
     print("Vocab size: %d" % vocab_size)
     params = Params(args.batch_size, vocab_size, args.seq_len,
@@ -49,7 +54,7 @@ def main():
             params, inputs, labels)
 
     # Optimize
-    grad_updates = utils.Optimize(graph, mtf_loss)
+    grad_updates = utils.Optimize(graph, mtf_loss, lr=lr)
 
     # Lower
     print('Beginning to lower mtf graph...', flush=True)
