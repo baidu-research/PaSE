@@ -147,10 +147,10 @@ class TextDataLoader():
             assert max_seq_len
 
             sentences = tf.random.uniform([batch_size, max_seq_len], minval=0,
-                    maxval=src_vocab_size, dtype=tf.int64)
+                    maxval=src_vocab_size, dtype=tf.int32)
             if tgt_vocab_size:
                 labels = tf.random.uniform([batch_size, max_seq_len], minval=0,
-                        maxval=tgt_vocab_size, dtype=tf.int64)
+                        maxval=tgt_vocab_size, dtype=tf.int32)
             else:
                 labels = sentences
             seq_len_tsr = tf.constant(max_seq_len, shape=[batch_size], dtype=tf.int32)
