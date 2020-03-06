@@ -24,16 +24,18 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, num_units, layer, **kwargs):
+    def __init__(self, num_units, layer, device, **kwargs):
         self.num_units = num_units
         self.state_size = [num_units, num_units]
         self.layer = layer
+        self.device = device
         super().__init__(**kwargs)
 
     def build(self, input_state):
         w_shape = [2 * self.num_units, 4 * self.num_units]
-        self.w = self.add_weight(shape=w_shape, initializer='uniform',
-                name=f'w_l{self.layer}', dtype=tf.float32)
+        with tf.device(self.device):
+            self.w = self.add_weight(shape=w_shape, initializer='uniform',
+                    name=f'w_l{self.layer}', dtype=tf.float32)
         super().build(input_state)
 
     def call(self, x, states):
@@ -91,8 +93,8 @@ def model(params, inputs, labels):
     num_gpus = len(devices)
 
     # RNN cells
-    cells = [LSTMCell(params.num_units, layer=0),
-             LSTMCell(params.num_units, layer=1)]
+    cells = [LSTMCell(params.num_units, 0, devices[0]),
+             LSTMCell(params.num_units, 1, devices[num_gpus//2])]
     tf_rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Mtf mesh

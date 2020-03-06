@@ -164,7 +164,6 @@ class RNNOperation(mtf.Operation):
         ys = self._tf_rnn_op(tuple(input_slices))
         assert len(ys) == len(mesh_impl.devices)
         laid_out_y = mesh_impl.LaidOutTensor(list(ys))
-
         lowering.set_tensor_lowering(self.outputs[0], laid_out_y)
 
 def model(params, inputs, labels):

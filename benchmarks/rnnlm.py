@@ -73,8 +73,8 @@ def main():
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
-    config = tf.ConfigProto(allow_soft_placement=False)
-            #log_device_placement=True)
+    config = tf.ConfigProto(allow_soft_placement=False,
+            log_device_placement=True)
     trainer.train(init_ops, tf_loss, tf_grad_updates, dataset, config=config,
             run_options=run_options)
 
