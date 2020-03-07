@@ -120,7 +120,7 @@ def model(params, inputs, labels):
     graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels = CreateMeshes(
             inputs, labels, params.num_nodes, num_gpus, params.batch_size)
 
-    # RNN cells and weights
+    # RNN weights
     num_units = params.num_units
     w_shape = utils.ConvertToShape([2*num_units, 4*num_units])
     rnn_w0 = mtf.get_variable(meshes[0], 'rnn_w0', w_shape)

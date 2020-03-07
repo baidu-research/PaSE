@@ -147,6 +147,7 @@ def WhileLoop(cond_ub, body_fn, inputs, name='while_loop'):
 #            name=name).outputs[0]
 
 # Fixes a bug in mesh-tensorflow. To be used as gradient function for slicewise op.
+# Also, mtf.GenericGradOperation does not colocate_gradients.
 # Uncomment this part if not needed later.
 class GenericGradOperation(mtf.GenericGradOperation):
     def lower(self, lowering):

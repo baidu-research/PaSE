@@ -22,6 +22,7 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
         n, k = 8, 8
     else:
         assert False
+    assert (n*k) == num_gpus
 
     mesh = mtf.Mesh(graph, 'mesh0')
     meshes.append(mesh)
@@ -41,8 +42,9 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, num_units, layer, mesh_impl, **kwargs):
+    def __init__(self, num_units, ws, layer, mesh_impl, **kwargs):
         self.num_units = num_units
+        self.laid_out_w = ws
         self.layer = layer
         self.mesh_impl = mesh_impl
 
@@ -54,27 +56,14 @@ class LSTMCell(keras.layers.Layer):
 
         assert num_units % part_k == 0
         assert num_units % part_n == 0
-        self.part_k_size = num_units // part_k
-        self.part_n_size = num_units // part_n
+        part_k_size = num_units // part_k
+        part_n_size = num_units // part_n
 
-        h_state_sizes = [self.part_k_size] * self.num_gpus
-        c_state_sizes = [self.part_n_size] * self.num_gpus
+        h_state_sizes = [part_k_size] * self.num_gpus
+        c_state_sizes = [part_n_size] * self.num_gpus
         self.state_size = h_state_sizes + c_state_sizes
         self.output_size = h_state_sizes
         super().__init__(**kwargs)
-
-    def build(self, input_shapes):
-        w_shape = [2 * self.part_k_size, 4 * self.part_n_size]
-        ws = []
-        for i, dev in enumerate(self.mesh_impl.devices):
-            with tf.device(dev):
-                ws.append(self.add_weight(
-                    shape=w_shape,
-                    initializer='uniform',
-                    name=f'w_l{self.layer}_part{i}',
-                    dtype=tf.float32))
-        self.laid_out_w = self.mesh_impl.LaidOutTensor(ws)
-        super().build(input_shapes)
 
     def call(self, xs, states):
         mesh_impl = self.mesh_impl
@@ -127,44 +116,61 @@ class LSTMCell(keras.layers.Layer):
 
 class RNNGradOperation(mtf.GenericGradOperation):
     def lower(self, lowering):
+        mesh_impl = lowering.mesh_impl(self)
         rnn_op = self._forward_op
-        tf_rnn_op = rnn_op._tf_fn
-        assert (len(rnn_op.inputs) == len(rnn_op.outputs) 
-                == len(self._grad_ys) == 1)
 
         get_tensor_list = lambda x: lowering.tensors[
                 x].to_laid_out_tensor().tensor_list
 
-        ys = get_tensor_list(rnn_op.outputs[0])
+        assert len(rnn_op.inputs) == 3
+        assert len(rnn_op.outputs) == 1
+        assert len(self._grad_ys) == 1
         xs = get_tensor_list(rnn_op.inputs[0])
-        ws = tf_rnn_op.weights
+        ws_l0 = get_tensor_list(rnn_op.inputs[1])
+        ws_l1 = get_tensor_list(rnn_op.inputs[2])
+        ys = get_tensor_list(rnn_op.outputs[0])
         grad_ys = get_tensor_list(self._grad_ys[0])
 
-        grad_xs_ws = tf.gradients(ys, xs + ws, grad_ys=grad_ys,
+        grad_xs_ws = tf.gradients(ys, xs + ws_l0 + ws_l1, grad_ys=grad_ys,
                 colocate_gradients_with_ops=True)
-        assert len(grad_xs_ws) == (len(xs) + len(ws))
-        tf_rnn_op.grad_ws = grad_xs_ws[len(xs):]
-        lowering.set_tensor_lowering(self.outputs[0],
-                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(
-                    grad_xs_ws[:len(xs)]))
+        assert len(grad_xs_ws) == (len(xs) + len(ws_l0) + len(ws_l1))
+
+        grad_xs = grad_xs_ws[:len(xs)]
+        grad_ws_l0 = grad_xs_ws[len(xs):len(xs)+len(ws_l0)]
+        grad_ws_l1 = grad_xs_ws[len(xs)+len(ws_l0):]
+
+        # Laid out tensors
+        grad_xs_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_xs)
+        grad_ws_l0_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_ws_l0)
+        grad_ws_l1_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_ws_l1)
+
+        lowering.set_tensor_lowering(self.outputs[0], grad_xs_lo)
+        lowering.set_tensor_lowering(self.outputs[1], grad_ws_l0_lo)
+        lowering.set_tensor_lowering(self.outputs[2], grad_ws_l1_lo)
 
 class RNNOperation(mtf.Operation):
-    def __init__(self, x, tf_rnn_op, name=None):
-        super().__init__([x], name=name or 'rnn')
+    def __init__(self, x, w0, w1, num_units, name=None):
+        super().__init__([x, w0, w1], name=name or 'rnn')
+        self.num_units = num_units
         self._outputs = [mtf.Tensor(self, x.shape, x.dtype)]
-        self._tf_fn = tf_rnn_op
 
     def gradient(self, grad_ys):
         return RNNGradOperation(self, grad_ys, name='rnn_grad').outputs
 
     def lower(self, lowering):
         mesh_impl = lowering.mesh_impl(self)
-        input_slices = lowering.tensors[
-                self.inputs[0]].to_laid_out_tensor().tensor_list
+        x, w0, w1 = [lowering.tensors[x] for x in self.inputs]
+        x, w0, w1 = mtf.convert_args_to_laid_out_tensors([x, w0, w1])
 
-        ys = self._tf_fn(tuple(input_slices))
+        cells = [LSTMCell(self.num_units, w0, 0, mesh_impl), 
+                LSTMCell(self.num_units, w1, 1, mesh_impl)]
+        tf_rnn_op = keras.layers.RNN(cells, return_sequences=True,
+                return_state=False)
+
+        ys = tf_rnn_op(tuple(x.tensor_list))
         assert len(ys) == len(mesh_impl.devices)
-        laid_out_y = mesh_impl.LaidOutTensor(list(ys))
+
+        laid_out_y = mesh_impl.LaidOutTensor.from_tensor_list(list(ys))
         lowering.set_tensor_lowering(self.outputs[0], laid_out_y)
 
 def model(params, inputs, labels):
@@ -176,21 +182,22 @@ def model(params, inputs, labels):
     graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels = CreateMeshes(
             inputs, labels, params.num_nodes, num_gpus, params.batch_size)
 
+    # RNN weights
+    num_units = params.num_units
+    w_shape = utils.ConvertToShape([('axis1', 2*num_units),
+        ('axis0', 4*num_units)])
+    rnn_w0 = mtf.get_variable(meshes[0], 'rnn_w0', w_shape)
+    rnn_w1 = mtf.get_variable(meshes[0], 'rnn_w1', w_shape)
+
     # Embedding dimensions
     vocab_dim = mtf.Dimension('axis0', params.vocab_size)
     embed_dim = mtf.Dimension('axis1', params.num_units)
-
-    # Keras RNN
-    mesh_impl = mesh_to_impl[meshes[0]]
-    cells = [LSTMCell(params.num_units, 0, mesh_impl), 
-             LSTMCell(params.num_units, 1, mesh_impl)]
-    tf_rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
     assert embedding.shape[-1].name == 'axis1'
-    mtf_rnn = RNNOperation(embedding, tf_rnn_op).outputs[0]
+    mtf_rnn = RNNOperation(embedding, rnn_w0, rnn_w1, num_units).outputs[0]
 
     assert mtf_rnn.shape[-1].name == 'axis1'
     dim_names = mtf_rnn.shape.rename_dimension('axis1',
@@ -203,4 +210,4 @@ def model(params, inputs, labels):
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
-    return graph, mesh_to_impl, mtf_loss, tf_rnn_op
+    return graph, mesh_to_impl, mtf_loss
