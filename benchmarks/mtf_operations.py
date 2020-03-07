@@ -157,7 +157,8 @@ class GenericGradOperation(mtf.GenericGradOperation):
             [lowering.tensors[x].to_laid_out_tensor().tensor_list for x in self._forward_op.inputs])
         all_grad_ys = mtf.transpose_list_of_lists(
             [lowering.tensors[dy].to_laid_out_tensor().tensor_list for dy in self._grad_ys])
-        all_grad_xs = [tf.gradients(ys=ys, xs=xs, grad_ys=grad_ys) 
+        all_grad_xs = [tf.gradients(ys=ys, xs=xs, grad_ys=grad_ys,
+            colocate_gradients_with_ops=True)
                 for ys, xs, grad_ys in zip(all_ys, all_xs, all_grad_ys)]
         grad_xs = mtf.transpose_list_of_lists(all_grad_xs)
         for out, grad_x in zip(self.outputs, grad_xs):

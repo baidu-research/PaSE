@@ -50,33 +50,13 @@ def main():
         import rnnlm_flexflow as rnn
     else:
         assert False
-    graph, mesh_to_impl, mtf_loss, tf_rnn = rnn.model(
-            params, inputs, labels)
-
-    # Optimize
-    grad_updates = utils.Optimize(graph, mtf_loss, lr=lr)
-
-    # Lower
-    print('Beginning to lower mtf graph...', flush=True)
-    lowering = mtf.Lowering(graph, mesh_to_impl)
-    print('Finished lowering.', flush=True)
-
-    # Loss and gradients
-    init_ops = lowering.copy_masters_to_slices()
-    tf_loss = lowering.export_to_tf_tensor(mtf_loss)
-    rnn_ws, rnn_grad_ws = tf_rnn.weights, tf_rnn.grad_ws
-    assert len(rnn_ws) == len(rnn_grad_ws)
-    rnn_grad_updates = [tf.assign_sub(v, lr * g) for v, g in zip(
-        rnn_ws, rnn_grad_ws)]
-    tf_grad_updates = [lowering.lowered_operation(
-        op) for op in grad_updates] + rnn_grad_updates
+    graph, mesh_to_impl, mtf_loss = rnn.model(params, inputs, labels)
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
     config = tf.ConfigProto(allow_soft_placement=False,
             log_device_placement=True)
-    trainer.train(init_ops, tf_loss, tf_grad_updates, dataset, config=config,
-            run_options=run_options)
+    trainer.train_model(graph, mesh_to_impl, mtf_loss, dataset, config, run_options)
 
 
 if __name__ == '__main__':

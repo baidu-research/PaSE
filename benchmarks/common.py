@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
 import tensorflow.compat.v1 as tf
+import mesh_tensorflow as mtf
 
 import datetime
 import sys, time, os
@@ -144,21 +145,21 @@ class Trainer():
     
         utils.join_tasks(self.task_index, self.hostlist)
 
-    #def train_model(self, graph, mesh_to_impl, loss_op, dataset, config=None,
-    #        run_options=None):
-    #    # Optimize
-    #    grad_updates = utils.Optimize(graph, loss_op)
+    def train_model(self, graph, mesh_to_impl, mtf_loss, dataset, config=None,
+            run_options=None):
+        # Optimize
+        grad_updates = utils.Optimize(graph, mtf_loss)
 
-    #    # Lower
-    #    print('Beginning to lower mtf graph...', flush=True)
-    #    lowering = mtf.Lowering(graph, mesh_to_impl)
-    #    print('Finished lowering.', flush=True)
+        # Lower
+        print('Beginning to lower mtf graph...', flush=True)
+        lowering = mtf.Lowering(graph, mesh_to_impl)
+        print('Finished lowering.', flush=True)
 
-    #    # Init, loss and gradients
-    #    init_ops = lowering.copy_masters_to_slices()
-    #    tf_loss = lowering.export_to_tf_tensor(mtf_loss)
-    #    tf_grad_updates = [lowering.lowered_operation(
-    #        op) for op in grad_updates] + graph.rnn_grad_ws
+        # Init, loss and gradients
+        init_ops = lowering.copy_masters_to_slices()
+        tf_loss = lowering.export_to_tf_tensor(mtf_loss)
+        tf_grad_updates = [lowering.lowered_operation(op) for op in
+                grad_updates]
 
-    #    return train(self, init_ops, tf_loss, grad_updates, dataset, config,
-    #            run_options))
+        return self.train(init_ops, tf_loss, tf_grad_updates, dataset, config,
+                run_options)
