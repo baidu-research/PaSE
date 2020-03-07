@@ -89,22 +89,17 @@ class RNNGradOperation(mtf.GenericGradOperation):
         grad_xs, grad_ws_l0, grad_ws_l1 = utils.TransposeLists(grad_xs_ws)
 
         # Laid out tensors
-        laid_out_grad_xs = mesh_impl.LaidOutTensor.from_tensor_list(grad_xs)
-        laid_out_grad_ws_l0 = mesh_impl.LaidOutTensor.from_tensor_list(
-                grad_ws_l0)
-        laid_out_grad_ws_l1 = mesh_impl.LaidOutTensor.from_tensor_list(
-                grad_ws_l1)
+        grad_xs_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_xs)
+        grad_ws_l0_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_ws_l0)
+        grad_ws_l1_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_ws_l1)
 
         # Accumulate dy_i/dw_j for replicated w_j's
-        axis = mesh_impl.shape[0]
-        laid_out_grad_ws_l0 = mesh_impl.allreduce(laid_out_grad_ws_l0, axis,
-                'SUM') 
-        laid_out_grad_ws_l1 = mesh_impl.allreduce(laid_out_grad_ws_l1, axis,
-                'SUM') 
-        tf_rnn_op.grad_ws = (laid_out_grad_ws_l0.tensor_list +
-                laid_out_grad_ws_l1.tensor_list)
+        grad_ws_l0_lo = mesh_impl.allreduce(grad_ws_l0_lo, 0, 'SUM')
+        grad_ws_l1_lo = mesh_impl.allreduce(grad_ws_l1_lo, 0, 'SUM')
+        tf_rnn_op.grad_ws = (grad_ws_l0_lo.tensor_list +
+                grad_ws_l1_lo.tensor_list)
 
-        lowering.set_tensor_lowering(self.outputs[0], laid_out_grad_xs)
+        lowering.set_tensor_lowering(self.outputs[0], grad_xs_lo)
 
 def RNNGradFn(forward_op, grad_y):
     return RNNGradOperation(forward_op, [grad_y]).outputs
