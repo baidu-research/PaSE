@@ -24,26 +24,32 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, num_units, layer, device, **kwargs):
+    def __init__(self, num_units, layer, devices, **kwargs):
         self.num_units = num_units
         self.state_size = [num_units, num_units]
         self.layer = layer
-        self.device = device
+        self.devices = devices
         super().__init__(**kwargs)
 
     def build(self, input_state):
         w_shape = [2 * self.num_units, 4 * self.num_units]
-        with tf.device(self.device):
-            self.w = self.add_weight(shape=w_shape, initializer='uniform',
-                    name=f'w_l{self.layer}', dtype=tf.float32)
+
+        # Create replicas of weight matrices on each device
+        self.ws = {}
+        for i, d in enumerate(self.devices):
+            with tf.device(d):
+                self.ws[d] = self.add_weight(shape=w_shape,
+                        initializer='uniform', name=f'w_l{self.layer}_part{i}',
+                        dtype=tf.float32)
         super().build(input_state)
 
     def call(self, x, states):
+        assert x.device
         h, c = states
         xh = tf.concat([x, h], axis=1)
 
         # GEMM
-        ifgo = tf.matmul(xh, self.w)
+        ifgo = tf.matmul(xh, self.ws[x.device])
 
         # Apply activations
         i, f, g, o = tf.split(ifgo, 4, axis=1)
@@ -57,6 +63,7 @@ class LSTMCell(keras.layers.Layer):
 
 class RNNGradOperation(mtf.GenericGradOperation):
     def lower(self, lowering):
+        mesh_impl = lowering.mesh_impl(self)
         rnn_op = self._forward_op
         tf_rnn_op = rnn_op._tf_fn
         assert (len(rnn_op.inputs) == len(rnn_op.outputs) 
@@ -68,22 +75,36 @@ class RNNGradOperation(mtf.GenericGradOperation):
         ys = get_tensor_list(rnn_op.outputs[0])
         xs = get_tensor_list(rnn_op.inputs[0])
         ws = tf_rnn_op.weights
+        ws_l0 = ws[:len(ws)//2]
+        ws_l1 = ws[len(ws)//2:]
         grad_ys = get_tensor_list(self._grad_ys[0])
 
         # Since we perform RNN as slicewise operation, dy_i/dx_j for i!=j is zero.
         # So we only compute dy_i/dx_i for various slices
-        assert len(ys) == len(xs) == len(grad_ys)
-        assert len(ws) == 2
-        grad_xs_ws = [tf.gradients(y, [x] + ws, grad_ys=grad_y) for y, x, grad_y in
-                zip(ys, xs, grad_ys)]
+        assert (len(ys) == len(xs) == len(grad_ys) == len(ws_l0) == len(ws_l1))
+        grad_xs_ws = [tf.gradients(y, [x, w0, w1], grad_ys=grad_y,
+            colocate_gradients_with_ops=True) for y, x, w0, w1, grad_y in
+            zip(ys, xs, ws_l0, ws_l1, grad_ys)]
         assert all(len(g) == 3 for g in grad_xs_ws)
-        grad_xs, grad_w0s, grad_w1s = utils.TransposeLists(grad_xs_ws)
+        grad_xs, grad_ws_l0, grad_ws_l1 = utils.TransposeLists(grad_xs_ws)
 
-        # Accumulate dy_i/dw_j for different w_j
-        tf_rnn_op.grad_ws = [tf.add_n(grad_w0s), tf.add_n(grad_w1s)]
-        lowering.set_tensor_lowering(self.outputs[0],
-                lowering.mesh_impl(self).LaidOutTensor.from_tensor_list(
-                    grad_xs))
+        # Laid out tensors
+        laid_out_grad_xs = mesh_impl.LaidOutTensor.from_tensor_list(grad_xs)
+        laid_out_grad_ws_l0 = mesh_impl.LaidOutTensor.from_tensor_list(
+                grad_ws_l0)
+        laid_out_grad_ws_l1 = mesh_impl.LaidOutTensor.from_tensor_list(
+                grad_ws_l1)
+
+        # Accumulate dy_i/dw_j for replicated w_j's
+        axis = mesh_impl.shape[0]
+        laid_out_grad_ws_l0 = mesh_impl.allreduce(laid_out_grad_ws_l0, axis,
+                'SUM') 
+        laid_out_grad_ws_l1 = mesh_impl.allreduce(laid_out_grad_ws_l1, axis,
+                'SUM') 
+        tf_rnn_op.grad_ws = (laid_out_grad_ws_l0.tensor_list +
+                laid_out_grad_ws_l1.tensor_list)
+
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_grad_xs)
 
 def RNNGradFn(forward_op, grad_y):
     return RNNGradOperation(forward_op, [grad_y]).outputs
@@ -93,8 +114,8 @@ def model(params, inputs, labels):
     num_gpus = len(devices)
 
     # RNN cells
-    cells = [LSTMCell(params.num_units, 0, devices[0]),
-             LSTMCell(params.num_units, 1, devices[num_gpus//2])]
+    cells = [LSTMCell(params.num_units, 0, devices),
+             LSTMCell(params.num_units, 1, devices)]
     tf_rnn_op = keras.layers.RNN(cells, return_sequences=True, return_state=False)
 
     # Mtf mesh

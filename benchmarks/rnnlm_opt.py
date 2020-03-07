@@ -128,7 +128,7 @@ class LSTMCell(keras.layers.Layer):
 class RNNGradOperation(mtf.GenericGradOperation):
     def lower(self, lowering):
         rnn_op = self._forward_op
-        tf_rnn_op = rnn_op._tf_rnn_op
+        tf_rnn_op = rnn_op._tf_fn
         assert (len(rnn_op.inputs) == len(rnn_op.outputs) 
                 == len(self._grad_ys) == 1)
 
@@ -140,7 +140,8 @@ class RNNGradOperation(mtf.GenericGradOperation):
         ws = tf_rnn_op.weights
         grad_ys = get_tensor_list(self._grad_ys[0])
 
-        grad_xs_ws = tf.gradients(ys, xs + ws, grad_ys=grad_ys)
+        grad_xs_ws = tf.gradients(ys, xs + ws, grad_ys=grad_ys,
+                colocate_gradients_with_ops=True)
         assert len(grad_xs_ws) == (len(xs) + len(ws))
         tf_rnn_op.grad_ws = grad_xs_ws[len(xs):]
         lowering.set_tensor_lowering(self.outputs[0],
@@ -151,7 +152,7 @@ class RNNOperation(mtf.Operation):
     def __init__(self, x, tf_rnn_op, name=None):
         super().__init__([x], name=name or 'rnn')
         self._outputs = [mtf.Tensor(self, x.shape, x.dtype)]
-        self._tf_rnn_op = tf_rnn_op
+        self._tf_fn = tf_rnn_op
 
     def gradient(self, grad_ys):
         return RNNGradOperation(self, grad_ys, name='rnn_grad').outputs
@@ -161,7 +162,7 @@ class RNNOperation(mtf.Operation):
         input_slices = lowering.tensors[
                 self.inputs[0]].to_laid_out_tensor().tensor_list
 
-        ys = self._tf_rnn_op(tuple(input_slices))
+        ys = self._tf_fn(tuple(input_slices))
         assert len(ys) == len(mesh_impl.devices)
         laid_out_y = mesh_impl.LaidOutTensor(list(ys))
         lowering.set_tensor_lowering(self.outputs[0], laid_out_y)
