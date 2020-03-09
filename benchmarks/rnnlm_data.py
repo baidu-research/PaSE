@@ -99,7 +99,7 @@ class RNNOperation(mtf.Operation):
 
     def lower(self, lowering):
         x, w0, w1 = [lowering.tensors[x] for x in self.inputs]
-        w0_l0, w1_lo = [w.tensor_list for w in
+        w0_lo, w1_lo = [w.tensor_list for w in
                 mtf.convert_args_to_laid_out_tensors([w0, w1])]
 
         cells = [LSTMCell(self.num_units, w0_lo),
