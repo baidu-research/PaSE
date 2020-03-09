@@ -24,11 +24,10 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, num_units, ws, layer, **kwargs):
+    def __init__(self, num_units, ws, **kwargs):
         self.num_units = num_units
-        self.state_size = [num_units, num_units]
-        self.layer = layer
         self.ws = {w.device:w for w in ws}
+        self.state_size = [num_units, num_units]
         super().__init__(**kwargs)
 
     def call(self, x, states):
@@ -100,21 +99,19 @@ class RNNOperation(mtf.Operation):
 
     def lower(self, lowering):
         x, w0, w1 = [lowering.tensors[x] for x in self.inputs]
-        w0, w1 = [w.tensor_list for w in 
+        w0_l0, w1_lo = [w.tensor_list for w in
                 mtf.convert_args_to_laid_out_tensors([w0, w1])]
 
-        cells = [LSTMCell(self.num_units, w0, 0), 
-                LSTMCell(self.num_units, w1, 1)]
+        cells = [LSTMCell(self.num_units, w0_lo),
+                LSTMCell(self.num_units, w1_lo)]
         tf_rnn_op = keras.layers.RNN(cells, return_sequences=True,
                 return_state=False)
 
-        x = lowering.tensors[self.inputs[0]]
         y = lowering.mesh_impl(self).slicewise(tf_rnn_op, x)
         lowering.set_tensor_lowering(self.outputs[0], y)
 
 def model(params, inputs, labels):
-    devices = params.devices
-    num_gpus = len(devices)
+    num_gpus = len(params.devices)
 
     # Mtf mesh
     assert len(inputs.shape) == 2
@@ -134,8 +131,8 @@ def model(params, inputs, labels):
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
-    mtf_rnn = RNNOperation(embedding, rnn_w0, rnn_w1, num_units).outputs[0]
-    y = mtf.layers.dense(mtf_rnn, vocab_dim, reduced_dims=mtf_rnn.shape[-1:],
+    [y] = RNNOperation(embedding, rnn_w0, rnn_w1, num_units).outputs
+    y = mtf.layers.dense(y, vocab_dim, reduced_dims=y.shape[-1:],
             use_bias=False)
     mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(y, mtf_labels,
             vocab_dim)

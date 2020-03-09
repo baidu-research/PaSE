@@ -40,12 +40,14 @@ def main():
             trainer.num_nodes, devices)
 
     # Model
+    soft_placement = False
     if args.strategy == 0:
         import rnnlm_data as rnn
     elif args.strategy == 1:
         import rnnlm_opt as rnn
     elif args.strategy == 2:
         import rnnlm_gnmt as rnn
+        soft_placement = True
     elif args.strategy == 3:
         import rnnlm_flexflow as rnn
     else:
@@ -54,7 +56,7 @@ def main():
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
-    config = tf.ConfigProto(allow_soft_placement=False,
+    config = tf.ConfigProto(allow_soft_placement=soft_placement,
             log_device_placement=True)
     trainer.train_model(graph, mesh_to_impl, mtf_loss, dataset, config, run_options)
 

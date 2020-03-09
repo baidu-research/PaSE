@@ -37,6 +37,10 @@ def ConvertToShape(dims):
     return sh
 
 
+def GetDeviceStr(node_id, gpu_id):
+    return f'/job:localhost/replica:0/task:{node_id}/device:GPU:{gpu_id}'
+
+
 def GetDeviceList(gpus, num_nodes=1):
     if isinstance(gpus, list):
         assert all(isinstance(g, str) for g in gpus)
@@ -45,8 +49,8 @@ def GetDeviceList(gpus, num_nodes=1):
     assert gpus % num_nodes == 0
     gpus_per_node = gpus // num_nodes
 
-    return [f'/job:localhost/replica:0/task:{i}/device:GPU:{j}' for i in
-            range(num_nodes) for j in range(gpus_per_node)]
+    return [GetDeviceStr(i, j) for i in range(num_nodes) for j in
+            range(gpus_per_node)]
 
 
 def DeviceIndex(gpu):
