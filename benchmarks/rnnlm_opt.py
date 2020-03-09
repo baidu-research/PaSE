@@ -3,7 +3,8 @@ import tensorflow.compat.v1 as tf
 import tensorflow.keras as keras
 import string
 import utils
-from mesh_transformations import ReplaceMeshWithIndependentAxes
+from mesh_transformations import ReplaceMesh
+import mtf_operations as mt
 
 def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
@@ -42,10 +43,9 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 class LSTMCell(keras.layers.Layer):
-    def __init__(self, num_units, ws, layer, mesh_impl, **kwargs):
+    def __init__(self, num_units, ws, mesh_impl, **kwargs):
         self.num_units = num_units
         self.laid_out_w = ws
-        self.layer = layer
         self.mesh_impl = mesh_impl
 
         assert len(mesh_impl.shape) == 2
@@ -144,12 +144,14 @@ class RNNGradOperation(mtf.GenericGradOperation):
         grad_ws_l0_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_ws_l0)
         grad_ws_l1_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_ws_l1)
 
+        assert len(self.outputs) == 3
         lowering.set_tensor_lowering(self.outputs[0], grad_xs_lo)
         lowering.set_tensor_lowering(self.outputs[1], grad_ws_l0_lo)
         lowering.set_tensor_lowering(self.outputs[2], grad_ws_l1_lo)
 
 class RNNOperation(mtf.Operation):
     def __init__(self, x, w0, w1, num_units, name=None):
+        assert x.shape[-1].name == w0.shape[0].name == w1.shape[0].name
         super().__init__([x, w0, w1], name=name or 'rnn')
         self.num_units = num_units
         self._outputs = [mtf.Tensor(self, x.shape, x.dtype)]
@@ -162,8 +164,8 @@ class RNNOperation(mtf.Operation):
         x, w0, w1 = [lowering.tensors[x] for x in self.inputs]
         x, w0, w1 = mtf.convert_args_to_laid_out_tensors([x, w0, w1])
 
-        cells = [LSTMCell(self.num_units, w0, 0, mesh_impl), 
-                LSTMCell(self.num_units, w1, 1, mesh_impl)]
+        cells = [LSTMCell(self.num_units, w0, mesh_impl),
+                LSTMCell(self.num_units, w1, mesh_impl)]
         tf_rnn_op = keras.layers.RNN(cells, return_sequences=True,
                 return_state=False)
 
@@ -197,12 +199,11 @@ def model(params, inputs, labels):
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
     assert embedding.shape[-1].name == 'axis1'
-    mtf_rnn = RNNOperation(embedding, rnn_w0, rnn_w1, num_units).outputs[0]
+    [y] = RNNOperation(embedding, rnn_w0, rnn_w1, num_units).outputs
 
-    assert mtf_rnn.shape[-1].name == 'axis1'
-    dim_names = mtf_rnn.shape.rename_dimension('axis1',
-            utils.RandName()).dimension_names
-    y = ReplaceMeshWithIndependentAxes(mtf_rnn, meshes[1], dim_names)
+    assert y.shape[-1].name == 'axis1'
+    y = mt.RenameDimension(y, 'axis1', utils.RandName())
+    y = ReplaceMesh(y, meshes[1])
 
     y = mtf.layers.dense(y, vocab_dim, reduced_dims=y.shape[-1:],
             use_bias=False)

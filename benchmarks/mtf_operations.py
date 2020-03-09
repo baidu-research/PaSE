@@ -279,3 +279,18 @@ def AvgPool(*args, **kwargs):
     return Pooling(*args, pooling_fn=tf.nn.avg_pool, **kwargs)
 
 
+# Mesh-tensorflow has a bug, where, when a dim of a tensor is split along one
+# mesh axis, and it is renamed to be split along a different mesh axis, the
+# reshape operation results in wrong outputs. So, first unsplit the dim, and
+# split along new mesh axis
+def RenameDimension(x, old_dim_name, new_dim_name):
+    assert isinstance(x, mtf.Tensor)
+    if old_dim_name == new_dim_name:
+        return x
+
+    if old_dim_name.startswith('axis') and new_dim_name.startswith('axis'):
+        tmp_dim_name = utils.RandName()
+        x = mtf.rename_dimension(x, old_dim_name, tmp_dim_name)
+        old_dim_name = tmp_dim_name
+
+    return mtf.rename_dimension(x, old_dim_name, new_dim_name)

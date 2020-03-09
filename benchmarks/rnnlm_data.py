@@ -67,7 +67,8 @@ class RNNGradOperation(mtf.GenericGradOperation):
         grad_ys = get_tensor_list(self._grad_ys[0])
 
         # Since we perform RNN as slicewise operation, dy_i/dx_j for i!=j is zero.
-        # So we only compute dy_i/dx_i for various slices
+        # So we only compute dy_i/dx_i for various slices. (Replicated) weights
+        # are all-reduced separately below.
         assert (len(ys) == len(xs) == len(grad_ys) == len(ws_l0) == len(ws_l1))
         grad_xs_ws = [tf.gradients(y, [x, w0, w1], grad_ys=grad_y,
             colocate_gradients_with_ops=True) for y, x, w0, w1, grad_y in
