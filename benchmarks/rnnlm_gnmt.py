@@ -63,9 +63,6 @@ class LSTMCell(keras.layers.Layer):
         device = self.get_device(x.device)
 
         with tf.device(device):
-            #if x.device != device:
-            #    x = tf.identity(x, name='rnn_identity')
-
             h, c = states
             xh = tf.concat([x, h], axis=1)
 
@@ -124,8 +121,8 @@ class RNNGradOperation(mtf.GenericGradOperation):
         grad_ws_l1_lo = input_mesh_impl(2).LaidOutTensor.from_tensor_list(grad_ws_l1)
 
         # Accumulate dy_i/dw_j for replicated w_j's
-        grad_ws_l0_lo = input_mesh_impl(1).allreduce(grad_ws_l0_lo, 0, 'SUM')
-        grad_ws_l1_lo = input_mesh_impl(2).allreduce(grad_ws_l1_lo, 0, 'SUM')
+        grad_ws_l0_lo = input_mesh_impl(1).allreduce(grad_ws_l0_lo, [0], 'SUM')
+        grad_ws_l1_lo = input_mesh_impl(2).allreduce(grad_ws_l1_lo, [0], 'SUM')
 
         lowering.set_tensor_lowering(self.outputs[0], grad_xs_lo)
         lowering.set_tensor_lowering(self.outputs[1], grad_ws_l0_lo)

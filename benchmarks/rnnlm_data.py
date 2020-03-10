@@ -81,8 +81,8 @@ class RNNGradOperation(mtf.GenericGradOperation):
         grad_ws_l1_lo = mesh_impl.LaidOutTensor.from_tensor_list(grad_ws_l1)
 
         # Accumulate dy_i/dw_j for replicated w_j's
-        grad_ws_l0_lo = mesh_impl.allreduce(grad_ws_l0_lo, 0, 'SUM')
-        grad_ws_l1_lo = mesh_impl.allreduce(grad_ws_l1_lo, 0, 'SUM')
+        grad_ws_l0_lo = mesh_impl.allreduce(grad_ws_l0_lo, [0], 'SUM')
+        grad_ws_l1_lo = mesh_impl.allreduce(grad_ws_l1_lo, [0], 'SUM')
 
         lowering.set_tensor_lowering(self.outputs[0], grad_xs_lo)
         lowering.set_tensor_lowering(self.outputs[1], grad_ws_l0_lo)
