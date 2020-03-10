@@ -146,9 +146,9 @@ class Trainer():
         utils.join_tasks(self.task_index, self.hostlist)
 
     def train_model(self, graph, mesh_to_impl, mtf_loss, dataset, config=None,
-            run_options=None):
+            run_options=None, lr=0.01):
         # Optimize
-        grad_updates = utils.Optimize(graph, mtf_loss)
+        grad_updates = utils.Optimize(graph, mtf_loss, lr=lr)
 
         # Lower
         print('Beginning to lower mtf graph...', flush=True)
