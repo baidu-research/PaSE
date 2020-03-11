@@ -253,50 +253,46 @@ class Ops():
         BytesToFlops(1, arch)
 
     def AddVertex(self):
-        if Ops.G is None:
+        try:
+            node_id = Ops.G.number_of_nodes()
+        except AttributeError:
+            assert Ops.G is None
             Ops.G = nx.DiGraph()
-        node_id = Ops.G.number_of_nodes()
+            node_id = 0
     
         print("Node: " + str(node_id) + "; Type: " +
                 str(self.__class__.__name__) + "; Configs: " +
                 str(self.dom_configs.shape[0]))
     
-        costs = self.GetCosts()
-        costs = pd.Series(costs, index=self.dom_config_tuples, name='cost')
-    
+        costs = pd.Series(self.costs, index=self.dom_config_tuples, name='cost')
         Ops.G.add_node(node_id, op=self, costs=costs)
         self.node_id = node_id
 
         for i, t in enumerate(self.out_tsrs):
             Ops.tsr_to_node_id[id(t)] = (node_id, i)
 
-    def AddEdge(self, tsr, idx, ignore_area_intersection=False):
+    def AddEdge(self, src_tsr, tgt_tsr_idx, ignore_area_intersection=False):
         try:
-            src, src_tsr_idx = Ops.tsr_to_node_id[id(tsr)]
+            src, src_tsr_idx = Ops.tsr_to_node_id[id(src_tsr)]
+            tgt = self.node_id
         except KeyError:
             # Source is an input tensor
-            assert tsr.is_input == True
+            assert src_tsr.is_input == True
             return
-
-        tgt = self.node_id
-        tgt_tsr_idx = idx
-
-        assert src in Ops.G
-        assert tgt in Ops.G
+        assert (src in Ops.G) and (tgt in Ops.G)
     
-        node_ops = Ops.G.nodes(data='op')
-        src_op = node_ops[src]
+        src_op = Ops.G.nodes[src]['op']
         tgt_op = self
 
         src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
         tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
     
         if src_op == tgt_op:
-            self.costs += GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs,
+            self.costs += GetSelfEdgeCosts(src_tsr, src_cfgs, tgt_cfgs,
                     ignore_area_intersection)
             return
     
-        costs = GetEdgeCosts(tsr, src_cfgs, tgt_cfgs,
+        costs = GetEdgeCosts(src_tsr, src_cfgs, tgt_cfgs,
                 ignore_area_intersection=ignore_area_intersection)
         idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
             tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
@@ -390,10 +386,6 @@ class Ops():
 
         cfgs = self.GetOutTensorConfigs(idx)
         return cfgs[loc[0]]
-
-    # Returns vertex costs for different configs
-    def GetCosts(self):
-        return self.costs
 
     def __call__(self, idx=None):
         return self.GetOutTensors() if idx is None else self.GetOutTensor(idx)
