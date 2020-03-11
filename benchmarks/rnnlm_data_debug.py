@@ -4,6 +4,9 @@ import tensorflow.keras as keras
 import mesh_tensorflow as mtf
 import utils
 
+def tf_assert_near(x, y):
+    return tf.assert_near(x, y, atol=1e-10, rtol=0)
+
 def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
     meshes = []
@@ -43,8 +46,8 @@ class LSTMCell(keras.layers.Layer):
         xh = tf.concat([x, h], axis=1)
 
         # GEMM
-        with tf.control_dependencies([tf.assert_near(self.ws[x.device],
-            self.w)]):
+        with tf.control_dependencies([
+            tf.assert_equal(self.ws[x.device], self.w)]):
             ifgo1 = tf.matmul(xh, self.ws[x.device])
             ifgo2 = tf.matmul(xh, self.w)
 
@@ -102,8 +105,8 @@ class RNNGradOperation(mtf.GenericGradOperation):
                 colocate_gradients_with_ops=True)
         assert len(tf_grads) == 2
         tf_asserts = []
-        tf_asserts.append(tf.assert_near(tf_grads[0], grad_ws_l0[0]))
-        tf_asserts.append(tf.assert_near(tf_grads[1], grad_ws_l1[0]))
+        tf_asserts.append(tf_assert_near(tf_grads[0], grad_ws_l0[0]))
+        tf_asserts.append(tf_assert_near(tf_grads[1], grad_ws_l1[0]))
         #tf_asserts.append(tf.print(tf_grads[0]))
         #tf_asserts.append(tf.print(tf_grads[1]))
         grp = tf.group(tf_asserts)
@@ -178,4 +181,5 @@ def model(params, inputs, labels):
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
+    model.soft_placement = True
     return graph, mesh_to_impl, mtf_loss

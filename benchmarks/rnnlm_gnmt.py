@@ -189,4 +189,5 @@ def model(params, inputs, labels):
             vocab_dim)
     mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
+    model.soft_placement = True
     return graph, mesh_to_impl, mtf_loss

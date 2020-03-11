@@ -40,19 +40,22 @@ def main():
             trainer.num_nodes, devices)
 
     # Model
-    soft_placement = False
     if args.strategy == 0:
         import rnnlm_data as rnn
     elif args.strategy == 1:
         import rnnlm_opt as rnn
     elif args.strategy == 2:
         import rnnlm_gnmt as rnn
-        soft_placement = True
     elif args.strategy == 3:
         import rnnlm_flexflow as rnn
     else:
         assert False
     graph, mesh_to_impl, mtf_loss = rnn.model(params, inputs, labels)
+
+    try:
+        soft_placement = rnn.model.soft_placement
+    except AttributeError:
+        soft_placement = False
 
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
