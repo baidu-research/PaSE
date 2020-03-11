@@ -53,15 +53,14 @@ def BytesToFlops(bytes, arch=0):
             assert False
 
         BytesToFlops.bw_to_flops = float(peak_flop / bw)
-
         return BytesToFlops.bw_to_flops * bytes
 
 
 # Returns a list of factors of a number 'n'
 def factors(n):
     assert(n > 0)
-    return set(reduce(list.__add__, ([i, n//i] for i in range(1, int(n**0.5) +
-        1) if n % i == 0)))
+    return set(reduce(list.__add__, ([i, n//i] for i in range(
+        1, int(n**0.5) + 1) if n % i == 0)))
 
 
 # Converts 'v' into a tuple (v, v) if 'v' is a scalar
@@ -94,13 +93,14 @@ def GetAllReduceCost(words, procs):
     # All-reduce cost = 2*((n*k)/P)*(P-1)
     chunks = words / procs # The elements are split into 'procs' chunks
     steps = 2.0 * (procs - 1)
-    costs = BytesToFlops(chunks * steps) # When procs = 1, the cost is 0
-
-    return costs
+    return BytesToFlops(chunks * steps) # When procs = 1, the cost is 0
 
 
+# TODO: Remove trainable flag
 def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, trainable=True):
     assert len(dom_configs.shape) == 2 and len(dom) == dom_configs.shape[-1]
+
+    # Combine multiple batch dimensions into a single batch dim
     if len(dom) > 3:
       dom = (Prod(dom[:-2]),) + dom[-2:]
       dom_configs = np.concatenate((np.prod(dom_configs[:,:-2], axis=1,
@@ -125,7 +125,12 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, trainable=True):
     # Cost for reducing the output during fwd phase
     words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
     costs += GetAllReduceCost(words, dom_configs[:, k_idx])
+
+    # Cost for input gradient computation. All-reduction is along axis 'n'
+    words = np.prod(dom_per_proc[:, (m_idx, k_idx)], axis=1)
+    costs += GetAllReduceCost(words, dom_configs[:, n_idx])
     
+    # Cost for weight gradient computation. All-reduction is along axis 'm'
     if trainable:
         weights_per_proc = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
 
@@ -140,11 +145,10 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, trainable=True):
 # Ghost communication costs for convolution, pooling
 def ComputeGhostCommCosts(tsr, configs, r, s):
     assert len(tsr) == configs.shape[1] == 4
-
     b_idx, c_idx, h_idx, w_idx = range(4)
 
     tsr_per_proc = tsr / configs
-    tsr_per_proc_with_ghosts = tsr_per_proc[:, h_idx:w_idx+1]
+    tsr_per_proc_with_ghosts = np.copy(tsr_per_proc[:, h_idx:w_idx+1])
 
     # Add ghost elements along h and w dims if the dimension is split among more
     # than one proc
@@ -162,19 +166,16 @@ def ComputeGhostCommCosts(tsr, configs, r, s):
     ghost_elems *= tsr_per_proc[:, b_idx]
     ghost_elems *= tsr_per_proc[:, c_idx]
 
-    costs = BytesToFlops(ghost_elems)
-    return costs
+    return BytesToFlops(ghost_elems)
 
 
 def RowCartesianProd(arr1, arr2):
     shape1 = arr1.shape[0]
     shape2 = arr2.shape[0]
-
     tile_shape = [shape1] + ([1] * (arr2.ndim - 1))
 
     arr1 = np.repeat(arr1, repeats=shape2, axis=0)
     arr2 = np.tile(arr2, tile_shape)
-
     return arr1, arr2
 
 
@@ -192,11 +193,10 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs,
             np.prod(np.minimum(tgt_data_sizes, src_data_sizes), axis=1))
 
     # Area that needs to be communicated
-    area_needed = tgt_area - area_intersection
-    return area_needed
+    return (tgt_area - area_intersection)
 
 
-# Returns edge costs for different configs. Edge cost is computed as the
+# Returns edge costs for different configs. Edge cost is computed using the
 # difference b/w tensor volume needed per proc by the target vertex and the tensor
 # volume held per proc by the source vertex.
 def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True,
@@ -218,12 +218,11 @@ def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True,
     # from tgt to src during bwd phase
     area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
             tgt_procs, ignore_area_intersection)
-    costs = 2.0 * np.where(area_needed < 0, 0, area_needed) # Factor 2 is to
-                                                            # account for fwd
-                                                            # and bwd phases
-    costs = BytesToFlops(costs)
+    area_needed.clip(min=0, out=area_needed)
 
-    return costs
+    # Multiply the area by 2 for forward and backward phases
+    area_needed *= 2.0
+    return BytesToFlops(area_needed)
 
 
 def GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs, ignore_area_intersection):
