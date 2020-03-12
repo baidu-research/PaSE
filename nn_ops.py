@@ -429,18 +429,51 @@ def GetFlatteningCost(tsr1, tsr2, tsr1_configs, tsr2_configs):
     return WordsToFlops(words)
 
 
+def ConfigureReshape(op):
+    def is_contiguous(cfg):
+        it = zip(op.dom, cfg)
+
+        # Skip the most significant axes until we reach an axis that is
+        # partially split
+        for d, c in it:
+            if d != c:
+                break
+        # All the axes after partial split should be unsplit
+        for _, c in it:
+            if c != 1:
+                return False
+
+        return True
+
+    # Pick only the configs that split the domain contiguously
+    op.dom_config_tuples = list(filter(is_contiguous, GetConfigs(op.dom,
+        op.n_procs)))
+    op.dom_configs = np.array(op.dom_config_tuples)
+
+    [in_tsr] = op.in_tsrs
+    [out_tsr] = op.out_tsrs
+
+    assert (len(in_tsr) == 1) or (len(out_tsr) == 1)
+    assert Prod(in_tsr) == Prod(out_tsr)
+    assert len(op.dom) == max(len(in_tsr), len(out_tsr))
+
+    if in_tsr == op.dom:
+        op.in_tsr_configs = op.dom_configs
+        op.out_tsr_configs = np.prod(op.dom_configs, axis=1, keepdims=True)
+    else:
+        assert out_tsr == op.dom
+        op.out_tsr_configs = op.dom_configs
+        op.in_tsr_configs = np.prod(op.dom_configs, axis=1, keepdims=True)
+
+
 class Ravel(Ops):
     def __init__(self, tsr, n_procs=None):
         out_tsr = Tensor((Prod(tsr),))
         super().__init__(tsr, tsr, out_tsr, n_procs)
 
     def ComputeCosts(self):
-        super().ComputeCosts()
-        self.in_tsr_configs = self.dom_configs
-        self.out_tsr_configs = np.prod(self.dom_configs, axis=1, keepdims=True)
-
-        self.costs = GetFlatteningCost(self.GetInTensor(0),
-                self.GetOutTensor(0), self.in_tsr_configs, self.out_tsr_configs)
+        ConfigureReshape(self)
+        self.costs = 0
 
 
 class Unravel(Ops):
@@ -450,12 +483,8 @@ class Unravel(Ops):
         super().__init__(shape, tsr, Tensor(shape), n_procs)
 
     def ComputeCosts(self):
-        super().ComputeCosts()
-        self.in_tsr_configs = np.prod(self.dom_configs, axis=1, keepdims=True)
-        self.out_tsr_configs = self.dom_configs
-
-        self.costs = GetFlatteningCost(self.GetOutTensor(0),
-                self.GetInTensor(0), self.out_tsr_configs, self.in_tsr_configs)
+        ConfigureReshape(self)
+        self.costs = 0
 
 
 def Reshape(tsr, shape, n_procs=None):
@@ -514,8 +543,8 @@ class Unstack(Ops):
         super().ComputeCosts()
         self.dom_configs[:, self.axis] = 1 # Don't distribute along stack axis
         self.in_tsr_configs = self.dom_configs
-        self.out_tsr_configs = (np.delete(self.dom_configs, self.axis, axis=1),
-                ) * self.num
+        self.out_tsr_configs = (np.delete(
+            self.dom_configs, self.axis, axis=1),) * self.num
         self.costs = 0
 
 
