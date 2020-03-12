@@ -30,9 +30,9 @@ def InputTensor(x):
     return t
 
 
-def BytesToFlops(bytes, arch=0):
+def WordsToFlops(words, arch=0):
     try:
-        return BytesToFlops.bw_to_flops * bytes
+        return WordsToFlops.bw_to_flops * words
     except AttributeError:
         p100_peak_flop = float(10.6 * 1000) # GFLOPs
         #p100_bw = float((36.72 * 2) / 8) # NVLink Unidirectional for 2 sublinks per direction.
@@ -52,8 +52,8 @@ def BytesToFlops(bytes, arch=0):
         else:
             assert False
 
-        BytesToFlops.bw_to_flops = float(peak_flop / bw)
-        return BytesToFlops.bw_to_flops * bytes
+        WordsToFlops.bw_to_flops = float(peak_flop / bw)
+        return WordsToFlops.bw_to_flops * words
 
 
 # Returns a list of factors of a number 'n'
@@ -93,7 +93,7 @@ def GetAllReduceCost(words, procs):
     # All-reduce cost = 2*((n*k)/P)*(P-1)
     chunks = words / procs # The elements are split into 'procs' chunks
     steps = 2.0 * (procs - 1)
-    return BytesToFlops(chunks * steps) # When procs = 1, the cost is 0
+    return WordsToFlops(chunks * steps) # When procs = 1, the cost is 0
 
 
 # TODO: Remove trainable flag
@@ -166,7 +166,7 @@ def ComputeGhostCommCosts(tsr, configs, r, s):
     ghost_elems *= tsr_per_proc[:, b_idx]
     ghost_elems *= tsr_per_proc[:, c_idx]
 
-    return BytesToFlops(ghost_elems)
+    return WordsToFlops(ghost_elems)
 
 
 def RowCartesianProd(arr1, arr2):
@@ -216,13 +216,10 @@ def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True,
 
     # Cost of communicating input matrix from src to tgt during fwd phase, and
     # from tgt to src during bwd phase
-    area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
-            tgt_procs, ignore_area_intersection)
-    area_needed.clip(min=0, out=area_needed)
-
     # Multiply the area by 2 for forward and backward phases
-    area_needed *= 2.0
-    return BytesToFlops(area_needed)
+    area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
+            tgt_procs, ignore_area_intersection).clip(min=0) * 2.0
+    return WordsToFlops(area_needed)
 
 
 def GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs, ignore_area_intersection):
@@ -250,7 +247,7 @@ class Ops():
 
     def SetDefaultArch(arch):
         Ops.default_arch = arch
-        BytesToFlops(1, arch)
+        WordsToFlops(1, arch)
 
     def AddVertex(self):
         try:
@@ -373,20 +370,6 @@ class Ops():
         assert idx < self.out_tsrs_cnt
         return self.out_tsr_configs[idx]
 
-    def GetInTensorConfig(self, idx, dom_config):
-        loc = np.where(self.dom_configs == dom_config)[0]
-        assert len(loc) >= 1
-
-        cfgs = self.GetInTensorConfigs(idx)
-        return cfgs[loc[0]]
-
-    def GetOutTensorConfig(self, idx, dom_config):
-        loc = np.where(self.dom_configs == dom_config)[0]
-        assert len(loc) >= 1
-
-        cfgs = self.GetOutTensorConfigs(idx)
-        return cfgs[loc[0]]
-
     def __call__(self, idx=None):
         return self.GetOutTensors() if idx is None else self.GetOutTensor(idx)
 
@@ -421,6 +404,31 @@ class Elementwise(Ops):
         self.costs = (1 + self.pw_op_cnt) * dom_per_proc
 
 
+# Get communication cost of converting a multi-dimensional 'tsr1' to a 1D 'tsr2'
+def GetFlatteningCost(tsr1, tsr2, tsr1_configs, tsr2_configs):
+    assert len(tsr2) == 1
+    assert tsr2[0] == Prod(tsr1)
+
+    tsr1_per_proc = tsr1 / tsr1_configs
+    tsr2_per_proc = tsr2 / tsr2_configs
+
+    # Take a single processor slice of tsr2, and reshape it into tsr1's shape.
+    # This provides the single processor slice of tsr1 split using 'tsr2_config'
+    new_tsr1_per_proc = np.empty_like(tsr1_per_proc)
+    tsr2_per_proc_copy = np.copy(tsr2_per_proc[:,0])
+    for i, d in enumerate(tsr1[::-1], start=1):
+        np.minimum(tsr2_per_proc_copy, d, out=new_tsr1_per_proc[:,-i])
+        tsr2_per_proc_copy = (tsr2_per_proc_copy // d).clip(min=1)
+
+    # Get amount of words to be transferred
+    src_procs = np.prod(tsr1_configs, axis=1)
+    tgt_procs = np.prod(tsr2_configs, axis=1)
+    words = GetAreaNeeded(tsr1_per_proc, new_tsr1_per_proc, src_procs,
+            tgt_procs).clip(min=0) * 2.0
+
+    return WordsToFlops(words)
+
+
 class Ravel(Ops):
     def __init__(self, tsr, n_procs=None):
         out_tsr = Tensor((Prod(tsr),))
@@ -431,24 +439,8 @@ class Ravel(Ops):
         self.in_tsr_configs = self.dom_configs
         self.out_tsr_configs = np.prod(self.dom_configs, axis=1, keepdims=True)
 
-        tsr_len = len(self.GetInTensor(0))
-        ravelled_configs = np.empty_like(self.in_tsr_configs)
-        cfgs = np.copy(self.out_tsr_configs)
-        for i in range(tsr_len):
-            np.minimum(cfgs[:,0], self.GetInTensor(0)[i],
-                    out=ravelled_configs[:,i])
-            cfgs[:,0] //= ravelled_configs[:,i]
-
-        src_tsr_per_proc = self.GetInTensor(0) / self.in_tsr_configs
-        tgt_tsr_per_proc = self.GetInTensor(0) / ravelled_configs
-
-        src_procs = np.prod(self.in_tsr_configs, axis=1)
-        tgt_procs = self.out_tsr_configs[:,0]
-
-        area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc,
-                src_procs, tgt_procs)
-        costs = 2.0 * np.where(area_needed < 0, 0, area_needed)
-        self.costs = BytesToFlops(costs)
+        self.costs = GetFlatteningCost(self.GetInTensor(0),
+                self.GetOutTensor(0), self.in_tsr_configs, self.out_tsr_configs)
 
 
 class Unravel(Ops):
@@ -462,24 +454,8 @@ class Unravel(Ops):
         self.in_tsr_configs = np.prod(self.dom_configs, axis=1, keepdims=True)
         self.out_tsr_configs = self.dom_configs
 
-        tsr_len = len(self.GetOutTensor(0))
-        unravelled_configs = np.empty_like(self.out_tsr_configs)
-        cfgs = np.copy(self.in_tsr_configs)
-        for i in range(tsr_len):
-            np.minimum(cfgs[:,0], self.GetOutTensor(0)[i],
-                    out=unravelled_configs[:,i])
-            cfgs[:,0] //= unravelled_configs[:,i]
-
-        src_tsr_per_proc = self.GetOutTensor(0) / unravelled_configs
-        tgt_tsr_per_proc = self.GetOutTensor(0) / self.out_tsr_configs
-
-        src_procs = self.in_tsr_configs[:,0]
-        tgt_procs = np.prod(self.out_tsr_configs, axis=1)
-
-        area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc,
-                src_procs, tgt_procs)
-        costs = 2.0 * np.where(area_needed < 0, 0, area_needed)
-        self.costs = BytesToFlops(costs)
+        self.costs = GetFlatteningCost(self.GetOutTensor(0),
+                self.GetInTensor(0), self.out_tsr_configs, self.in_tsr_configs)
 
 
 def Reshape(tsr, shape, n_procs=None):
@@ -974,7 +950,7 @@ class SoftmaxCrossEntropy(Ops):
         # averaging partial sums: 1 word per proc along batch dim in forward
         # pass is ignored.
         # No communication in backward pass.
-        comm_cost = BytesToFlops(2.0 * batch_size)
+        comm_cost = WordsToFlops(2.0 * batch_size)
         np.add(self.costs, comm_cost, where=(self.dom_configs[:, -1] > 1),
                 out=self.costs)
 
@@ -1005,7 +981,7 @@ class Embedding(Ops):
         # Each processor has b/p_b inputs. Hence, b/(p_b*p_v) input rows can be
         # expected to be present in the current processor, and (b/p_b)*(1-1/p_v)
         # elements have to be gathered from other processors.
-        self.costs = BytesToFlops(batch_size * (1.0 - 1.0 / self.dom_configs[:,
+        self.costs = WordsToFlops(batch_size * (1.0 - 1.0 / self.dom_configs[:,
             -1]))
 
         # Gradient update costs
@@ -1090,7 +1066,7 @@ class Broadcast(Ops):
 
         # Cost of distributing different slices
         elems = np.prod(self.dom_configs, axis=1)
-        self.costs = BytesToFlops(elems)
+        self.costs = WordsToFlops(elems)
 
 
 class Extend(Ops):
@@ -1112,7 +1088,7 @@ class Extend(Ops):
 
         # Cost of distributing different slices
         elems = np.prod(self.dom_configs, axis=1)
-        self.costs = BytesToFlops(elems)
+        self.costs = WordsToFlops(elems)
 
 
 # Repeat operations in 'ops' 'num_steps' times. Used to create, for e.g., RNN
