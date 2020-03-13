@@ -565,7 +565,11 @@ class FC(Ops):
         self.out_tsr_configs = self.dom_configs[:, :-1]
 
         # Compute the costs for configs
-        self.costs = ComputeGemmCosts(self.dom, self.dom_configs, self.pw_op_cnt)
+        gemm_dom = (Prod(self.dom[:-2]),) + self.dom[-2:]
+        gemm_configs = np.concatenate((
+            np.prod(self.dom_configs[:,:-2], axis=1, keepdims=True),
+            self.dom_configs[:,-2:]), axis=1)
+        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
 
 
 class Einsum(Ops):
@@ -611,8 +615,11 @@ class Einsum(Ops):
             else:
                 dims_to_sizes_map[d] = s
 
-        # First convert to list to preserve ordering
+        # First convert to list to preserve ordering. Keep the convention of
+        # (out_dims, reduction_dims) for dom
         dom_dims, dom_sizes = TransposeLists(dims_to_sizes_map.items())
+        dom = tuple(dims_to_sizes_map[d] for d in out_dims) + tuple(
+                dims_to_sizes_map[d] for d in reduction_dims_set)
         out_tsr = tuple(dims_to_sizes_map[d] for d in out_dims)
 
         # Indices
@@ -625,7 +632,7 @@ class Einsum(Ops):
         self.in2_tsr_indices = dims_to_indices(in2_dims)
         self.out_tsr_indices = dims_to_indices(out_dims)
 
-        super().__init__(dom_sizes, (tsr1, tsr2), Tensor(out_tsr), n_procs)
+        super().__init__(dom, (tsr1, tsr2), Tensor(out_tsr), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
@@ -688,7 +695,7 @@ class Conv(Ops):
         gemm_dom = (b * h_o * w_o, n, c * r * s)
         gemm_m = np.prod(self.dom_configs[:, (b_idx, h_idx, w_idx)],
                 axis=1, keepdims=True)
-        gemm_n = self.dom_configs[:, n_idx].reshape(-1, 1)
+        gemm_n = self.dom_configs[:, n_idx:n_idx+1]
         gemm_k = np.prod(self.dom_configs[:, (c_idx, r_idx, s_idx)],
                 axis=1, keepdims=True)
         gemm_configs = np.concatenate((gemm_m, gemm_n, gemm_k), axis=1)

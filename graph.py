@@ -284,6 +284,7 @@ def RNNLM(b):
     rnn = nn_ops.LSTM(embed, num_units, num_layers)(0)
 
     # Dense + loss
+    assert rnn == (b, max_seq_len, num_units)
     y = nn_ops.FC(rnn, vocab_size)(0)
     loss = nn_ops.SoftmaxCrossEntropy(y)(0)
     return nn_ops.Ops.G
