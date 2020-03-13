@@ -592,9 +592,10 @@ class Einsum(Ops):
 
         m_dims_set = in1_dims_set - (batch_dims_set | reduction_dims_set)
         n_dims_set = in2_dims_set - (batch_dims_set | reduction_dims_set)
-        assert (m_dims_set in out_dims_set) and (n_dims_set in out_dims_set)
-        assert (m_dims_set not in in2_dims_set) and (
-                n_dims_set not in in1_dims_set)
+        assert (m_dims_set.issubset(out_dims_set)) and (
+                n_dims_set.issubset(out_dims_set))
+        assert not (m_dims_set & in2_dims_set) and not (
+                n_dims_set & in1_dims_set)
 
         # TODO: This can be relaxed by inserting dummy 'm' & 'n' dims of size 1
         if len(m_dims_set) < 1 or len(n_dims_set) < 1:
@@ -612,10 +613,10 @@ class Einsum(Ops):
 
         # First convert to list to preserve ordering
         dom_dims, dom_sizes = TransposeLists(dims_to_sizes_map.items())
-        out_tsr = tuple(dims_to_size_map[d] for d in out_dims)
+        out_tsr = tuple(dims_to_sizes_map[d] for d in out_dims)
 
         # Indices
-        dims_to_indices = lambda dims: [self.dom_dims.indices(d) for d in dims]
+        dims_to_indices = lambda dims: [dom_dims.index(d) for d in dims]
         self.batch_indices = dims_to_indices(batch_dims_set)
         self.m_indices = dims_to_indices(m_dims_set)
         self.n_indices = dims_to_indices(n_dims_set)
@@ -632,7 +633,7 @@ class Einsum(Ops):
         gemm_dom = [self.dom[d] for d in self.batch_indices] + [
                 Prod(self.dom[d] for d in self.m_indices),
                 Prod(self.dom[d] for d in self.n_indices),
-                prod(self.dom[d] for d in self.reduction_indices)]
+                Prod(self.dom[d] for d in self.reduction_indices)]
 
         gemm_configs = (self.dom_configs[:,self.batch_indices],
                 np.prod(self.dom_configs[:,self.m_indices], axis=1, keepdims=True),
@@ -714,8 +715,9 @@ class Conv(Ops):
         self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
 
         # Add costs for ghost communications
-        self.costs += ComputeGhostCommCosts(self.GetInTensor(0),
-                self.in_tsr_configs, self.dom[r_idx], self.dom[s_idx])
+        if not no_halo_exchange:
+            self.costs += ComputeGhostCommCosts(self.GetInTensor(0),
+                    self.in_tsr_configs, self.dom[r_idx], self.dom[s_idx])
 
 
 # Pooling - Maxpool, Avgpool
@@ -903,6 +905,8 @@ class Softmax(Ops):
 
 
 class SoftmaxCrossEntropy(Ops):
+    # TODO: Currently softmax axis is -1 by default. Add an axis parameter to
+    # support other axes.
     def __init__(self, in_tsr, n_procs=None):
         super().__init__(in_tsr, in_tsr, Tensor(in_tsr), n_procs)
 
@@ -1009,8 +1013,7 @@ class LSTM(Ops):
         layer_dim, seq_dim, batch_dim, n_dim, k_dim = range(5)
 
         # Prevent splitting sequence dimension
-        dom = self.dom[:]
-        dom[seq_dim] = 1
+        dom = self.dom[:seq_dim] + (1,) + self.dom[seq_dim+1:]
         self.dom_config_tuples = GetConfigs(dom, self.n_procs)
         super().ComputeCosts()
 
@@ -1029,7 +1032,7 @@ class LSTM(Ops):
         # lazy all-reduction optimization of shared weight update.
         gemm_dom = (self.dom[0], self.dom[1]*self.dom[2], 4*self.dom[3],
                 2*self.dom[4])
-        gemm_configs = np.concatenate((self.dom_configs[:,0],
+        gemm_configs = np.concatenate((self.dom_configs[:,:1],
             np.prod(self.dom_configs[:,1:3], axis=1, keepdims=True),
             self.dom_configs[:,3:]), axis=1)
         self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, pw_op_cnt=3)
@@ -1037,10 +1040,13 @@ class LSTM(Ops):
         # Amount of words to be communicated for reshaping the output of each
         # LSTM cell into its input (to be fed to next layer, and next iteration
         # of same layer)
-        lstm_cell_out_tsr = (self.dom[batch_dim], self.dom[n_dim])
-        lstm_cell_in_tsr = (self.dom[batch_dim], self.dom[k_dim])
+        # TODO: Should we ignore_area_intersection when pipelining layer?
         lstm_cell_out_configs = self.dom_configs[:, batch_dim:n_dim+1]
         lstm_cell_in_configs = self.dom_configs[:, (batch_dim, k_dim)]
+        lstm_cell_out_tsr = ((self.dom[batch_dim], self.dom[n_dim]) /
+                lstm_cell_out_configs)
+        lstm_cell_in_tsr = ((self.dom[batch_dim], self.dom[k_dim]) /
+                lstm_cell_in_configs)
         words = GetAreaNeeded(lstm_cell_out_tsr, lstm_cell_in_tsr,
                 lstm_cell_out_configs, lstm_cell_in_configs)
 

@@ -267,7 +267,25 @@ def Inception3(b, aux_logits=False):
 
     # Softmax + cross-entropy loss
     loss = nn_ops.SoftmaxCrossEntropy(fc.GetOutTensor(0))
+    return nn_ops.Ops.G
 
+
+def RNNLM(b):
+    num_layers = 2
+    vocab_size = 100000
+    num_units = 2048
+    max_seq_len = 256
+
+    # Embedding
+    inp_tsr = nn_ops.InputTensor((b, max_seq_len))
+    embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
+
+    # RNN
+    rnn = nn_ops.LSTM(embed, num_units, num_layers)(0)
+
+    # Dense + loss
+    y = nn_ops.FC(rnn, vocab_size)(0)
+    loss = nn_ops.SoftmaxCrossEntropy(y)(0)
     return nn_ops.Ops.G
 
 
