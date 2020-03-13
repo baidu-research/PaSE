@@ -201,14 +201,13 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs,
             np.prod(np.minimum(tgt_data_sizes, src_data_sizes), axis=1))
 
     # Area that needs to be communicated
-    return (tgt_area - area_intersection)
+    return (tgt_area - area_intersection).clip(min=0)
 
 
 # Returns edge costs for different configs. Edge cost is computed using the
 # difference b/w tensor volume needed per proc by the target vertex and the tensor
 # volume held per proc by the source vertex.
-def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True,
-        ignore_area_intersection=False):
+def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True):
     # Calculate the domains per processor
     src_tsr_per_proc = tsr / src_cfgs
     tgt_tsr_per_proc = tsr / tgt_cfgs
@@ -226,13 +225,8 @@ def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True,
     # from tgt to src during bwd phase
     # Multiply the area by 2 for forward and backward phases
     area_needed = GetAreaNeeded(src_tsr_per_proc, tgt_tsr_per_proc, src_procs,
-            tgt_procs, ignore_area_intersection).clip(min=0) * 2.0
+            tgt_procs) * 2.0
     return WordsToFlops(area_needed)
-
-
-def GetSelfEdgeCosts(tsr, src_cfgs, tgt_cfgs, ignore_area_intersection):
-    return GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=False,
-            ignore_area_intersection=ignore_area_intersection)
 
 
 def GetConvolutedSize(h, w, r, s, stride, pad):
@@ -276,7 +270,7 @@ class Ops():
         for i, t in enumerate(self.out_tsrs):
             Ops.tsr_to_node_id[id(t)] = (node_id, i)
 
-    def AddEdge(self, src_tsr, tgt_tsr_idx, ignore_area_intersection=False):
+    def AddEdge(self, src_tsr, tgt_tsr_idx):
         try:
             src, src_tsr_idx = Ops.tsr_to_node_id[id(src_tsr)]
             tgt = self.node_id
@@ -292,13 +286,7 @@ class Ops():
         src_cfgs = src_op.GetOutTensorConfigs(src_tsr_idx)
         tgt_cfgs = tgt_op.GetInTensorConfigs(tgt_tsr_idx)
     
-        if src_op == tgt_op:
-            self.costs += GetSelfEdgeCosts(src_tsr, src_cfgs, tgt_cfgs,
-                    ignore_area_intersection)
-            return
-    
-        costs = GetEdgeCosts(src_tsr, src_cfgs, tgt_cfgs,
-                ignore_area_intersection=ignore_area_intersection)
+        costs = GetEdgeCosts(src_tsr, src_cfgs, tgt_cfgs)
         idx = pd.MultiIndex.from_product([src_op.dom_config_tuples,
             tgt_op.dom_config_tuples], names=[str(src), str(tgt)])
         costs = pd.Series(costs, index=idx, name='cost')
@@ -432,7 +420,7 @@ def GetFlatteningCost(tsr1, tsr2, tsr1_configs, tsr2_configs):
     src_procs = np.prod(tsr1_configs, axis=1)
     tgt_procs = np.prod(tsr2_configs, axis=1)
     words = GetAreaNeeded(tsr1_per_proc, new_tsr1_per_proc, src_procs,
-            tgt_procs).clip(min=0) * 2.0
+            tgt_procs) * 2.0
 
     return WordsToFlops(words)
 
