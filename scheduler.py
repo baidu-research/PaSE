@@ -272,7 +272,7 @@ def main():
             help="Model size. (Default: 128)")
     parser.add_argument("-g", "--graph", type=str, required=False,
             choices=['alexnet', 'resnet101', 'inception3', 'rnnlm',
-                'seq2seq', 'transformer'],
+                'transformer'],
             default='alexnet', help="Neural net graph. (Default: 'alexnet')")
     parser.add_argument('-a', '--arch', type=int, required=False, default=1,
             choices=[0, 1], help='Architecture. 0: P100, 1: DGX')

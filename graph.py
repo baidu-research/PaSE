@@ -320,30 +320,30 @@ def Transformer(b):
         eq = 'sble,shek->sbhlk'
         qkv = nn_ops.Stack((q, k, v))(0)
         wqkv = nn_ops.InputTensor((3, heads, embed_dim, d_k))
-        qkv = nn_ops.Einsum(eq, qkv, wqkv, trainable=True)(0)
+        qkv = nn_ops.Einsum(eq, qkv, wqkv)(0)
         q, k, v = nn_ops.Unstack(qkv)()
 
         # Dot-product attention
         eq = 'bhlk,bhmk->bhlm' # Memory length: m = l
-        logits = nn_ops.Einsum(eq, q, k, trainable=False)(0)
+        logits = nn_ops.Einsum(eq, q, k)(0)
         weights = nn_ops.Softmax(logits, axis=3)(0)
         eq = 'bhlm,bhmk->bhlk'
-        scores = nn_ops.Einsum(eq, weights, v, trainable=False)(0)
+        scores = nn_ops.Einsum(eq, weights, v)(0)
 
         # Final linear layer
         wo = nn_ops.InputTensor((heads, embed_dim, d_k))
         eq = 'bhlk,hek->ble'
-        return nn_ops.Einsum(eq, scores, wo, trainable=True)
+        return nn_ops.Einsum(eq, scores, wo)
 
     # Feed-forward network: FF + relu + dropout + FF
     def FeedFwd(inp_tsr):
         eq = 'ble,ef->blf'
         w = nn_ops.InputTensor((embed_dim, ff_dim))
-        ff = nn_ops.Einsum(eq, inp_tsr, w, trainable=True, pw_op_cnt=2)(0)
+        ff = nn_ops.Einsum(eq, inp_tsr, w, pw_op_cnt=2)(0)
 
         eq = 'blf,fe->ble'
         w = nn_ops.InputTensor((ff_dim, embed_dim))
-        return nn_ops.Einsum(eq, ff, w, trainable=True)
+        return nn_ops.Einsum(eq, ff, w)
 
     # Encoder layer
     def Encoder(inp_tsr):
@@ -388,144 +388,9 @@ def Transformer(b):
     # Linear + Softmax + cross-entropy loss
     eq = 'ble,ev->blv'
     w = nn_ops.InputTensor((embed_dim, vocab_size))
-    dec = nn_ops.Einsum(eq, dec, w, trainable=True)(0)
+    dec = nn_ops.Einsum(eq, dec, w)(0)
     loss = nn_ops.SoftmaxCrossEntropy(dec)
     return nn_ops.Ops.G
-
-def Seq2seq(b):
-    num_layers = 4
-    vocab_size = 50000
-    num_units = embed_dim = 1024
-    max_seq_len = 512
-    unroll_factor = 1
-    assert max_seq_len % unroll_factor == 0
-    repeat_steps = int(max_seq_len / unroll_factor)
-
-    def RNNLoop(hidden=None, context=None, attention_fn=None,
-            entry_nodes=[]):
-        hidden = hidden or [None] * num_layers
-        assert len(hidden) == num_layers
-
-        inp = nn_ops.InputTensor((b,))
-        kdim = (2 + (context is not None)) * num_units
-        ws = [nn_ops.Variable(nn_ops.InputTensor(
-            (kdim, 4*num_units)))(0) for _ in range(num_layers)]
-
-        repeat_ops = []
-        outputs = []
-        for i in range(unroll_factor):
-            # Embedding
-            cell_input_op = nn_ops.Embedding(inp, vocab_size, embed_dim)
-            repeat_ops.append(cell_input_op)
-
-            # RNN layers
-            stack = []
-            next_context = None
-            for j in range(num_layers):
-                cell_input_op = nn_ops.LSTMCell(cell_input_op(0), embed_dim,
-                        ws[j], hidden[j], context=context)
-                stack.append(cell_input_op)
-
-                if j == 0 and (attention_fn is not None):
-                    attention_ops = attention_fn(cell_input_op(0))
-                    repeat_ops += attention_ops
-                    next_context = attention_ops[-1](0)
-            context = next_context
-            repeat_ops += stack
-
-            outputs.append(stack[-1](0))
-            hidden = [s(0) for s in stack]
-            if i == 0:
-                first_stack = stack
-
-        # Create back edges
-        for op1, op2 in zip(first_stack, stack):
-            op2.AddEdge(op1(0), 0)
-        try: # If we computed attention, create edges from it
-            attention = attention_ops[-1](0)
-            [op.AddEdge(attention, 0) for op in first_stack]
-        except UnboundLocalError:
-            pass
-
-        # Repeat RNN 'repeat_steps' times
-        entry_edges = [e for e in nn_ops.Ops.G.out_edges(entry_nodes)]
-        nn_ops.Repeat(repeat_ops, repeat_steps, entry_edges)
-
-        # Repeat outputs 'repeat_steps' times
-        out = nn_ops.Stack(outputs, axis=1)
-        out = nn_ops.Extend(out(0), repeat_steps, axis=1)
-
-        return out, hidden
-
-    # Encoder
-    enc_out, hidden = RNNLoop()
-
-    # Attention
-    attn_w = nn_ops.InputTensor((embed_dim, embed_dim))
-    attn_dense = nn_ops.Einsum('ble,ef->blf', enc_out(0), attn_w,
-            trainable=True)(0)
-
-    def AttnFn(x):
-        weights = nn_ops.Einsum('ble,be->bl', attn_dense, x)
-        score = nn_ops.Softmax(weights(0), axis=1)
-        context = nn_ops.Einsum('bl,ble->be', score(0), enc_out(0),
-                trainable=False)
-        return [weights, score, context]
-
-    # Decoder
-    context = nn_ops.InputTensor((b, embed_dim))
-    dec_out, _ = RNNLoop(hidden, context, AttnFn, [attn_dense])
-
-    # Final projection + Loss
-    w = nn_ops.InputTensor((embed_dim, vocab_size))
-    proj = nn_ops.Einsum('ble,ev->blv', dec_out(0), w, trainable=True)(0)
-    loss = nn_ops.SoftmaxCrossEntropy(proj)
-    return nn_ops.Ops.G
-
-
-def RNNLM(b):
-    num_layers = 2
-    vocab_size = 50000
-    num_units = 2048
-    max_seq_len = 512
-    unroll_factor = 2
-    assert max_seq_len % unroll_factor == 0
-    repeats = max_seq_len // unroll_factor
-
-    #inp_tsr = nn_ops.InputTensor((b, max_seq_len))
-    #embed = nn_ops.Embedding(inp_tsr, vocab_size, num_units)(0)
-    #xs = nn_ops.Unstack(embed, axis=1)()
-    ws = [nn_ops.Variable(nn_ops.InputTensor((2*num_units, 4*num_units)))(0) for
-            _ in range(num_layers)]
-
-    hs = [None] * num_layers
-    ys = []
-    repeat_ops = []
-    for i in range(unroll_factor):
-        inp_tsr = nn_ops.InputTensor((b,))
-        x = nn_ops.Embedding(inp_tsr, vocab_size, num_units)
-        repeat_ops.append(x)
-        for j in range(num_layers):
-            x = nn_ops.LSTMCell(x(0), num_units, ws[j], hs[j])
-            repeat_ops.append(x)
-            hs[j] = x(0)
-        ys.append(x(0))
-
-    # Add back edges
-    for i in range(num_layers):
-        src = repeat_ops[-num_layers+i]
-        tgt = repeat_ops[1+i]
-        assert isinstance(src, nn_ops.LSTMCell)
-        assert isinstance(tgt, nn_ops.LSTMCell)
-        tgt.AddEdge(src.GetOutTensor(0), 0, ignore_area_intersection=True)
-    nn_ops.Repeat(repeat_ops, repeats)
-    ys *= repeats
-
-    ys = nn_ops.Stack(ys, axis=1)(0)
-    ys = nn_ops.FC(ys, vocab_size)(0)
-    loss = nn_ops.SoftmaxCrossEntropy(ys)(0)
-    return nn_ops.Ops.G
-
 
 # Creates the graph for the model
 def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs, arch):
@@ -538,8 +403,6 @@ def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs, arch):
         G = ResNet101(batch_size)
     elif graph_type == 'inception3':
         G = Inception3(batch_size)
-    elif graph_type == 'seq2seq':
-        G = Seq2seq(batch_size)
     elif graph_type == 'transformer':
         G = Transformer(batch_size)
     elif graph_type == 'rnnlm':

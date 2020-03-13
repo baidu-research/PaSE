@@ -97,7 +97,7 @@ def GetAllReduceCost(words, procs):
 
 
 def GetGemmCompCosts(dom_per_proc, pw_op_cnt):
-    m_idx, n_idx, k_idx = 0, 1, 2 
+    m_idx, n_idx, k_idx = 0, 1, 2
 
     # 1 GEMM in fwd phase, 2 GEMMs in bwd phase
     costs = np.prod(dom_per_proc, axis=1) * 3.0
@@ -111,7 +111,7 @@ def GetGemmCompCosts(dom_per_proc, pw_op_cnt):
     return costs
 
 def GetGemmCommCosts(dom_per_proc, dom_configs):
-    m_idx, n_idx, k_idx = 0, 1, 2 
+    m_idx, n_idx, k_idx = 0, 1, 2
 
     # Cost for reducing the output during fwd phase. Reduction dim: k
     words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
@@ -133,13 +133,13 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
     assert len(dom_configs.shape) == 2 and len(dom) == dom_configs.shape[-1]
 
     # Combine multiple batch dimensions into a single batch dim
-    if len(dom) > 3: 
+    if len(dom) > 3:
       dom = (Prod(dom[:-2]),) + dom[-2:]
       dom_configs = np.concatenate((np.prod(dom_configs[:,:-2], axis=1,
         keepdims=True), dom_configs[:,-2:]), axis=1)
 
-    assert len(dom) == dom_configs.shape[-1] == 3 
-    m_idx, n_idx, k_idx = 0, 1, 2 
+    assert len(dom) == dom_configs.shape[-1] == 3
+    m_idx, n_idx, k_idx = 0, 1, 2
     dom_per_proc = dom / dom_configs
 
     return (GetGemmCompCosts(dom_per_proc, pw_op_cnt) +
@@ -581,10 +581,8 @@ class FC(Ops):
         self.costs = ComputeGemmCosts(self.dom, self.dom_configs, self.pw_op_cnt)
 
 
-# TODO: Remove trainable
 class Einsum(Ops):
-    def __init__(self, eq, tsr1, tsr2, trainable=False, n_procs=None,
-            pw_op_cnt=0):
+    def __init__(self, eq, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
         tsr_dims, out_dims = eq.split('->')
         tsr1_dims, tsr2_dims = tsr_dims.split(',')
 
@@ -595,13 +593,12 @@ class Einsum(Ops):
         self.tsr2_dims = tsr2_dims
         self.out_dims = out_dims
         self.pw_op_cnt = pw_op_cnt
-        self.trainable = trainable
 
         self.tsr1_dim_set = tsr1_dim_set = set(tsr1_dims)
         self.tsr2_dim_set = tsr2_dim_set = set(tsr2_dims)
         self.out_dim_set = out_dim_set = set(out_dims)
-        self.reduced_dim_set = reduced_dim_set = (tsr1_dim_set & tsr2_dim_set) \
-                - out_dim_set
+        self.reduced_dim_set = reduced_dim_set = (
+                (tsr1_dim_set & tsr2_dim_set) - out_dim_set)
         assert len(reduced_dim_set) > 0
 
         assert len(tsr1_dim_set) == len(tsr1_dims)
@@ -627,8 +624,8 @@ class Einsum(Ops):
         # Configurations
         idx1 = tuple(self.dom_dims.index(d) for d in self.tsr1_dims)
         idx2 = tuple(self.dom_dims.index(d) for d in self.tsr2_dims)
-        self.in_tsr_configs = (self.dom_configs[:, idx1], self.dom_configs[:,
-            idx2])
+        self.in_tsr_configs = (self.dom_configs[:, idx1],
+                self.dom_configs[:, idx2])
         self.out_tsr_configs = self.dom_configs[:, :len(self.out_dims)]
 
         # Batch dimensions are the ones in output dim that are common in tsr1
@@ -659,6 +656,7 @@ class Einsum(Ops):
         self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
                 self.pw_op_cnt)
 
+        # TODO: Fix this. don't multiply batch due to lazy all-reduce issue
         # Multiply the costs by batch sizes
         batch_idx = tuple(self.dom_dims.index(d) for d in batch_dim_set)
         batch_dom = tuple(self.dom[i] for i in batch_idx)
@@ -667,9 +665,8 @@ class Einsum(Ops):
         self.costs *= batches_per_proc
 
 
-# TODO: Remove trainable
 # Batched matmul
-def MatMul(tsr1, tsr2, trainable=False, n_procs=None, pw_op_cnt=0):
+def MatMul(tsr1, tsr2, n_procs=None, pw_op_cnt=0):
     # Both tensors should be of same rank and >=2, inner most two dimensions
     # correspond to valid GEMM, and outer dimensions should match.
     assert len(tsr1) == len(tsr2) >= 2
@@ -680,7 +677,7 @@ def MatMul(tsr1, tsr2, trainable=False, n_procs=None, pw_op_cnt=0):
     batch_dims = dims[:-3]
     m, n, k = dims[-3:]
     eq = f'{batch_dims}{m}{k},{batch_dims}{k}{n}->{batch_dims}{m}{n}'
-    return Einsum(eq, tsr1, tsr2, trainable, n_procs, pw_op_cnt)
+    return Einsum(eq, tsr1, tsr2, n_procs, pw_op_cnt)
 
 
 # Convolution
@@ -1000,7 +997,7 @@ def Embedding(in_tsr, vocab_size, embedding_dim, n_procs=None):
     eq = dim_names[:-1] + ',' + dim_names[-2:] + '->' + dim_names[:-2] \
             + dim_names[-1]
     w = InputTensor((vocab_size, embedding_dim))
-    return Einsum(eq, in_tsr, w, trainable=True, n_procs=n_procs)
+    return Einsum(eq, in_tsr, w, n_procs=n_procs)
 
 
 # An RNN op with LSTM cells
@@ -1061,101 +1058,4 @@ class LSTM(Ops):
                 self.in_tsr_configs[:,layer_dim],
                 self.out_tsr_configs[:,layer_dim])
         self.costs += WordsToFlops(words)
-
-
-class LSTMCell(Ops):
-    def __init__(self, in_tsr, num_units, w=None, hidden=None, context=None, n_procs=None):
-        kdim = (2 + (context is not None)) * num_units
-        assert len(in_tsr) > 1
-        assert in_tsr[-1] == num_units
-        assert w is None or (len(w) == 2
-                and w[0] == kdim
-                and w[1] == 4 * num_units)
-        self.w = w
-        self.hidden = hidden
-        self.context = context
-
-        # Input tensor is concatenated with hidden state tensor and attention
-        # tensor along axis -1.
-        # LSTM cell concats 4 weight matrices along n-dimension, and the output
-        # is split into 4 tensors along axis -1, and elementwise mul and add are
-        # performed. We create 'dom' corresponding just 1 GEMM, so that the 4
-        # parts are equally distributed, thus eliminating any comm cost before
-        # elementwise ops. Cost is corrected later to account for 4 GEMMs. In
-        # the actual implementation, this is achieved by permuting the weight
-        # matrix corresponding to the distribution, so that no real comm cost is
-        # incurred before elementwise ops.
-        dom = in_tsr[:-1] + (num_units, kdim)
-        out_tsr = Tensor(dom[:-1])
-        in_tsrs = in_tsr,
-        CheckAndAdd = lambda x: in_tsrs if x is None else in_tsrs + (x,)
-        in_tsrs = CheckAndAdd(hidden)
-        in_tsrs = CheckAndAdd(context)
-        in_tsrs = CheckAndAdd(w)
-        super().__init__(dom, in_tsrs, out_tsr, n_procs)
-
-    def ComputeCosts(self):
-        super().ComputeCosts()
-
-        self.in_tsr_configs = (np.delete(self.dom_configs, -2, axis=1),) * (
-                1 + (self.hidden != None) + (self.context != None))
-        if self.w is not None:
-            self.in_tsr_configs = self.in_tsr_configs + (
-                    self.dom_configs[:, (-1,-2)],)
-        self.out_tsr_configs = self.dom_configs[:, :-1]
-
-        # Costs of GEMMs
-        gemm_dom = list(self.dom)
-        gemm_dom[-2] *= 4
-        self.costs = ComputeGemmCosts(gemm_dom, self.dom_configs, pw_op_cnt=1)
-
-        # Costs of final elementwise ops
-        num_elems = np.prod(self.dom_configs, axis=1)
-        self.costs += (5 * num_elems)
-
-class Extend(Ops):
-    def __init__(self, in_tsr, size, axis=0, n_procs=None):
-        self.axis = axis = AdjustAxis(in_tsr, axis)
-        assert in_tsr[axis] < size
-
-        out_tsr = list(in_tsr)
-        out_tsr[axis] = size
-        dom = list(out_tsr)
-        super().__init__(dom, in_tsr, Tensor(out_tsr), n_procs)
-
-    def ComputeCosts(self):
-        super().ComputeCosts()
-
-        self.in_tsr_configs = np.copy(self.dom_configs)
-        self.in_tsr_configs[:, self.axis] = 1
-        self.out_tsr_configs = self.dom_configs
-
-        # Cost of distributing different slices
-        elems = np.prod(self.dom_configs, axis=1)
-        self.costs = WordsToFlops(elems)
-
-
-# Repeat operations in 'ops' 'num_steps' times. Used to create, for e.g., RNN
-# loops. Any outside edges to 'ops' that need to be replicated are specified in
-# 'additional_edges'
-def Repeat(ops, num_steps, additional_edges=[]):
-    # Get node and edge cost attributes
-    G = Ops.G
-    vert_costs = nx.get_node_attributes(G, 'costs')
-    edge_costs = nx.get_edge_attributes(G, 'costs')
-    node_ids = set(op.node_id for op in ops)
-
-    # Scale node costs by 'num_steps'
-    for op in ops:
-        op.costs *= num_steps
-
-    # Scale edge costs by num_steps. Only consider edges b/w 'Ops'
-    edges = set(e for e in itertools.chain(G.in_edges(node_ids),
-        G.out_edges(node_ids)))
-    for s, t in edges:
-        if s in node_ids and t in node_ids:
-            edge_costs[(s, t)] *= num_steps
-
-    for edge in additional_edges:
-        edge_costs[edge] *= num_steps
 
