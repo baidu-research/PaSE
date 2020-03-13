@@ -12,6 +12,10 @@ def Prod(v):
     return reduce(op.mul, v, 1)
 
 
+def TransposeLists(l):
+    return [list(x) for x in zip(*l)]
+
+
 def AdjustAxis(tsr, axis):
     if axis < 0:
         axis = len(tsr) + axis
@@ -130,20 +134,15 @@ def GetGemmCommCosts(dom_per_proc, dom_configs):
     return costs
 
 def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
+    assert len(dom) == dom_configs.shape[-1] >= 3
     assert len(dom_configs.shape) == 2 and len(dom) == dom_configs.shape[-1]
 
-    # Combine multiple batch dimensions into a single batch dim
-    if len(dom) > 3:
-      dom = (Prod(dom[:-2]),) + dom[-2:]
-      dom_configs = np.concatenate((np.prod(dom_configs[:,:-2], axis=1,
-        keepdims=True), dom_configs[:,-2:]), axis=1)
-
-    assert len(dom) == dom_configs.shape[-1] == 3
-    m_idx, n_idx, k_idx = 0, 1, 2
     dom_per_proc = dom / dom_configs
+    batches_per_proc = np.prod(dom_per_proc[:,:-3], axis=1)
+    gemm_per_proc = dom_per_proc[:,-3:]
 
-    return (GetGemmCompCosts(dom_per_proc, pw_op_cnt) +
-            GetGemmCommCosts(dom_per_proc, dom_configs))
+    return (batches_per_proc *  (GetGemmCompCosts(gemm_per_proc, pw_op_cnt) +
+        GetGemmCommCosts(gemm_per_proc, dom_configs[:,-3:])))
 
 
 # Ghost communication costs for convolution, pooling
@@ -583,86 +582,81 @@ class FC(Ops):
 
 class Einsum(Ops):
     def __init__(self, eq, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
-        tsr_dims, out_dims = eq.split('->')
-        tsr1_dims, tsr2_dims = tsr_dims.split(',')
-
-        assert len(tsr1) == len(tsr1_dims)
-        assert len(tsr2) == len(tsr2_dims)
-
-        self.tsr1_dims = tsr1_dims
-        self.tsr2_dims = tsr2_dims
-        self.out_dims = out_dims
+        in_dims, out_dims = eq.split('->')
+        in1_dims, in2_dims = in_dims.split(',')
         self.pw_op_cnt = pw_op_cnt
 
-        self.tsr1_dim_set = tsr1_dim_set = set(tsr1_dims)
-        self.tsr2_dim_set = tsr2_dim_set = set(tsr2_dims)
-        self.out_dim_set = out_dim_set = set(out_dims)
-        self.reduced_dim_set = reduced_dim_set = (
-                (tsr1_dim_set & tsr2_dim_set) - out_dim_set)
-        assert len(reduced_dim_set) > 0
+        # Dimension sets
+        in1_dims_set, in2_dims_set, out_dims_set = (
+                set(d) for d in (in1_dims, in2_dims, out_dims))
+        in_dims_set = (in1_dims_set | in2_dims_set)
 
-        assert len(tsr1_dim_set) == len(tsr1_dims)
-        assert len(tsr2_dim_set) == len(tsr2_dims)
-        assert len(out_dim_set) == len(out_dims)
-        assert out_dim_set.issubset(tsr1_dim_set | tsr2_dim_set)
-        self.dom_dims = tuple(out_dims) + tuple(reduced_dim_set)
+        # Sanity checks
+        assert out_dims_set.issubset(in_dims_set)
+        assert in_dims_set.issubset(set(string.ascii_letters))
+        assert len(in1_dims) == len(in1_dims_set)
+        assert len(in2_dims) == len(in2_dims_set)
+        assert len(out_dims) == len(out_dims_set)
 
-        self.tsr1_dim_map = tsr1_dim_map = {i:j for i,j in zip(tsr1_dims, tsr1)}
-        self.tsr2_dim_map = tsr2_dim_map = {i:j for i,j in zip(tsr2_dims, tsr2)}
-        assert all(tsr1_dim_map[d] == tsr2_dim_map[d] for d in tsr1_dim_set &
-                tsr2_dim_set)
+        common_dims_set = in1_dims_set & in2_dims_set
+        batch_dims_set = common_dims_set & out_dims_set
+        reduction_dims_set = common_dims_set - out_dims_set
 
-        out_tsr = tuple(tsr1_dim_map[d] if d in tsr1_dim_set else
-                tsr2_dim_map[d] for d in out_dims)
-        dom = out_tsr + tuple(tsr1_dim_map[d] if d in tsr1_dim_set else
-                tsr2_dim_map[d] for d in reduced_dim_set)
-        super().__init__(dom, (tsr1, tsr2), Tensor(out_tsr), n_procs)
+        m_dims_set = in1_dims_set - (batch_dims_set | reduction_dims_set)
+        n_dims_set = in2_dims_set - (batch_dims_set | reduction_dims_set)
+        assert (m_dims_set in out_dims_set) and (n_dims_set in out_dims_set)
+        assert (m_dims_set not in in2_dims_set) and (
+                n_dims_set not in in1_dims_set)
+
+        # TODO: This can be relaxed by inserting dummy 'm' & 'n' dims of size 1
+        if len(m_dims_set) < 1 or len(n_dims_set) < 1:
+            raise NotImplementedError
+
+        # Dimension maps
+        dims_to_sizes_map = {}
+        for d, s in zip(in1_dims, tsr1):
+            dims_to_sizes_map[d] = s
+        for d, s in zip(in2_dims, tsr2):
+            if d in dims_to_sizes_map:
+                assert dims_to_sizes_map[d] == s
+            else:
+                dims_to_sizes_map[d] = s
+
+        # First convert to list to preserve ordering
+        dom_dims, dom_sizes = TransposeLists(dims_to_sizes_map.items())
+        out_tsr = tuple(dims_to_size_map[d] for d in out_dims)
+
+        # Indices
+        dims_to_indices = lambda dims: [self.dom_dims.indices(d) for d in dims]
+        self.batch_indices = dims_to_indices(batch_dims_set)
+        self.m_indices = dims_to_indices(m_dims_set)
+        self.n_indices = dims_to_indices(n_dims_set)
+        self.reduction_indices = dims_to_indices(reduction_dims_set)
+        self.in1_tsr_indices = dims_to_indices(in1_dims)
+        self.in2_tsr_indices = dims_to_indices(in2_dims)
+        self.out_tsr_indices = dims_to_indices(out_dims)
+
+        super().__init__(dom_sizes, (tsr1, tsr2), Tensor(out_tsr), n_procs)
 
     def ComputeCosts(self):
         super().ComputeCosts()
 
-        # Configurations
-        idx1 = tuple(self.dom_dims.index(d) for d in self.tsr1_dims)
-        idx2 = tuple(self.dom_dims.index(d) for d in self.tsr2_dims)
-        self.in_tsr_configs = (self.dom_configs[:, idx1],
-                self.dom_configs[:, idx2])
-        self.out_tsr_configs = self.dom_configs[:, :len(self.out_dims)]
+        gemm_dom = [self.dom[d] for d in self.batch_indices] + [
+                Prod(self.dom[d] for d in self.m_indices),
+                Prod(self.dom[d] for d in self.n_indices),
+                prod(self.dom[d] for d in self.reduction_indices)]
 
-        # Batch dimensions are the ones in output dim that are common in tsr1
-        # and tsr2
-        batch_dim_set = self.tsr1_dim_set & self.tsr2_dim_set & self.out_dim_set
-        # m_dims and n_dims are non-batch, non-reduced dimensions
-        m_dim_set = self.tsr1_dim_set - (batch_dim_set | self.reduced_dim_set)
-        n_dim_set = self.tsr2_dim_set - (batch_dim_set | self.reduced_dim_set)
+        gemm_configs = (self.dom_configs[:,self.batch_indices],
+                np.prod(self.dom_configs[:,self.m_indices], axis=1, keepdims=True),
+                np.prod(self.dom_configs[:,self.n_indices], axis=1, keepdims=True),
+                np.prod(self.dom_configs[:,self.reduction_indices], axis=1,
+                    keepdims=True))
+        gemm_configs = np.concatenate(gemm_configs, axis=1)
 
-        def GetCfgs(dim_set):
-            if not dim_set:
-                dom = 1
-                dom_config = np.ones([self.dom_configs.shape[0], 1])
-            else:
-                idx = tuple(self.dom_dims.index(d) for d in dim_set)
-                dom = Prod(self.dom[i] for i in idx)
-                dom_config = np.prod(self.dom_configs[:, idx], axis=1,
-                        keepdims=True)
-
-            return dom, dom_config
-
-        # Ignore the batches, and compute the cost for GEMM
-        m_dom, m_config = GetCfgs(m_dim_set)
-        n_dom, n_config = GetCfgs(n_dim_set)
-        k_dom, k_config = GetCfgs(self.reduced_dim_set)
-        gemm_dom = (m_dom, n_dom, k_dom)
-        gemm_dom_configs = np.concatenate((m_config, n_config, k_config), axis=1)
-        self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
-                self.pw_op_cnt)
-
-        # TODO: Fix this. don't multiply batch due to lazy all-reduce issue
-        # Multiply the costs by batch sizes
-        batch_idx = tuple(self.dom_dims.index(d) for d in batch_dim_set)
-        batch_dom = tuple(self.dom[i] for i in batch_idx)
-        batches_per_proc = np.prod(batch_dom / self.dom_configs[:, batch_idx],
-                axis=1)
-        self.costs *= batches_per_proc
+        self.in_tsr_configs = (self.dom_configs[:,self.in1_tsr_indices],
+                self.dom_configs[:,self.in2_tsr_indices])
+        self.out_tsr_configs = self.dom_configs[:,self.out_tsr_indices]
+        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
 
 
 # Batched matmul
@@ -1024,7 +1018,7 @@ class LSTM(Ops):
         super().__init__(dom, in_tsr, out_tsr, n_procs)
 
     def ComputeCosts(self):
-        layer_dim, seq_dim = 0, 1
+        layer_dim, seq_dim, batch_dim, n_dim, k_dim = range(5)
 
         # Prevent splitting sequence dimension
         dom = self.dom[:]
@@ -1039,23 +1033,31 @@ class LSTM(Ops):
         self.in_tsr_configs = self.dom_configs[:, in_axes]
         self.out_tsr_configs = self.dom_configs[:, out_axes]
 
-        # Cost of LSTM per layer. We don't batch 'layer' dim here, since each
-        # layer has its own weight matrix, while weights are shared along
-        # sequence dim.  We have 8 such slices of identically configured GEMMs,
-        # 2 along k-dim and 4 along n-dim.
-        gemm_dom = self.dom[1:] # Remove layer dimension
-        gemm_dom[-2] *= 4
-        gemm_dom[-1] *= 2
-        self.costs = ComputeGEMMLayerCosts(gemm_dom, self.dom_configs, pw_op_cnt=3)
+        # Cost of computing LSTM. We have 8 such slices of identically
+        # configured GEMMs, 2 along k-dim and 4 along n-dim.
+        # GEMM batch dim: LSTM layers. Lstm layers can be processed by
+        # different processors in parallel through wavefront parallelism.
+        # GEMM m-dim: batch*seq_len. Note: This automatically correctly handles
+        # lazy all-reduction optimization of shared weight update.
+        gemm_dom = (self.dom[0], self.dom[1]*self.dom[2], 4*self.dom[3],
+                2*self.dom[4])
+        gemm_configs = np.concatenate((self.dom_configs[:,0],
+            np.prod(self.dom_configs[:,1:3], axis=1, keepdims=True),
+            self.dom_configs[:,3:]), axis=1)
+        self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, pw_op_cnt=3)
 
-        # Cost for all lstm layers. Lstm layers can be processed by different
-        # processors in parallel through wavefront parallelism.
-        layers_per_proc = self.dom[layer_dim] / self.dom_configs[:,layer_dim]
-        self.costs *= layers_per_proc
+        # Amount of words to be communicated for reshaping the output of each
+        # LSTM cell into its input (to be fed to next layer, and next iteration
+        # of same layer)
+        lstm_cell_out_tsr = (self.dom[batch_dim], self.dom[n_dim])
+        lstm_cell_in_tsr = (self.dom[batch_dim], self.dom[k_dim])
+        lstm_cell_out_configs = self.dom_configs[:, batch_dim:n_dim+1]
+        lstm_cell_in_configs = self.dom_configs[:, (batch_dim, k_dim)]
+        words = GetAreaNeeded(lstm_cell_out_tsr, lstm_cell_in_tsr,
+                lstm_cell_out_configs, lstm_cell_in_configs)
 
-        # Inter lstm-layer communication costs
-        words = GetAreaNeeded(self.in_tsr, self.out_tsr,
-                self.in_tsr_configs[:,layer_dim],
-                self.out_tsr_configs[:,layer_dim])
-        self.costs += WordsToFlops(words)
+        # Reshaping cost along sequence dim along same lstm layers, and b/w
+        # layers
+        self.costs += ((self.dom[layer_dim] * self.dom[seq_dim]) *
+                WordsToFlops(words))
 
