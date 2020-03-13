@@ -96,50 +96,54 @@ def GetAllReduceCost(words, procs):
     return WordsToFlops(chunks * steps) # When procs = 1, the cost is 0
 
 
-# TODO: Remove trainable flag
-def ComputeGemmCosts(dom, dom_configs, pw_op_cnt, trainable=True):
+def GetGemmCompCosts(dom_per_proc, pw_op_cnt):
+    m_idx, n_idx, k_idx = 0, 1, 2 
+
+    # 1 GEMM in fwd phase, 2 GEMMs in bwd phase
+    costs = np.prod(dom_per_proc, axis=1) * 3.0
+
+    # pw_op_cnt includes 1 fwd differentiation, 1 bwd differentiation, and 1
+    # hadamard product (from chain rule) per pw_op
+    if pw_op_cnt > 0:
+        costs += ((3 * pw_op_cnt) * np.prod(dom_per_proc[:, m_idx:n_idx+1],
+            axis=1))
+
+    return costs
+
+def GetGemmCommCosts(dom_per_proc, dom_configs):
+    m_idx, n_idx, k_idx = 0, 1, 2 
+
+    # Cost for reducing the output during fwd phase. Reduction dim: k
+    words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
+    costs = GetAllReduceCost(words, dom_configs[:, k_idx])
+
+    # Cost for reducing the output during input gradient computation. Reduction
+    # dim: n
+    words = np.prod(dom_per_proc[:, (m_idx, k_idx)], axis=1)
+    costs += GetAllReduceCost(words, dom_configs[:, n_idx])
+
+    # Cost for reducing the output during weights gradient computation.
+    # Reduction dim: m
+    words = np.prod(dom_per_proc[:, n_idx:k_idx+1], axis=1)
+    costs += GetAllReduceCost(words, dom_configs[:, m_idx])
+
+    return costs
+
+def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
     assert len(dom_configs.shape) == 2 and len(dom) == dom_configs.shape[-1]
 
     # Combine multiple batch dimensions into a single batch dim
-    if len(dom) > 3:
+    if len(dom) > 3: 
       dom = (Prod(dom[:-2]),) + dom[-2:]
       dom_configs = np.concatenate((np.prod(dom_configs[:,:-2], axis=1,
         keepdims=True), dom_configs[:,-2:]), axis=1)
 
-    assert len(dom) == dom_configs.shape[-1] == 3
-    m_idx, n_idx, k_idx = 0, 1, 2
+    assert len(dom) == dom_configs.shape[-1] == 3 
+    m_idx, n_idx, k_idx = 0, 1, 2 
     dom_per_proc = dom / dom_configs
 
-    # Cost for 1 GEMM in fwd phase + 2 GEMMs in bwd phase
-    costs = np.prod(dom_per_proc, axis=1)
-    if trainable:
-        costs *= 3.0
-
-    # Cost of pointwise op
-    if pw_op_cnt > 0:
-        pw_cost = dom_per_proc[:, m_idx] * dom_per_proc[:, n_idx]
-        # 1 differentiation op in bwd phase, and 1 hadamard product in bwd phase
-        coeff = 1 + (trainable * 2)
-        costs += coeff * pw_op_cnt * pw_cost 
-    
-    # Cost for reducing the output during fwd phase
-    words = np.prod(dom_per_proc[:, m_idx:n_idx+1], axis=1)
-    costs += GetAllReduceCost(words, dom_configs[:, k_idx])
-
-    # Cost for input gradient computation. All-reduction is along axis 'n'
-    words = np.prod(dom_per_proc[:, (m_idx, k_idx)], axis=1)
-    costs += GetAllReduceCost(words, dom_configs[:, n_idx])
-    
-    # Cost for weight gradient computation. All-reduction is along axis 'm'
-    if trainable:
-        weights_per_proc = dom_per_proc[:, k_idx] * dom_per_proc[:, n_idx]
-
-        # Matrix addition cost for weight update
-        costs += weights_per_proc
-        # Cost for gradient update during bwd phase
-        costs += GetAllReduceCost(weights_per_proc, dom_configs[:, m_idx])
-
-    return costs
+    return (GetGemmCompCosts(dom_per_proc, pw_op_cnt) +
+            GetGemmCommCosts(dom_per_proc, dom_configs))
 
 
 # Ghost communication costs for convolution, pooling
@@ -181,6 +185,11 @@ def RowCartesianProd(arr1, arr2):
 
 def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs,
         ignore_area_intersection=False):
+    if len(src_procs.shape) > 1:
+        src_procs = np.prod(src_procs, axis=1)
+    if len(tgt_procs.shape) > 1:
+        tgt_procs = np.prod(tgt_procs, axis=1)
+
     # Area needed by the target vertex
     tgt_area = np.prod(tgt_data_sizes, axis=1)
     if ignore_area_intersection:
@@ -571,44 +580,8 @@ class FC(Ops):
         # Compute the costs for configs
         self.costs = ComputeGemmCosts(self.dom, self.dom_configs, self.pw_op_cnt)
 
-'''
-# Batched matmul
-class MatMul(Ops):
-    def __init__(self, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
-        # Both tensors should be of same rank and >=2, inner most two dimensions
-        # correspond to valid GEMM, and outer dimensions should match.
-        assert len(tsr1) == len(tsr2) >= 2
-        assert tsr1[-1] == tsr2[-2]
-        assert all(t1 == t2 for t1, t2 in zip(tsr1[:-2], tsr2[:-2]))
-        self.pw_op_cnt = pw_op_cnt
 
-        dom = tsr1[:-1] + (tsr2[-1], tsr2[-2])
-        in_tsrs = (tsr1, tsr2)
-        out_tsr = Tensor(dom[:-1])
-        super().__init__(dom, in_tsrs, out_tsr, n_procs)
-
-    def ComputeCosts(self):
-        super().ComputeCosts()
-
-        # Configurations
-        m_idx, n_idx, k_idx = -3, -2, -1
-        batch_dims = list(range(self.dom_configs.shape[1] - 3))
-        self.in_tsr_configs = (self.dom_configs[:, batch_dims + [m_idx, k_idx]],
-                self.dom_configs[:, batch_dims + [k_idx, n_idx]])
-        self.out_tsr_configs = self.dom_configs[:, :-1]
-
-        # Compute the cost for a single GEMM, and multiply it with the number of
-        # batches per proc
-        gemm_dom = self.dom[-3:]
-        gemm_dom_configs = self.dom_configs[:,-3:]
-        self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
-                self.pw_op_cnt, trainable=False)
-        batches_per_proc = np.prod(self.dom[:-3] / self.dom_configs[:,:-3],
-                axis=1)
-        assert batches_per_proc.shape == self.costs.shape
-        self.costs *= batches_per_proc
-'''
-
+# TODO: Remove trainable
 class Einsum(Ops):
     def __init__(self, eq, tsr1, tsr2, trainable=False, n_procs=None,
             pw_op_cnt=0):
@@ -684,7 +657,7 @@ class Einsum(Ops):
         gemm_dom = (m_dom, n_dom, k_dom)
         gemm_dom_configs = np.concatenate((m_config, n_config, k_config), axis=1)
         self.costs = ComputeGemmCosts(gemm_dom, gemm_dom_configs,
-                self.pw_op_cnt, trainable=self.trainable)
+                self.pw_op_cnt)
 
         # Multiply the costs by batch sizes
         batch_idx = tuple(self.dom_dims.index(d) for d in batch_dim_set)
@@ -694,6 +667,7 @@ class Einsum(Ops):
         self.costs *= batches_per_proc
 
 
+# TODO: Remove trainable
 # Batched matmul
 def MatMul(tsr1, tsr2, trainable=False, n_procs=None, pw_op_cnt=0):
     # Both tensors should be of same rank and >=2, inner most two dimensions
@@ -1029,6 +1003,66 @@ def Embedding(in_tsr, vocab_size, embedding_dim, n_procs=None):
     return Einsum(eq, in_tsr, w, trainable=True, n_procs=n_procs)
 
 
+# An RNN op with LSTM cells
+class LSTM(Ops):
+    def __init__(self, in_tsr, num_units, num_layers, n_procs=None):
+        assert in_tsr[-1] == num_units
+        batch_size, seq_len, _ = in_tsr
+        self.num_layers = num_layers
+        self.num_units = num_units
+
+        # LSTM cell concats 4 weight matrices along n-dimension, and the output
+        # is split into 4 tensors along axis -1, and elementwise mul and add are
+        # performed. We create 'dom' corresponding just 1 GEMM, so that the 4
+        # parts are equally distributed, thus eliminating any comm cost before
+        # elementwise ops. Cost is corrected later to account for 4 GEMMs. In
+        # the actual implementation, this is achieved by permuting the weight
+        # matrix corresponding to the distribution, so that no real comm cost is
+        # necessary for elementwise ops.
+        # Further we stack different layers and sequences along the
+        # most-significant axis. A config that splits these axes provides
+        # pipelined parallelism across layers/sequences.
+        dom = (num_layers, seq_len, batch_size, num_units, num_units)
+        out_tsr = Tensor(in_tsr)
+        super().__init__(dom, in_tsr, out_tsr, n_procs)
+
+    def ComputeCosts(self):
+        layer_dim, seq_dim = 0, 1
+
+        # Prevent splitting sequence dimension
+        dom = self.dom[:]
+        dom[seq_dim] = 1
+        self.dom_config_tuples = GetConfigs(dom, self.n_procs)
+        super().ComputeCosts()
+
+        in_axes = 2, 1, 4 # Batch, seq, in dims
+        out_axes = 2, 1, 3 # Batch, seq, out dims
+        assert tuple(self.dom[i] for i in in_axes) == self.in_tsrs[0]
+        assert tuple(self.dom[i] for i in out_axes) == self.out_tsrs[0]
+        self.in_tsr_configs = self.dom_configs[:, in_axes]
+        self.out_tsr_configs = self.dom_configs[:, out_axes]
+
+        # Cost of LSTM per layer. We don't batch 'layer' dim here, since each
+        # layer has its own weight matrix, while weights are shared along
+        # sequence dim.  We have 8 such slices of identically configured GEMMs,
+        # 2 along k-dim and 4 along n-dim.
+        gemm_dom = self.dom[1:] # Remove layer dimension
+        gemm_dom[-2] *= 4
+        gemm_dom[-1] *= 2
+        self.costs = ComputeGEMMLayerCosts(gemm_dom, self.dom_configs, pw_op_cnt=3)
+
+        # Cost for all lstm layers. Lstm layers can be processed by different
+        # processors in parallel through wavefront parallelism.
+        layers_per_proc = self.dom[layer_dim] / self.dom_configs[:,layer_dim]
+        self.costs *= layers_per_proc
+
+        # Inter lstm-layer communication costs
+        words = GetAreaNeeded(self.in_tsr, self.out_tsr,
+                self.in_tsr_configs[:,layer_dim],
+                self.out_tsr_configs[:,layer_dim])
+        self.costs += WordsToFlops(words)
+
+
 class LSTMCell(Ops):
     def __init__(self, in_tsr, num_units, w=None, hidden=None, context=None, n_procs=None):
         kdim = (2 + (context is not None)) * num_units
@@ -1078,25 +1112,6 @@ class LSTMCell(Ops):
         # Costs of final elementwise ops
         num_elems = np.prod(self.dom_configs, axis=1)
         self.costs += (5 * num_elems)
-
-# numpy-like broadcast along a new axis 'axis' of length 'num_copies'
-class Broadcast(Ops):
-    def __init__(self, in_tsr, num_copies, axis=0, n_procs=None):
-        self.axis = axis = AdjustAxis(in_tsr, axis)
-        out_tsr = Tensor(in_tsr[:axis] + (num_copies,) + in_tsr[axis:])
-        dom = list(out_tsr)
-        super().__init__(dom, in_tsr, out_tsr, n_procs)
-
-    def ComputeCosts(self):
-        super().ComputeCosts()
-
-        self.in_tsr_configs = np.delete(self.dom_configs, self.axis, axis=1)
-        self.out_tsr_configs = self.dom_configs
-
-        # Cost of distributing different slices
-        elems = np.prod(self.dom_configs, axis=1)
-        self.costs = WordsToFlops(elems)
-
 
 class Extend(Ops):
     def __init__(self, in_tsr, size, axis=0, n_procs=None):
