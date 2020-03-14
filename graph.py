@@ -275,6 +275,8 @@ def RNNLM(b):
     vocab_size = 100000
     num_units = 2048
     max_seq_len = 256
+    nn_ops.Ops.SetCutoff(1) # This allows splitting along layer dim for
+                            # pipelined parallelism
 
     # Embedding
     inp_tsr = nn_ops.InputTensor((b, max_seq_len))

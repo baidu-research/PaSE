@@ -78,7 +78,7 @@ def MakePair(v):
 
 # Generates list of configurations for an operation
 # cutoff - Minimum domain size to reduce search space
-def GetConfigs(dom, n_procs, cutoff = 4):
+def GetConfigs(dom, n_procs, cutoff):
     dim = len(dom)
 
     proc_set = []
@@ -246,10 +246,14 @@ class Ops():
     default_procs = 0 # Can be set once and reused for the entire graph.
     default_arch = 0
     tsr_to_node_id = {}
+    cutoff = 4 # Cutoff for getconfigs()
 
     def SetDefaultArch(arch):
         Ops.default_arch = arch
         WordsToFlops(1, arch)
+
+    def SetCutoff(cutoff):
+        Ops.cutoff = cutoff
 
     def AddVertex(self):
         try:
@@ -336,7 +340,8 @@ class Ops():
         try:
           self.dom_configs = np.array(self.dom_config_tuples)
         except AttributeError:
-          self.dom_config_tuples = GetConfigs(self.dom, self.n_procs)
+          self.dom_config_tuples = GetConfigs(self.dom, self.n_procs,
+                  self.cutoff)
           self.dom_configs = np.array(self.dom_config_tuples)
         assert self.dom_configs.ndim == 2
 
@@ -443,7 +448,7 @@ def ConfigureReshape(op):
 
     # Pick only the configs that split the domain contiguously
     op.dom_config_tuples = list(filter(is_contiguous, GetConfigs(op.dom,
-        op.n_procs)))
+        op.n_procs, op.cutoff)))
     op.dom_configs = np.array(op.dom_config_tuples)
 
     [in_tsr] = op.in_tsrs
@@ -711,7 +716,8 @@ class Conv(Ops):
             config_dom = list(self.dom)
             config_dom[h_idx] = 1
             config_dom[w_idx] = 1
-            self.dom_config_tuples = GetConfigs(config_dom, self.n_procs)
+            self.dom_config_tuples = GetConfigs(config_dom, self.n_procs,
+                    self.cutoff)
         super().ComputeCosts()
         self.in_tsr_configs = self.dom_configs[:, b_idx:w_idx+1]
         self.out_tsr_configs = self.dom_configs[:, (b_idx, n_idx, h_idx, w_idx)]
@@ -1021,7 +1027,7 @@ class LSTM(Ops):
 
         # Prevent splitting sequence dimension
         dom = self.dom[:seq_dim] + (1,) + self.dom[seq_dim+1:]
-        self.dom_config_tuples = GetConfigs(dom, self.n_procs)
+        self.dom_config_tuples = GetConfigs(dom, self.n_procs, self.cutoff)
         super().ComputeCosts()
 
         in_axes = 2, 1, 4 # Batch, seq, in dims
