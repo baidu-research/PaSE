@@ -274,7 +274,7 @@ def main():
             choices=['alexnet', 'resnet101', 'inception3', 'rnnlm',
                 'transformer'],
             default='alexnet', help="Neural net graph. (Default: 'alexnet')")
-    parser.add_argument('-a', '--arch', type=int, required=False, default=1,
+    parser.add_argument('-a', '--arch', type=int, required=False, default=0,
             choices=[0, 1], help='Architecture. 0: P100, 1: DGX')
     parser.add_argument("--profile", dest="profile", action='store_true',
             help="Turn on/off profiling.")
