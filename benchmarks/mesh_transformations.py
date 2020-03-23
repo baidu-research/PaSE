@@ -6,287 +6,262 @@ import tensorflow as tf
 import mesh_tensorflow as mtf
 
 import utils
-from utils import TransposeLists, FlattenList, DeviceIndex, RandName
 
-'''
-def HasDGXLink(x, y):
-    return (x//4 == y//4) or (y == x+4)
 
-def PnumToDeviceID(mesh_impl, pnums):
-    return [DeviceIndex(mesh_impl.devices[p]) for p in pnums]
-
-# Replication function specialized for DGX network topology
-def ReplicateOnDGX(tsrs, gpu_ids):
-    if isinstance(gpu_ids[0], str) or isinstance(gpu_ids[0], tf.DeviceSpec):
-        gpu_ids = [DeviceIndex(g) for g in gpu_ids]
-
-    num_gpus = len(gpu_ids)
-    assert len(tsrs) <= 4
-    assert bool(num_gpus and 
-            not (num_gpus & (num_gpus-1))) # num_gpus is a power of 2
-
-    gpu_ids = sorted(gpu_ids)
-    assert gpu_ids[-1] < 8
-    assert all((not tsr.device) or (
-            DeviceIndex(tsr.device) == gpu_ids[i]) 
-            for i, tsr in enumerate(tsrs))
-
-    for i in range(len(tsrs)):
-        with tf.device(f'/device:GPU:{gpu_ids[i]}'):
-            tsrs[i] = tf.identity(tsrs[i])
-
-    if len(tsrs) < 2:
-        with tf.device(f'/device:GPU:{gpu_ids[1]}'):
-            assert HasDGXLink(gpu_ids[0], gpu_ids[1])
-            tsrs.append(tf.identity(tsrs[0]))
-
-    if len(tsrs) < 4 and num_gpus > 2:
-        for i in range(2):
-            with tf.device(f'/device:GPU:{gpu_ids[i+2]}'):
-                assert HasDGXLink(gpu_ids[i], gpu_ids[i+2])
-                tsrs.append(tf.identity(tsrs[i]))
-
-    if num_gpus > 4:
-        for i in range(4):
-            with tf.device(f'/device:GPU:{gpu_ids[i+4]}'):
-                assert HasDGXLink(gpu_ids[i], gpu_ids[i+4])
-                tsrs.append(tf.identity(tsrs[i]))
-
-    assert len(tsrs) == num_gpus
-    return tsrs
-'''
-
-class ReplaceMeshOperation(mtf.Operation):
+class MeshReplacementOperation(mtf.Operation):
     def __init__(self, x, mesh, dim_names=None, name=None):
+        assert x.mesh != mesh
+
         self.old_mesh = x.mesh
         if isinstance(dim_names, mtf.Shape):
             dim_names = dim_names.dimension_names
-        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
-        assert x.mesh != mesh
-        assert len(dim_names) == len(x.shape)
+        self.new_dim_names = dim_names or x.shape.dimension_names
+
+        assert len(self.new_dim_names) == len(x.shape)
         self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
-            for name, dim in zip(dim_names, x.shape.dims)])
-        super().__init__([x], mesh=mesh, name=name or
-                'replace_mesh')
+            for name, dim in zip(self.new_dim_names, x.shape.dims)])
+
+        super().__init__([x], mesh=mesh, name=name or self.__class__.__name__)
         self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
 
     def gradient(self, grad_ys):
-        return ReplaceMeshOperation(grad_ys[0], self.old_mesh,
+        return self.__class__(grad_ys[0], self.old_mesh,
                 self.inputs[0].shape.dimension_names).outputs
 
+
+# Simple mesh replacement. Each processor is expected to contain same slice in
+# both old and new meshes.
+class ReplaceMeshOperation(MeshReplacementOperation):
     def lower(self, lowering):
         x = self.inputs[0]
+        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
         old_mesh_impl = lowering.mesh_impl(self.old_mesh)
         new_mesh_impl = lowering.mesh_impl(self)
 
         assert old_mesh_impl.shape.size == new_mesh_impl.shape.size
 
+        # Make sure the devices are in the same order
+        assert old_mesh_impl.devices == new_mesh_impl.devices
+
         # Make sure the slice shape is same in old and new mesh
-        assert old_mesh_impl.slice_shape(x.shape)  \
-                == new_mesh_impl.slice_shape(self.new_shape)
+        assert (old_mesh_impl.slice_shape(x.shape) ==
+                new_mesh_impl.slice_shape(self.new_shape))
 
         # Make sure that each processor in old and new meshes have same slices
         # of the original tensor
-        assert all(old_mesh_impl.slice_begin(x.shape, i) \
-                == new_mesh_impl.slice_begin(self.new_shape, i) \
+        assert all(old_mesh_impl.slice_begin(x.shape, i) ==
+                new_mesh_impl.slice_begin(self.new_shape, i) 
                 for i in range(old_mesh_impl.shape.size))
 
-        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
-        laid_out_tensor = \
-                new_mesh_impl.LaidOutTensor.from_tensor_list(input_slices)
+        laid_out_tensor = new_mesh_impl.LaidOutTensor.from_tensor_list(
+                input_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
-
 
 def ReplaceMesh(x, mesh, dim_names=None, name=None):
     return ReplaceMeshOperation(x, mesh, dim_names, name).outputs[0]
 
 
-class ReplaceMeshWithDuplicatesOperation(mtf.Operation):
-    def __init__(self, x, mesh, dim_names=None, axis=-1, name=None):
-        self.old_mesh = x.mesh
-        self.axis = axis
-        if isinstance(dim_names, mtf.Shape):
-            dim_names = dim_names.dimension_names
-        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
-        assert x.mesh != mesh
-        assert len(dim_names) == len(x.shape)
-        self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
-            for name, dim in zip(dim_names, x.shape.dims)])
-        super().__init__([x], mesh=mesh, name=name or
-                'replace_mesh_with_duplicates')
-        self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
-
-    def gradient(self, grad_ys):
-        return ReplaceMeshWithDuplicatesOperation(grad_ys[0], self.old_mesh,
-                self.inputs[0].shape.dimension_names, axis=self.axis).outputs
-
+# Replace mesh by adding/removing duplicate slices
+class ReplaceMeshWithDuplicatesOperation(MeshReplacementOperation):
     def lower(self, lowering):
         x = self.inputs[0]
         input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
+
         old_mesh_impl = lowering.mesh_impl(self.old_mesh)
         new_mesh_impl = lowering.mesh_impl(self)
         old_mesh_shape = old_mesh_impl.shape
         new_mesh_shape = new_mesh_impl.shape
+        old_devices = old_mesh_impl.devices
+        new_devices = new_mesh_impl.devices
         old_num_gpus = old_mesh_impl.shape.size
         new_num_gpus = new_mesh_impl.shape.size
         replicate = (new_num_gpus > old_num_gpus)
 
-        if new_num_gpus == old_num_gpus:
-            assert old_mesh_impl.devices == new_mesh_impl.devices
-            laid_out_tensor = \
-                    new_mesh_impl.LaidOutTensor.from_tensor_list(input_slices)
-            lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
-            return
-
-        # Make sure the slice shape is same in old and new mesh
-        assert old_mesh_impl.slice_shape(x.shape)  \
-                == new_mesh_impl.slice_shape(self.new_shape)
-
-        assert (old_mesh_shape.ndims == new_mesh_shape.ndims) or (self.axis >= 0
-                and abs(old_mesh_shape.ndims - new_mesh_shape.ndims) == 1)
-        if old_mesh_shape.ndims < new_mesh_shape.ndims:
-            mesh_dims = old_mesh_shape.dims
-            mesh_dims.insert(self.axis, mtf.Dimension(RandName(), 1))
-            old_mesh_shape = mtf.Shape(mesh_dims)
-        elif old_mesh_shape.ndims > new_mesh_shape.ndims:
-            mesh_dims = new_mesh_shape.dims
-            mesh_dims.insert(self.axis, mtf.Dimension(RandName(), 1))
-            new_mesh_shape = mtf.Shape(mesh_dims)
-        old_mesh_dims = old_mesh_shape.to_integer_list
-        new_mesh_dims = new_mesh_shape.to_integer_list
-
-        # Initialize output_slices with None
-        output_slices = [None] * new_num_gpus
-        def FillOutputSlices(slices, pnums):
-            assert len(slices) == len(pnums)
-            for p, tsr in zip(pnums, slices):
-                assert output_slices[p] == None
-                output_slices[p] = tsr
-
-        # Fill output_slices
-        new_to_old_pnum = [None] * new_num_gpus
-        for i, (o, n) in enumerate(zip(old_mesh_dims, new_mesh_dims)):
-            old_pg = mtf.processor_groups(old_mesh_shape, [i])
-            new_pg = mtf.processor_groups(new_mesh_shape, [i])
-            if replicate:
-                assert n >= o and n % o == 0
-                assert len(new_pg) >= len(old_pg)
-            else:
-                assert o >= n and o % n == 0
-                assert len(old_pg) >= len(new_pg)
-
-            if n == o:
+        # Get the axes along which slices need to be removed/replicated
+        axes = []
+        assert old_mesh_impl.ndims == new_mesh_impl.ndims
+        old_ma2ta = old_mesh_impl.tensor_layout(x).mesh_axis_to_tensor_axis(
+                old_mesh_impl.ndims)
+        new_ma2ta = new_mesh_impl.tensor_layout(x).mesh_axis_to_tensor_axis(
+                new_mesh_impl.ndims)
+        for i, (dim1, dim2) in enumerate(zip(old_mesh_shape, new_mesh_shape)):
+            if dim1.size == dim2.size:
                 continue
 
-            for old_g, new_g in zip(old_pg, new_pg):
-                tsrs = [input_slices[p] for p in old_g]
-                if n > o:
-                    #tsrs = ReplicateOnDGX(tsrs, PnumToDeviceID(new_mesh_impl,
-                    #    new_g))
-                    assert utils.is_power_of_2(len(old_g))
-                    assert utils.is_power_of_2(len(new_g))
-                    assert all(old_mesh_impl.devices[d1] ==
-                            new_mesh_impl.devices[d2] for d1, d2 in zip(old_g,
-                                new_g))
+            # Make sure the tensor is not split along the replication axis
+            assert (old_ma2ta[i] == new_ma2ta[i] == None)
+            if replicate:
+                assert dim2.size > dim1.size
+            else:
+                assert dim1.size > dim2.size
 
-                    while len(tsrs) < len(new_g):
-                        new_tsrs = []
-                        for t, g in zip(tsrs, new_g[len(tsrs):]):
-                            with tf.device(new_mesh_impl.devices[g]):
-                                new_tsrs.append(t)
-                        tsrs += new_tsrs
-                    assert len(tsrs) == len(new_g)
-                else:
-                    tsrs = tsrs[:n]
+            axes.append(i)
 
-                if __debug__:
-                    old_gs = old_g[:]
-                    new_gs = new_g[:]
-                    if len(old_gs) < len(new_gs):
-                        while len(old_gs) < len(new_gs):
-                            old_gs *= 2
-                        assert len(old_gs) == len(new_gs)
-                    for p_old, p_new in zip(old_gs, new_gs):
-                        assert new_to_old_pnum[p_new] == None
-                        new_to_old_pnum[p_new] = p_old
-                FillOutputSlices(tsrs, new_g)
+        # Get groups of processors that have same duplicate slices
+        old_groups = mtf.processor_groups(old_mesh_shape, axes)
+        new_groups = mtf.processor_groups(new_mesh_shape, axes)
+        assert len(old_groups) == len(new_groups)
 
-        # Make sure that each processor in old and new meshes have same slices
-        # of the original tensor
-        assert all(g is not None for g in new_to_old_pnum)
-        assert all(old_mesh_impl.slice_begin(x.shape, p_old) \
-                == new_mesh_impl.slice_begin(self.new_shape, p_new) \
-                for p_new, p_old in enumerate(new_to_old_pnum))
+        # Replicate/remove slices within each group
+        output_slices = [None] * new_num_gpus
+        for old_group, new_group in zip(old_groups, new_groups):
+            assert all(old_devices[i] == new_devices[j] for i, j in
+                    zip(old_group, new_group))
+
+            if replicate:
+                assert len(new_group) % len(old_group) == 0
+                ratio = len(new_group) // len(old_group)
+                old_group *= ratio
+
+                for old_pnum, new_pnum in zip(old_group, new_group):
+                    with tf.device(new_devices[new_pnum]):
+                        output_slices[new_pnum] = tf.identity(
+                                input_slices[old_pnum])
+
+            else:
+                for old_pnum, new_pnum in zip(old_group, new_group):
+                    assert (old_devices[old_pnum] == new_devices[new_pnum])
+                    assert ((not input_slices[old_pnum].device) or
+                            (input_slices[old_pnum].device ==
+                                new_devices[new_pnum]))
+                    output_slices[new_pnum] = input_slices[old_pnum]
 
         assert all(s is not None for s in output_slices)
-        laid_out_tensor = \
-                new_mesh_impl.LaidOutTensor.from_tensor_list(output_slices)
+        laid_out_tensor = new_mesh_impl.LaidOutTensor.from_tensor_list(
+                output_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
 
-
-def ReplaceMeshWithDuplicates(x, mesh, dim_names=None, axis=-1, name=None):
+def ReplaceMeshWithDuplicates(x, mesh, dim_names=None, name=None):
     return ReplaceMeshWithDuplicatesOperation(x, mesh, dim_names,
-            axis, name).outputs[0]
+            name).outputs[0]
 
+# Modification of mtf.combine_slices. More communication efficient than
+# mtf.combine_slices for our cases. Picks the slices from appropriate group when
+# 'tensor_axis' is none.
+def combine_slices(slices, tensor_shape, mesh_impl, pnum):
+    if tensor_shape.ndims == 0:
+        return slices[0]
 
-class ReplaceMeshWithIndependentAxesOperation(mtf.Operation):
-    # mesh: New mesh; dim_names: Dim names for 'x' in 'mesh'. If a dim_name is
-    # None, current name of that axis is used.
-    def __init__(self, x, mesh, dim_names=None, name=None):
-        if isinstance(dim_names, mtf.Shape):
-            dim_names = dim_names.dimension_names
-        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
-        assert x.mesh != mesh
-        assert len(dim_names) == len(x.shape)
-        self.old_mesh = x.mesh
-        self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
-            for name, dim in zip(dim_names, x.shape.dims)])
-        super().__init__([x], mesh=mesh, name=name or
-                'replace_mesh_independent_parallel_axes')
-        self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
+    def groups_generator():
+        mesh_shape = mesh_impl.shape
+        ndims = mesh_impl.ndims
+        mesh_size = mesh_shape.size
+        pnums = list(range(mesh_size))
+        for i in range(ndims):
+            axes = [j for j in range(ndims) if j != i]
+            group_ids = {p:mtf.pnum_to_group(mesh_shape, axes, p)
+                    for p in pnums}
 
-    def gradient(self, grad_ys):
-        return ReplaceMeshWithIndependentAxesOperation(grad_ys[0],
-                self.old_mesh, self.inputs[0].shape.dimension_names).outputs
+            group_id = group_ids[pnum % mesh_size]
+            pnums = [p for p,g in group_ids.items() if g == group_id]
+            devices = [mesh_impl.devices[p] for p in pnums]
 
+            yield group_id, devices
+
+    ret = slices[:]
+    assert len(ret) == mesh_impl.size
+    tensor_layout = mesh_impl.tensor_layout(tensor_shape)
+    tensor_axes = tensor_layout.mesh_axis_to_tensor_axis(mesh_impl.ndims)
+    group_info = groups_generator()
+    for mesh_axis, (mesh_dim, tensor_axis) in enumerate(zip(
+        mesh_impl.shape, tensor_axes)):
+        slice_size = len(ret) // mesh_dim.size
+        group_id, devices = next(group_info)
+        if tensor_axis is None:
+            start = group_id*slice_size
+            ret = ret[start:start+slice_size]
+            assert len(ret) == slice_size
+        else:
+            concat_inputs = []
+            for i in range(slice_size):
+                concat_inputs.append(
+                        [ret[i + slice_size * j] for j in range(mesh_dim.size)])
+            ret = mtf.parallel(
+                    devices, tf.concat, concat_inputs,
+                    axis=[tensor_axis] * len(devices))
+
+    assert len(ret) == 1
+    return ret[0]
+
+# Replace mesh when a tensor is split along different axes in old and new
+# meshes. Old and new meshes can have different sizes
+class ReplaceMeshWithIndependentAxesOperation(MeshReplacementOperation):
     def lower(self, lowering):
         x = self.inputs[0]
-        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
+        input_laid_out_tensor = lowering.tensors[x].to_laid_out_tensor()
+        input_slices = input_laid_out_tensor.tensor_list
+
         old_mesh_impl = lowering.mesh_impl(self.old_mesh)
         new_mesh_impl = lowering.mesh_impl(self)
+        old_mesh_shape = old_mesh_impl.shape
         new_mesh_shape = new_mesh_impl.shape
+        old_mesh_size = old_mesh_shape.size
+        new_mesh_size = new_mesh_shape.size
 
-        for old_dim, new_dim in zip(x.shape, self.new_shape):
+        assert ((old_mesh_impl.devices == new_mesh_impl.devices[:old_mesh_size]
+                    and new_mesh_size % old_mesh_size == 0)
+                or (old_mesh_impl.devices[:new_mesh_size] == new_mesh_impl.devices
+                    and old_mesh_size % new_mesh_size == 0))
+
+        # Remove/replicate redundant slices if needed
+        def remove_replicate(slices):
+            if new_mesh_size < old_mesh_size:
+                slices = slices[:new_mesh_size]
+            elif new_mesh_size > old_mesh_size:
+                slices = (slices * (new_mesh_size // old_mesh_size))
+            return slices
+
+        # Get the set of axes to be split/concatenated
+        split_axes, concat_axes = [], []
+        for i, (old_dim, new_dim) in enumerate(zip(x.shape, self.new_shape)):
             old_axis = old_mesh_impl.tensor_dimension_to_mesh_axis(old_dim)
             new_axis = new_mesh_impl.tensor_dimension_to_mesh_axis(new_dim)
-            if old_axis is not None and new_axis is not None:
-                raise ValueError('Parallel axes for the tensor in the old and new \
-                        meshes should be independent.')
 
-        # Split along new axes
-        slice_shape = mtf.Shape([mtf.Dimension(name, size) for name, size in
-            zip(self.new_dim_names, input_slices[0].get_shape().as_list())])
-        split_slices = [new_mesh_impl.make_slices(slice, slice_shape) \
-                for slice in input_slices]
-        assert all(len(s) == new_mesh_shape.size for s in split_slices)
-        for s in split_slices:
-            for i, d in enumerate(new_mesh_impl.devices):
-                with tf.device(d):
-                    s[i] = tf.identity(s[i])
-        assert all(len(slice) == new_mesh_shape.size for slice in split_slices)
+            is_old_dim_split = ((old_axis is not None) and
+                    (old_mesh_shape[old_axis].size != 1))
+            is_new_dim_split = ((new_axis is not None) and
+                    (new_mesh_shape[new_axis].size != 1))
+            if is_old_dim_split and is_new_dim_split:
+                raise ValueError('Parallel axes for the tensor '
+                        'in the old and new meshes should be independent.')
 
-        # Concat along old axes
-        output_slices = []
-        for dev, slices in zip(new_mesh_impl.devices, zip(*split_slices)):
-            assert all(s.device == dev for s in slices)
-            output_slices.append(old_mesh_impl.combine_slices(slices,
-                x.shape, device=dev))
-        assert len(output_slices) == new_mesh_shape.size
+            if is_old_dim_split and (not is_new_dim_split):
+                concat_axes.append((i, old_axis))
+            elif (not is_old_dim_split) and is_new_dim_split:
+                split_axes.append((i, new_axis))
 
-        laid_out_tensor = lowering.mesh_impl(
-                self).LaidOutTensor.from_tensor_list(output_slices)
-        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+        # Concatenate/split slices
+        if not concat_axes:
+            output_laid_out_tensor = new_mesh_impl.LaidOutTensor(
+                    remove_replicate(input_slices))
+            for ta, ma in split_axes:
+                output_laid_out_tensor = new_mesh_impl.allsplit(
+                        output_laid_out_tensor, ma, ta)
 
+        elif not split_axes:
+            output_laid_out_tensor = input_laid_out_tensor
+            for ta, ma in concat_axes:
+                output_laid_out_tensor = old_mesh_impl.allconcat(
+                        output_laid_out_tensor, ma, ta)
+            output_laid_out_tensor = new_mesh_impl.LaidOutTensor(
+                    remove_replicate(output_laid_out_tensor.tensor_list))
+
+        else:
+            # Split slices along new axes
+            slice_shape = mtf.Shape([mtf.Dimension(name, size) for name, size in
+                zip(self.new_dim_names, input_slices[0].shape.as_list())])
+            split_slices = [new_mesh_impl.make_slices(slice, slice_shape)
+                    for slice in input_slices]
+            split_slices = utils.TransposeLists(split_slices)
+            assert len(split_slices) == new_mesh_size
+
+            # Concat slices along old axes
+            output_slices = [combine_slices(slice, x.shape, old_mesh_impl, i)
+                    for i, slice in enumerate(split_slices)]
+            assert len(output_slices) == new_mesh_shape.size
+            output_laid_out_tensor = new_mesh_impl.LaidOutTensor(output_slices)
+
+        lowering.set_tensor_lowering(self.outputs[0], output_laid_out_tensor)
 
 def ReplaceMeshWithIndependentAxes(x, mesh, dim_names=None, name=None):
     return ReplaceMeshWithIndependentAxesOperation(x, mesh, dim_names,
@@ -294,121 +269,56 @@ def ReplaceMeshWithIndependentAxes(x, mesh, dim_names=None, name=None):
 
 
 # Split/concat slices along a mesh axis. We only consider tensors distributed
-# along one axis for now.
-class ReplaceMeshWithConcatSplitOperation(mtf.Operation):
-    def __init__(self, x, mesh, dim_names=None, name=None):
-        self.old_mesh = x.mesh
-        if isinstance(dim_names, mtf.Shape):
-            dim_names = dim_names.dimension_names
-        self.new_dim_names = dim_names = dim_names or x.shape.dimension_names
-        assert x.mesh != mesh
-        assert len(dim_names) == len(x.shape)
-        self.new_shape = mtf.Shape([mtf.Dimension(name or dim.name, dim.size)
-            for name, dim in zip(dim_names, x.shape.dims)])
-        super().__init__([x], mesh=mesh, name=name or
-                'replace_mesh_with_concat_split')
-        self._outputs = [mtf.Tensor(self, self.new_shape, x.dtype)]
-
-    def gradient(self, grad_ys):
-        return ReplaceMeshWithConcatSplitOperation(grad_ys[0], self.old_mesh,
-                self.inputs[0].shape.dimension_names).outputs
-
+# along most-significant axis on both old and new meshes for now.
+class ReplaceMeshWithConcatSplitOperation(MeshReplacementOperation):
     def lower(self, lowering):
         x = self.inputs[0]
-        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
+        input_laid_out_tensor = lowering.tensors[x].to_laid_out_tensor()
+        input_slices = input_laid_out_tensor.tensor_list
+
         old_mesh_impl = lowering.mesh_impl(self.old_mesh)
         new_mesh_impl = lowering.mesh_impl(self)
         old_mesh_shape = old_mesh_impl.shape
         new_mesh_shape = new_mesh_impl.shape
         old_mesh_ndims = old_mesh_shape.ndims
         new_mesh_ndims = new_mesh_shape.ndims
-
-        num_gpus = old_mesh_impl.shape.size
-        assert num_gpus == new_mesh_impl.shape.size
+        if old_mesh_impl.devices != new_mesh_impl.devices:
+            raise NotImplementedError
 
         old_ta2ma = old_mesh_impl.tensor_layout(
                 x.shape).tensor_axis_to_mesh_axis
         new_ta2ma = new_mesh_impl.tensor_layout(
                 self.new_shape).tensor_axis_to_mesh_axis
-        assert old_ta2ma == new_ta2ma
 
-        axis = -1
-        old_mesh_axis = -1
-        new_mesh_axis = -1
-        for i, (ma1, ma2) in enumerate(zip(old_ta2ma, new_ta2ma)):
-            # Either both ma1 and ma2 are none, or neither is none
-            if ma1 is None:
-                assert ma2 is None
-                continue
-            assert ma2 is not None
+        # Get mesh and tensor axes along which to concat/split. We only allow
+        # concat/split along one axis
+        [(old_ta, old_ma)] = [(i, ma) for i, ma in enumerate(old_ta2ma)
+                if ma is not None]
+        [(new_ta, new_ma)] = [(i, ma) for i, ma in enumerate(new_ta2ma)
+                if ma is not None]
+        if old_ta != new_ta:
+            raise NotImplementedError
+        if not (old_ma == new_ma == 0):
+            raise NotImplementedError
 
-            # We consider only the case where tensor is distributed along only
-            # one axis.
-            assert axis == old_mesh_axis == new_mesh_axis == -1
-            old_mesh_axis, new_mesh_axis = ma1, ma2
-            axis = i
+        # Perform concat/split
+        old_axis_size = old_mesh_shape[old_ma].size
+        new_axis_size = new_mesh_shape[new_ma].size
+        if old_axis_size > new_axis_size:
+            if new_mesh_ndims != 2:
+                raise NotImplementedError
+            output_laid_out_tensor = new_mesh_impl.allconcat(
+                    input_laid_out_tensor, 1, new_ta)
+        elif old_axis_size < new_axis_size:
+            if old_mesh_ndims != 2:
+                raise NotImplementedError
+            output_laid_out_tensor = old_mesh_impl.allsplit(
+                    input_laid_out_tensor, 1, old_ta)
+        else:
+            output_laid_out_tensor = input_laid_out_tensor
 
-        old_axis_size = old_mesh_shape[old_mesh_axis].size
-        new_axis_size = new_mesh_shape[new_mesh_axis].size
-
-        if old_axis_size == new_axis_size:
-            # If old and new axis sizes are same, there is nothing to
-            # concat/split.  Just return the original slices
-            output_slices = input_slices
-
-        elif old_axis_size > new_axis_size: # Concat
-            # We only consider the case where there is no replication in old
-            # mesh.
-            assert old_axis_size == num_gpus
-
-            assert old_axis_size % new_axis_size == 0
-            ratio = old_axis_size // new_axis_size
-
-            # We only consider this case for now, so we don't have to shuffle
-            # the concatenated slices
-            assert new_mesh_axis == 0
-
-            # Concat 'ratio' slices together
-            output_slices = []
-            for i in range(0, old_axis_size, ratio):
-                devices = [new_mesh_impl.devices[j] for j in range(i, i+ratio)]
-                output_slices += mtf.placement_mesh_impl.allconcat_ring(
-                        [input_slices[j] for j in range(i, i+ratio)],
-                        devices, axis)
-
-        else: # Split
-            # We only consider the case where there is no replication in new
-            # mesh.
-            assert new_axis_size == num_gpus
-
-            assert new_axis_size % old_axis_size == 0
-            ratio = new_axis_size // old_axis_size
-
-            output_slices = []
-            t_size = input_slices[0].shape[axis]
-            for i in range(0, new_axis_size, ratio):
-                start = 0
-                assert t_size % ratio == 0
-                step = t_size // ratio
-                slices = [slice(None) for _ in x.shape.dims]
-                slices[axis] = slice(start, start+step)
-
-                for j in range(i, i+ratio):
-                    t = input_slices[j]
-                    assert t.device == new_mesh_impl.devices[j]
-
-                    with tf.device(t.device):
-                        output_slices.append(t[slices])
-                    start += step
-                assert start == t_size
-
-        laid_out_tensor = lowering.mesh_impl(
-                self).LaidOutTensor.from_tensor_list(output_slices)
-        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
-
+        lowering.set_tensor_lowering(self.outputs[0], output_laid_out_tensor)
 
 def ReplaceMeshWithConcatSplit(x, mesh, dim_names=None, name=None):
     return ReplaceMeshWithConcatSplitOperation(x, mesh, dim_names,
             name=name).outputs[0]
-
-

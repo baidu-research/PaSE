@@ -13,6 +13,10 @@ def RandName(k=5):
     return ''.join(random.choices(string.ascii_letters + string.ascii_uppercase
         + string.digits, k=k))
 
+def GetMeshImpl(dev_cnts, devices=None):
+    if isinstance(devices, list):
+        devices = [utils.GetDeviceStr(0, d) for d in devices]
+    return utils.GetMeshImpl(dev_cnts, devices)
 
 def GetShape(dims):
     sh = []
@@ -43,7 +47,7 @@ def Transpose1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), mesh1:utils.GetMeshImpl([4,2])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), mesh1:GetMeshImpl([4,2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), ('axis1', shape[1]), *shape[2:]])
@@ -57,8 +61,8 @@ def Transpose2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), ('axis1', shape[1]), *shape[2:]])
@@ -72,8 +76,8 @@ def Transpose3(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), shape[1], ('axis1', shape[2]),
@@ -88,8 +92,8 @@ def Transpose4(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), shape[1], ('axis1', shape[2]),
@@ -104,7 +108,7 @@ def DependentAxes(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), mesh1:utils.GetMeshImpl([4,2])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), mesh1:GetMeshImpl([4,2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), ('axis1', shape[1]), *shape[2:]])
@@ -123,7 +127,7 @@ def Broadcast1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), mesh1:utils.GetMeshImpl([8])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), mesh1:GetMeshImpl([8])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), shape[1], ('axis1', shape[2]),
@@ -138,7 +142,7 @@ def Broadcast2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), mesh1:utils.GetMeshImpl([8])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), mesh1:GetMeshImpl([8])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), shape[1], ('axis1', shape[2]),
@@ -149,12 +153,27 @@ def Broadcast2(in_tsr):
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
+def Broadcast3(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), mesh1:GetMeshImpl([8])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([('axis0', shape[0]), shape[1], (shape[2]),
+        shape[3]])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithIndependentAxes(mtf_in_tsr, mesh1,
+            [RandName(), 'axis0', RandName(), RandName()])
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
 def Contract1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([8]), \
-            mesh1:utils.GetMeshImpl([4, 2])}
+    mesh_to_impl = {mesh0:GetMeshImpl([8]), \
+            mesh1:GetMeshImpl([4, 2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([*shape[:3], ('axis0', shape[3])])
@@ -168,8 +187,8 @@ def Contract2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([4, 2])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([4, 2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape)
@@ -183,8 +202,8 @@ def LessDevices1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape[:-2] + [('axis1', shape[2]), ('axis0', shape[3])])
@@ -198,8 +217,8 @@ def LessDevices2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2]), \
-            mesh1:utils.GetMeshImpl([4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2]), \
+            mesh1:GetMeshImpl([4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape[:-1] + [('axis0', shape[3])])
@@ -213,8 +232,8 @@ def MoreDevices(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2]), \
-            mesh1:utils.GetMeshImpl([8])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2]), \
+            mesh1:GetMeshImpl([8])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape[:-1] + [('axis0', shape[-1])])
@@ -228,8 +247,8 @@ def WrongShape(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), \
-            mesh1:utils.GetMeshImpl([8])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), \
+            mesh1:GetMeshImpl([8])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape[:-2] + [('axis0', shape[2]), ('axis0', shape[3])])
@@ -248,14 +267,13 @@ def Removal1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([1, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis1', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
-    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            ['axis0', None, None, None], axis=0)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -263,14 +281,13 @@ def Removal2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([1, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([shape[0], ('axis1', shape[1])] + shape[2:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
-    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            [None, 'axis0', None, None], axis=0)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -278,14 +295,13 @@ def Replication1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([1, 4]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
-    mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
+    mtf_shape = GetShape([('axis1', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
-    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            ['axis1', None, None, None], axis=0)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -293,14 +309,13 @@ def Replication2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([1, 4]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape)
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
-    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            [None, None, None, None], axis=0)
+    mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -308,14 +323,14 @@ def Replication3(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([2], [0, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([2, 1], [0, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            mtf_shape.dimension_names, axis=1)
+            mtf_shape.dimension_names)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -323,8 +338,8 @@ def Replication4(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 1]), \
-            mesh1:utils.GetMeshImpl([4, 1])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 1]), \
+            mesh1:GetMeshImpl([4, 1])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis1', shape[0])] + shape[1:])
@@ -338,14 +353,14 @@ def Replication5(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2], [0, 4]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 1], [0, 4]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
     mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
     mtf_out_tsr = mt.ReplaceMeshWithDuplicates(mtf_in_tsr, mesh1,
-            mtf_shape.dimension_names, axis=1)
+            mtf_shape.dimension_names)
     Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
 
 
@@ -353,8 +368,8 @@ def Concat1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([8]), \
-            mesh1:utils.GetMeshImpl([4], [0, 2, 4, 6])}
+    mesh_to_impl = {mesh0:GetMeshImpl([8]), \
+            mesh1:GetMeshImpl([4, 2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
@@ -368,8 +383,8 @@ def Split1(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4], [0, 2, 4, 6]), \
-            mesh1:utils.GetMeshImpl([8])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), \
+            mesh1:GetMeshImpl([8])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0])] + shape[1:])
@@ -383,8 +398,8 @@ def Concat2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), \
-            mesh1:utils.GetMeshImpl([2, 2], [0, 1, 4, 5])}
+    mesh_to_impl = {mesh0:GetMeshImpl([8]), \
+            mesh1:GetMeshImpl([4, 2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([shape[0], ('axis0', shape[1])] + shape[2:])
@@ -398,8 +413,23 @@ def Split2(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 2], [0, 1, 4, 5]), \
-            mesh1:utils.GetMeshImpl([4, 2])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([8])}
+
+    shape = in_tsr.get_shape().as_list()
+    mtf_shape = GetShape([shape[0], ('axis0', shape[1])] + shape[2:])
+    mtf_in_tsr = mtf.import_tf_tensor(mesh0, in_tsr, mtf_shape)
+    mtf_out_tsr = mt.ReplaceMeshWithConcatSplit(mtf_in_tsr, mesh1,
+            mtf_shape.dimension_names)
+    Run(graph, mesh_to_impl, in_tsr, mtf_out_tsr)
+
+
+def NoConcatSplit(in_tsr):
+    graph = mtf.Graph()
+    mesh0 = mtf.Mesh(graph, 'mesh0')
+    mesh1 = mtf.Mesh(graph, 'mesh1')
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), \
+            mesh1:GetMeshImpl([4, 2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([shape[0], ('axis0', shape[1])] + shape[2:])
@@ -413,8 +443,8 @@ def Concat3(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([2, 2], [0, 2, 4, 6])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([4, 2], [0, 2, 4, 6, 1, 3, 5, 7])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape[:2] + [('axis1', shape[2])] + shape[3:])
@@ -428,8 +458,8 @@ def Split3(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 2], [0, 2, 4, 6]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 2], [0, 2, 4, 6]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape(shape[:2] + [('axis1', shape[2])] + shape[3:])
@@ -443,8 +473,8 @@ def Concat4(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 4]), \
-            mesh1:utils.GetMeshImpl([2, 2], [0, 2, 4, 6])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 4]), \
+            mesh1:GetMeshImpl([2, 2], [0, 2, 4, 6])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), ('axis1', shape[1])] + shape[2:])
@@ -458,8 +488,8 @@ def Split4(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 2], [0, 2, 4, 6]), \
-            mesh1:utils.GetMeshImpl([2, 4])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 2], [0, 2, 4, 6]), \
+            mesh1:GetMeshImpl([2, 4])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), ('axis1', shape[1])] + shape[2:])
@@ -473,8 +503,8 @@ def Concat5(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([4, 2]), \
-            mesh1:utils.GetMeshImpl([2, 2], [0, 1, 4, 5])}
+    mesh_to_impl = {mesh0:GetMeshImpl([4, 2]), \
+            mesh1:GetMeshImpl([2, 2], [0, 1, 4, 5])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), ('axis1', shape[1])] + shape[2:])
@@ -488,8 +518,8 @@ def Split5(in_tsr):
     graph = mtf.Graph()
     mesh0 = mtf.Mesh(graph, 'mesh0')
     mesh1 = mtf.Mesh(graph, 'mesh1')
-    mesh_to_impl = {mesh0:utils.GetMeshImpl([2, 2], [0, 1, 4, 5]), \
-            mesh1:utils.GetMeshImpl([4, 2])}
+    mesh_to_impl = {mesh0:GetMeshImpl([2, 2], [0, 1, 4, 5]), \
+            mesh1:GetMeshImpl([4, 2])}
 
     shape = in_tsr.get_shape().as_list()
     mtf_shape = GetShape([('axis0', shape[0]), ('axis1', shape[1])] + shape[2:])
@@ -514,6 +544,7 @@ def main():
 
     Broadcast1(in_tsr)
     Broadcast2(in_tsr)
+    Broadcast3(in_tsr)
     Contract1(in_tsr)
     Contract2(in_tsr)
 
@@ -535,12 +566,13 @@ def main():
     Split1(in_tsr)
     Concat2(in_tsr)
     Split2(in_tsr)
-    Concat3(in_tsr)
-    Split3(in_tsr)
-    Concat4(in_tsr)
-    Split4(in_tsr)
-    Concat5(in_tsr)
-    Split5(in_tsr)
+    NoConcatSplit(in_tsr)
+    #Concat3(in_tsr)
+    #Split3(in_tsr)
+    #Concat4(in_tsr)
+    #Split4(in_tsr)
+    #Concat5(in_tsr)
+    #Split5(in_tsr)
 
     print('Tests passed.')
 
