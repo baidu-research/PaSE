@@ -27,7 +27,7 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
         mesh_shapes = [[1, 1, 4],
                        [2, 1, 1],
                        [2, 1, 1],
-                       [2, 2, 1]]
+                       [1, 4, 1]]
 
     elif num_gpus == 8:
         # Mesh_shape: batch_dim, n_dim, k_dim
@@ -38,24 +38,24 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
 
     elif num_gpus == 16:
         # Mesh_shape: batch_dim, n_dim, k_dim
-        mesh_shapes = [[2, 1, 8],
+        mesh_shapes = [[1, 1, 16],
                        [2, 2, 2],
                        [2, 2, 2],
-                       [2, 8, 1]]
+                       [1, 16, 1]]
 
     elif num_gpus == 32:
         # Mesh_shape: batch_dim, n_dim, k_dim
-        mesh_shapes = [[2, 1, 16],
+        mesh_shapes = [[1, 1, 32],
                        [4, 2, 2],
                        [4, 2, 2],
-                       [4, 8, 1]]
+                       [1, 32, 1]]
 
     elif num_gpus == 64:
         # Mesh_shape: batch_dim, n_dim, k_dim
-        mesh_shapes = [[4, 1, 16],
+        mesh_shapes = [[1, 1, 64],
                        [8, 2, 2],
                        [8, 2, 2],
-                       [4, 16, 1]]
+                       [1, 64, 1]]
 
     else:
         assert False
@@ -66,11 +66,6 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     assert (num_nodes == 1) or (num_nodes % 2 == 0)
     half_devices0 = all_devices[:(num_gpus // 2)]
     half_devices1 = all_devices[(num_gpus // 2):]
-    ## Permute the devices, so that devices are arranged in such a way that batch
-    ## dim is not the last mesh dimension
-    #permuted_devices = utils.FlattenList(utils.TransposeLists(
-    #    [half_devices0, half_devices1]))
-    #devices = [permuted_devices, half_devices0, half_devices1, permuted_devices]
     devices = [all_devices, half_devices0, half_devices1,
             half_devices1 + half_devices0]
     node_counts = [num_nodes, max(1, num_nodes // 2),

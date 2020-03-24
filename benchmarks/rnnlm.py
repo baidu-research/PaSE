@@ -34,7 +34,7 @@ def main():
     inputs = tf.cast(inputs, tf.int32)
     labels = tf.cast(labels, tf.int32)
 
-    vocab_size = utils.RoundUp(dataset.src_vocab_size, 8)
+    vocab_size = utils.RoundUp(dataset.src_vocab_size, trainer.num_gpus)
     print("Vocab size: %d" % vocab_size)
     params = Params(args.batch_size, vocab_size, args.seq_len,
             trainer.num_nodes, devices)
