@@ -53,8 +53,7 @@ class ReplaceMeshOperation(MeshReplacementOperation):
                 new_mesh_impl.slice_begin(self.new_shape, i) 
                 for i in range(old_mesh_impl.shape.size))
 
-        laid_out_tensor = new_mesh_impl.LaidOutTensor.from_tensor_list(
-                input_slices)
+        laid_out_tensor = new_mesh_impl.LaidOutTensor(input_slices)
         lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
 
 def ReplaceMesh(x, mesh, dim_names=None, name=None):
