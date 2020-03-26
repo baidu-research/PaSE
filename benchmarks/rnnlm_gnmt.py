@@ -4,7 +4,7 @@ import tensorflow.keras as keras
 import mesh_tensorflow as mtf
 import utils
 from mesh_transformations import MeshReplacementOperation
-from rnnlm_opt import RNNOperation
+from rnnlm import RNNOperation
 
 class ReplaceGNMTMesh(MeshReplacementOperation):
     def lower(self, lowering):

@@ -1,8 +1,8 @@
 import numpy as np
 import tensorflow.compat.v1 as tf
-import tensorflow.keras as keras
 import mesh_tensorflow as mtf
 import utils
+from rnnlm import RNNOperation
 
 def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
@@ -23,6 +23,7 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
 
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
+'''
 class LSTMCell(keras.layers.Layer):
     def __init__(self, num_units, ws, **kwargs):
         self.num_units = num_units
@@ -109,6 +110,7 @@ class RNNOperation(mtf.Operation):
 
         y = lowering.mesh_impl(self).slicewise(tf_rnn_op, x)
         lowering.set_tensor_lowering(self.outputs[0], y)
+'''
 
 def model(params, inputs, labels):
     num_gpus = len(params.devices)
@@ -118,20 +120,34 @@ def model(params, inputs, labels):
     graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels = CreateMeshes(
             inputs, labels, params.num_nodes, num_gpus, params.batch_size)
 
-    # RNN weights
-    num_units = params.num_units
-    w_shape = utils.ConvertToShape([2*num_units, 4*num_units])
-    rnn_w0 = mtf.get_variable(meshes[0], 'rnn_w0', w_shape)
-    rnn_w1 = mtf.get_variable(meshes[0], 'rnn_w1', w_shape)
-
     # Embedding dimensions
     vocab_dim = mtf.Dimension(utils.RandName(), params.vocab_size)
     embed_dim = mtf.Dimension(utils.RandName(), params.num_units)
 
+    batch_dim_name = mtf_inputs.shape[0].name
+    k_dim_name = embed_dim.name
+    n_dim_name = utils.RandName()
+
+    # RNN weights
+    num_units = params.num_units
+    w_shape = utils.ConvertToShape(
+            [(k_dim_name, 2*num_units), (n_dim_name, 4*num_units)])
+    rnn_w0 = mtf.get_variable(meshes[0], 'rnn_w0', w_shape)
+    rnn_w1 = mtf.get_variable(meshes[0], 'rnn_w1', w_shape)
+
+    # RNN initial states
+    h_shape = mtf.Shape([mtf.Dimension(batch_dim_name, params.batch_size),
+        mtf.Dimension(k_dim_name, num_units)])
+    c_shape = mtf.Shape([mtf.Dimension(batch_dim_name, params.batch_size),
+        mtf.Dimension(n_dim_name, num_units)])
+    states0 = [mtf.zeros(meshes[0], h_shape), mtf.zeros(meshes[0], c_shape)]
+    states1 = [mtf.zeros(meshes[0], h_shape), mtf.zeros(meshes[0], c_shape)]
+
     # Model
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
-    [y] = RNNOperation(embedding, rnn_w0, rnn_w1, num_units).outputs
+    [y] = RNNOperation(embedding, rnn_w0, rnn_w1, num_units,
+            states=states0+states1).outputs
     y = mtf.layers.dense(y, vocab_dim, reduced_dims=y.shape[-1:],
             use_bias=False)
     mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(y, mtf_labels,
