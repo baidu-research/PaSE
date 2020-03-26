@@ -204,31 +204,25 @@ class RNNOperation(mtf.Operation):
             if obj.device:
                 return obj.device
 
-            def get_device(name, pattern):
-                idx = name.find(pattern)
-                if idx == 0:
-                    name = name[idx+len(pattern):]
-                    idx = name.find(':')
-                    if idx >= 0:
-                        name = name[:idx]
-                        try:
-                            idx = int(name)
-                        except ValueError:
-                            return None
-                        return devices[idx]
-                return None
+            def get_device(name):
+                pattern = 'rnn/rnn/TensorArray'
+                assert name.startswith(pattern)
+                name = name[len(pattern):]
+                try:
+                    idx = int(name[1:])
+                    return devices[idx]
+                except (IndexError, ValueError):
+                    return devices[0]
 
             # 'device_selector' is not called for TensorArrays, since keras
             # creates them with default 'colocate_with_first_write_call=True'
-            # flag. So, as a workaround, look for op's input tensors with name
-            # 'TensorArray_', and set it's op device to be equal to the slice
+            # flag. So, as a workaround, look for op's input tensors with type
+            # 'TensorArrayV3', and set it's op device to be equal to the slice
             # index.
             for t in obj.inputs:
-                if not t.device:
-                    assert not t.op.device
-                    device = get_device(t.name, 'rnn/rnn/TensorArray_')
-                    if device:
-                        t.op._set_device(device)
+                op = t.op
+                if (op.type == 'TensorArrayV3') and (not op.device):
+                    op._set_device(get_device(op.name))
 
             input_devices = set(i.device for i in obj.inputs) - {''}
             if len(input_devices) == 0:
