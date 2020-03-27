@@ -82,11 +82,18 @@ def RenameDims(shape, axes, names):
         shape = RenameDim(shape, axis, name)
     return shape
 
-def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None, num_nodes=1):
+def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None, num_nodes=1,
+        gpus_per_node=8):
     num_devs = Prod(dev_cnts)
     assert num_devs % num_nodes == 0, (
             f'Device count is not a multiple of node count. '
             f'Device count: {num_devs}; node count: {num_nodes}.')
+    #num_nodes = (num_devs + gpus_per_node - 1) // gpus_per_node
+    assert (((num_nodes-1)*gpus_per_node) < num_devs <=
+            (num_nodes*gpus_per_node)), (
+                    f'Mismatch in node count. nodes: {num_nodes}; '
+                    f'gpus_per_node: {gpus_per_node}; '
+                    f'Total gpus: {num_devs}.')
 
     mesh_impl = mesh_impl or mtf.placement_mesh_impl.PlacementMeshImpl
     axes = axes or ['axis%d' % i for i in range(len(dev_cnts))]
