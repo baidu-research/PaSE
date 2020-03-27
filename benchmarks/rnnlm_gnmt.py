@@ -1,12 +1,11 @@
 import numpy as np
 import tensorflow.compat.v1 as tf
-import tensorflow.keras as keras
 import mesh_tensorflow as mtf
 import utils
 from mesh_transformations import MeshReplacementOperation
 from rnnlm import RNNOperation
 
-class ReplaceGNMTMesh(MeshReplacementOperation):
+class ReplaceRNNMesh(MeshReplacementOperation):
     def lower(self, lowering):
         x = self.inputs[0]
         input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
@@ -108,12 +107,12 @@ def model(params, inputs, labels):
     embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
             tf.float32)
     assert embedding.mesh == meshes[2]
-    embedding = ReplaceGNMTMesh(embedding, meshes[0]).outputs[0]
+    embedding = ReplaceRNNMesh(embedding, meshes[0]).outputs[0]
 
     [y] = RNNOperation(embedding, rnn_w0, rnn_w1, num_units,
             states=states0+states1).outputs
     assert y.mesh == meshes[1]
-    y = ReplaceGNMTMesh(y, meshes[2]).outputs[0]
+    y = ReplaceRNNMesh(y, meshes[2]).outputs[0]
 
     y = mtf.layers.dense(y, vocab_dim, reduced_dims=y.shape[-1:],
             use_bias=False)

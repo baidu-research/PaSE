@@ -249,8 +249,7 @@ def main():
     trainer = common.Trainer()
     args = trainer.args
     lr = 0.01
-    devices = [f'/job:localhost/replica:0/task:{i}/device:GPU:{j}' for i in
-            range(trainer.num_nodes) for j in range(args.gpus)]
+    devices = utils.GetDeviceList(args.gpus, trainer.num_nodes)
 
     # Initialize dataset
     dataset = TextDataLoader(args.batch_size, args.src_vocab, None,
@@ -291,7 +290,8 @@ def main():
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
     config = tf.ConfigProto(allow_soft_placement=soft_placement,
             log_device_placement=True)
-    trainer.train_model(graph, mesh_to_impl, mtf_loss, dataset, config, run_options)
+    trainer.train_model(graph, mesh_to_impl, mtf_loss, dataset, config=config,
+            run_options=run_options)
 
 
 if __name__ == '__main__':

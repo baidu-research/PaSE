@@ -1,109 +1,98 @@
 import numpy as np
 import tensorflow.compat.v1 as tf
-import tensorflow.keras as keras
-
+import mesh_tensorflow as mtf
 import utils
+import mesh_transformations as mesh_trans
+from rnnlm import RNNOperation
+from rnnlm_gnmt import ReplaceRNNMesh
 
-class LSTMCell(keras.layers.Layer):
-    def __init__(self, batch_size, num_units, device, layer, **kwargs):
-        self.batch_size = batch_size
-        self.num_units = num_units
-        self.device = device
-        self.layer = layer
-        self.state_size = [num_units, num_units]
-        self.counter = 0
+def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
+    graph = mtf.Graph()
+    meshes = []
+    mesh_to_impl = {}
+    devices = utils.GetDeviceList(num_gpus, num_nodes)
 
-        super().__init__(**kwargs)
+    assert num_gpus % num_nodes == 0
+    assert num_gpus % 2 == 0
 
-    def build(self, input_state):
-        w_shape = [2 * self.num_units, 4 * self.num_units]
-        with tf.device(self.device):
-            self.w = self.add_weight(shape=w_shape, initializer='uniform',
-                    name=f'w_l{self.layer}', dtype=tf.float32)
-            super().build(input_state)
+    mesh = mtf.Mesh(graph, f'mesh0')
+    meshes.append(mesh)
+    mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus//2],
+            devices=devices[:num_gpus//2])
 
-    def call(self, x, states):
-        with tf.device(self.exec_device):
-            h, c = states
-            xh = tf.concat([x, h], axis=1)
+    mesh = mtf.Mesh(graph, f'mesh1')
+    meshes.append(mesh)
+    mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus//2],
+            devices=devices[num_gpus//2:])
 
-            # GEMM
-            ifgo = tf.matmul(xh, self.w)
+    mesh = mtf.Mesh(graph, f'mesh2')
+    meshes.append(mesh)
+    mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus],
+            devices=utils.FlattenList(utils.TransposeLists(
+                    [devices[:num_gpus//2], devices[num_gpus//2:]])))
 
-            # Apply activations
-            i, f, g, o = tf.split(ifgo, 4, axis=1)
-            i, f, o = [tf.sigmoid(t) for t in (i, f, o)]
-            g = tf.tanh(g)
+    assert len(inputs.shape) == 2
+    assert inputs.shape == labels.shape
 
-            # Elementwise ops
-            c = (f * c) + (i * g)
-            h = o * tf.tanh(c)
-            return h, [h, c]
+    shape = utils.ConvertToShape([('axis0', batch_size),
+        inputs.shape.as_list()[1]])
+    mtf_inputs = mtf.import_tf_tensor(meshes[2], inputs, shape)
+    shape = shape.rename_dimension('axis0', utils.RandName())
+    mtf_labels = mtf.import_tf_tensor(meshes[2], labels, shape)
+
+    return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 def model(params, inputs, labels):
-    devices = params.devices
-    num_gpus = len(devices)
-    assert (num_gpus % 2 == 0)
-    num_gpus_by_2 = num_gpus // 2
+    num_gpus = len(params.devices)
 
-    embedding = keras.layers.Embedding(params.vocab_size, params.num_units,
-            input_length=params.max_seq_len)
-    dev = devices[0]
-    with tf.device(dev):
-        cell0 = LSTMCell(params.batch_size, params.num_units, dev, layer=0)
-    dev = devices[num_gpus_by_2]
-    with tf.device(dev):
-        cell1 = LSTMCell(params.batch_size, params.num_units, dev, layer=1)
-    cells = [cell0, cell1]
-    rnn = keras.layers.RNN(cells, return_sequences=True, return_state=False)
-    dense = lambda x: keras.layers.Dense(params.vocab_size // num_gpus,
-            use_bias=False)(x)
+    # Mtf mesh
+    assert len(inputs.shape) == 2
+    graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels = CreateMeshes(
+            inputs, labels, params.num_nodes, num_gpus, params.batch_size)
 
-    def get_next_layer_device(dev):
-        idx = devices.index(dev) + num_gpus_by_2
-        assert idx < num_gpus
-        return devices[idx]
+    # Embedding dimensions
+    vocab_dim = mtf.Dimension(utils.RandName(), params.vocab_size)
+    embed_dim = mtf.Dimension(utils.RandName(), params.num_units)
 
-    with tf.device(devices[0]):
-        x = embedding(inputs)
+    batch_dim_name = mtf_inputs.shape[0].name
+    k_dim_name = embed_dim.name
+    n_dim_name = utils.RandName()
 
-    num_data_parallel = num_gpus_by_2
-    assert (params.batch_size % num_data_parallel == 0)
-    stride = params.batch_size // num_data_parallel
-    start, end = 0, stride
-    ys = []
-    for dev in devices[:num_data_parallel]:
-        next_dev = get_next_layer_device(dev)
-        with tf.device(dev):
-            cells[0].exec_device = dev
-            cells[1].exec_device = next_dev
-            ys.append(rnn(x[start:end, ...]))
-            start = end
-            end += stride
-    assert start == params.batch_size
+    # RNN weights
+    num_units = params.num_units
+    w_shape = utils.ConvertToShape(
+            [(k_dim_name, 2*num_units), (n_dim_name, 4*num_units)])
+    rnn_w0 = mtf.get_variable(meshes[0], 'rnn_w0', w_shape)
+    rnn_w1 = mtf.get_variable(meshes[1], 'rnn_w1', w_shape)
 
-    slices = []
-    for y in ys:
-        with tf.device(y.device):
-            slices.append(tf.split(y, num_gpus, axis=-1))
-    slices = utils.TransposeLists(slices)
+    # RNN initial states
+    h_shape = mtf.Shape([mtf.Dimension(batch_dim_name, params.batch_size),
+        mtf.Dimension(k_dim_name, num_units)])
+    c_shape = mtf.Shape([mtf.Dimension(batch_dim_name, params.batch_size),
+        mtf.Dimension(n_dim_name, num_units)])
+    states0 = [mtf.zeros(meshes[0], h_shape), mtf.zeros(meshes[0], c_shape)]
+    states1 = [mtf.zeros(meshes[1], h_shape), mtf.zeros(meshes[1], c_shape)]
 
-    ys = []
-    assert len(slices) == num_gpus
-    for dev, s in zip(devices, slices):
-        with tf.device(dev):
-            x = tf.concat(s, axis=0)
-            ys.append(dense(x))
+    # Model
+    embedding = mtf.layers.embedding(mtf_inputs, vocab_dim, embed_dim,
+            tf.float32)
+    assert embedding.mesh == meshes[2]
+    embedding = ReplaceRNNMesh(embedding, meshes[0]).outputs[0]
 
-    # Loss
-    with tf.device(devices[0]):
-        y = tf.concat(ys, axis=-1)
-        loss = tf.losses.sparse_softmax_cross_entropy(labels, y,
-                reduction=tf.losses.Reduction.MEAN)
-    opt = tf.train.GradientDescentOptimizer(learning_rate=0.01)
-    grads = opt.compute_gradients(loss, colocate_gradients_with_ops=True)
-    assert all(g is not None for g in grads)
-    grads = opt.apply_gradients(grads)
+    [y] = RNNOperation(embedding, rnn_w0, rnn_w1, num_units,
+            states=states0+states1).outputs
+    assert y.mesh == meshes[1]
+    assert y.shape[0].name == 'axis0'
+    y = mtf.rename_dimension(y, 'axis0', mtf_labels.shape[0].name)
+    y = mesh_trans.ReplaceMeshWithSimpleReplication(y, meshes[2])
 
-    return loss, grads
+    vocab_dim = mtf.Dimension('axis0', params.vocab_size)
+    y = mtf.layers.dense(y, vocab_dim, reduced_dims=y.shape[-1:],
+            use_bias=False)
+    assert y.mesh == mtf_labels.mesh
+    mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(
+            y, mtf_labels, vocab_dim)
+    mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
+    model.soft_placement = True
+    return graph, mesh_to_impl, mtf_loss

@@ -60,6 +60,48 @@ def ReplaceMesh(x, mesh, dim_names=None, name=None):
     return ReplaceMeshOperation(x, mesh, dim_names, name).outputs[0]
 
 
+# Replace mesh by replicating/removing fully-replicated tensor
+class ReplaceMeshWithSimpleReplicationOperation(MeshReplacementOperation):
+    def lower(self, lowering):
+        x = self.inputs[0]
+        input_slices = lowering.tensors[x].to_laid_out_tensor().tensor_list
+
+        old_mesh_impl = lowering.mesh_impl(self.old_mesh)
+        new_mesh_impl = lowering.mesh_impl(self)
+        old_mesh_shape = old_mesh_impl.shape
+        new_mesh_shape = new_mesh_impl.shape
+        old_devices = old_mesh_impl.devices
+        new_devices = new_mesh_impl.devices
+        old_num_gpus = old_mesh_impl.shape.size
+        new_num_gpus = new_mesh_impl.shape.size
+        replicate = (new_num_gpus > old_num_gpus)
+
+        assert old_mesh_impl.tensor_layout(x).is_fully_replicated == True
+        assert new_mesh_impl.tensor_layout(
+                self.outputs[0]).is_fully_replicated == True
+
+        if replicate:
+            assert new_num_gpus % old_num_gpus == 0
+            output_slices = [None] * new_num_gpus
+            for d, s in zip(old_devices, input_slices):
+                output_slices[new_devices.index(d)] = s
+            nones = [i for i, s in enumerate(output_slices) if s is None]
+            assert len(nones) % len(input_slices) == 0
+            for i, s in zip(nones, input_slices):
+                output_slices[i] = s
+        else:
+            assert set(new_devices) <= set(old_devices)
+            output_slices = [input_slices[old_devices.index(d)] for d in
+                    new_devices]
+
+        laid_out_tensor = new_mesh_impl.LaidOutTensor(output_slices)
+        lowering.set_tensor_lowering(self.outputs[0], laid_out_tensor)
+
+def ReplaceMeshWithSimpleReplication(x, mesh, dim_names=None, name=None):
+    return ReplaceMeshWithSimpleReplicationOperation(x, mesh, dim_names,
+            name).outputs[0]
+
+
 # Replace mesh by adding/removing duplicate slices
 class ReplaceMeshWithDuplicatesOperation(MeshReplacementOperation):
     def lower(self, lowering):
