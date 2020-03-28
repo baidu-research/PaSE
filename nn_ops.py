@@ -558,7 +558,7 @@ class FC(Ops):
         m_idx, n_idx, k_idx = range(3)
 
         # Domain and input/output tensors
-        dom = (*(in_tsr[:-1]), n_units, in_tsr[-1])
+        dom = in_tsr[:-1] + (n_units, in_tsr[-1])
         out_tsr = Tensor(dom[:-1])
         super().__init__(dom, in_tsr, out_tsr, n_procs)
 
@@ -1031,8 +1031,8 @@ class LSTM(Ops):
         self.dom_config_tuples = GetConfigs(dom, self.n_procs, self.cutoff)
         super().ComputeCosts()
 
-        in_axes = 2, 1, 4 # Batch, seq, in dims
-        out_axes = 2, 1, 3 # Batch, seq, out dims
+        in_axes = batch_dim, seq_dim, k_dim
+        out_axes = batch_dim, seq_dim, n_dim
         assert tuple(self.dom[i] for i in in_axes) == self.in_tsrs[0]
         assert tuple(self.dom[i] for i in out_axes) == self.out_tsrs[0]
         self.in_tsr_configs = self.dom_configs[:, in_axes]
