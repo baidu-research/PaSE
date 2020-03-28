@@ -49,13 +49,13 @@ class Trainer():
                 help='Maximum sequence length')
     
         args = parser.parse_args()
-        gpus_per_node = args.gpus
+        self.gpus_per_node = args.gpus
         self.num_nodes = int(os.environ['SLURM_NNODES'])
         assert self.num_nodes > 0
-        self.num_gpus = gpus_per_node * self.num_nodes
+        self.num_gpus = self.gpus_per_node * self.num_nodes
         self.args = args
         os.environ['CUDA_VISIBLE_DEVICES'] = ''.join(str(i) + ',' for i in
-                                                     range(gpus_per_node))[:-1]
+                                                     range(self.gpus_per_node))[:-1]
 
         if self.args.xla:
             os.environ['XLA_FLAGS'] = '--xla_gpu_cuda_data_dir=' + os.environ['CUDA_HOME']
