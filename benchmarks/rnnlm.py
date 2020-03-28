@@ -249,7 +249,7 @@ def main():
     trainer = common.Trainer()
     args = trainer.args
     lr = 0.01
-    devices = utils.GetDeviceList(args.gpus, trainer.num_nodes)
+    devices = utils.GetDeviceList(trainer.num_gpus, trainer.num_nodes)
 
     # Initialize dataset
     dataset = TextDataLoader(args.batch_size, args.src_vocab, None,
