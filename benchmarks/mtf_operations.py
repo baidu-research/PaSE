@@ -283,7 +283,7 @@ def AvgPool(*args, **kwargs):
 # tensor is split along one mesh axis, and it is renamed to be split along a
 # different mesh axis. So, we first combine the slices along old mesh axis, and
 # split along new mesh axis
-def RenameDimension(x, old_dim_name, new_dim_name):
+def rename_dimension(x, old_dim_name, new_dim_name):
     assert isinstance(x, mtf.Tensor)
     if old_dim_name == new_dim_name:
         return x
@@ -294,3 +294,17 @@ def RenameDimension(x, old_dim_name, new_dim_name):
         old_dim_name = tmp_dim_name
 
     return mtf.rename_dimension(x, old_dim_name, new_dim_name)
+RenameDimension = rename_dimension
+
+# Mesh-tensorflow's reshape operation produces wrong results when a dim of a
+# tensor is split along one mesh axis, and it is renamed to be split along a
+# different mesh axis. So, we first combine the slices along old mesh axis, and
+# split along new mesh axis
+def reshape(x, new_shape):
+    old_shape = x.shape
+    assert len(old_shape) == len(new_shape)
+    for o, n in zip(old_shape.dims, new_shape.dims):
+        if (o.name != n.name) and (o.name.startswith('axis') and
+                n.name.startswith('axis')):
+            x = mtf.rename_dimension(x, o.name, utils.RandName())
+    return mtf.reshape(x, new_shape)

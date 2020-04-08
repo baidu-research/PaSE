@@ -47,6 +47,9 @@ class Trainer():
         parser.add_argument('--tgt_text', type=str, help="Target text data file.")
         parser.add_argument('--seq_len', type=int, required=False, default=256,
                 help='Maximum sequence length')
+        parser.add_argument('--comm_protocol', type=str, required=False,
+                default='verbs', choices=['', 'verbs', 'mpi'],
+                help='Communication protocol for multi-node training.')
     
         args = parser.parse_args()
         self.gpus_per_node = args.gpus
@@ -62,10 +65,9 @@ class Trainer():
             os.environ['TF_XLA_FLAGS'] = '--tf_xla_auto_jit=2'
 
         tf.disable_eager_execution()
-        self.setup_servers()
-    
+        self.setup_servers(args.comm_protocol)
 
-    def setup_servers(self):
+    def setup_servers(self, protocol):
         if self.num_nodes > 1:
             from hostlist import expand_hostlist
             
@@ -74,8 +76,9 @@ class Trainer():
             hostlist_w_port = [("%s:2222" % host) for host in hostlist] 
     
             cluster = tf.train.ClusterSpec({"localhost":hostlist_w_port}).as_cluster_def()
+            protocol = f'grpc+{protocol}' if protocol else 'grpc'
             server = tf.distribute.Server(cluster, job_name="localhost",
-                    task_index=task_index, protocol='grpc+verbs')
+                    task_index=task_index, protocol=protocol)
             session_target = server.target
     
             if task_index != 0:
