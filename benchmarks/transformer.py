@@ -13,6 +13,7 @@ from dataloader import TextDataLoader
 import utils
 from utils import RandName
 import mtf_operations as mt
+import mesh_transformations as mesh_trans
 
 
 class Params():
@@ -25,7 +26,8 @@ class Params():
         self.d_ff = 4096 #self.heads * 512
         self.d_k = 128
 
-def check_distribution(x, split_axes):
+def check_distribution(x, mesh, split_axes):
+    assert x.mesh == mesh
     assert all(i < x.shape.ndims for i in split_axes)
     for i, name in enumerate(x.shape.dimension_names):
         try:
@@ -61,24 +63,32 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
 
     elif strategy == 1: # Opt strategy from the tool
         if num_gpus == 4:
+            embed_dim1, embed_dim2 = 2, 2
             dim1, dim2 = 4, 1
         elif num_gpus == 8:
+            embed_dim1, embed_dim2 = 2, 4
             dim1, dim2 = 8, 1
         elif num_gpus == 16:
+            embed_dim1, embed_dim2 = 2, 8
             dim1, dim2 = 8, 2
         elif num_gpus == 32:
+            embed_dim1, embed_dim2 = 4, 8
             dim1, dim2 = 16, 2
         elif num_gpus == 64:
+            embed_dim1, embed_dim2 = 4, 16
             dim1, dim2 = 16, 4
         else:
             assert False
+        assert ((embed_dim1 * embed_dim2) == num_gpus)
         assert ((dim1 * dim2) == num_gpus)
 
-        mesh = CreateMesh([dim1, dim2])
-        shape = utils.ConvertToShape([params.batch_size, ('axis1',
-            params.max_seq_len)])
-        mtf_src = mtf.import_tf_tensor(mesh, src, shape)
-        mtf_tgt = mtf.import_tf_tensor(mesh, tgt, shape)
+        mesh0 = CreateMesh([dim1, dim2])
+        mesh1 = CreateMesh([embed_dim1, embed_dim2])
+
+        shape = utils.ConvertToShape([params.batch_size,
+            ('axis0', params.max_seq_len)])
+        mtf_src = mtf.import_tf_tensor(mesh1, src, shape)
+        mtf_tgt = mtf.import_tf_tensor(mesh1, tgt, shape)
 
     elif strategy == 2: # Strategy from mesh-tensorflow paper
         if num_gpus == 4:
@@ -131,42 +141,8 @@ def positional_encoding(x):
         model_dim]), dtype=tf.float32)
     return (x * math.sqrt(model_size)) + pos_enc
 
-def encoder_decoder(inp, encoder_out, vocab_dim, model_dim, heads_dim,
-        d_k_dim, ff_dim, nx, strategy, name):
-    with tf.variable_scope(name):
-        # Embedding + positional encoding
-        embed = mtf.layers.embedding(inp, vocab_dim, model_dim,
-                tf.float32, name=f'{name}_embedding')
-        if strategy == 1:
-            shape = embed.shape.rename_dimension('axis1', RandName())
-            shape = shape.rename_dimension(shape[0].name, 'axis0')
-            embed = mt.reshape(embed, shape)
-        x = positional_encoding(embed)
-        check_distribution(x, {0:'axis0'})
-
-        # Encoder/decoder layers
-        for i in range(nx):
-            # Multihead attention
-            y = mtf.layers.multihead_attention(x, None, None, d_k_dim,
-                    heads_dim, dropout=0.5, name=f'{name}_att_{i}')
-            x = add_norm(x, y, name=f'{name}_att_{i}_norm')
-            check_distribution(x, {0:'axis0'})
-
-            if encoder_out is not None:
-                y = mtf.layers.multihead_attention(x, encoder_out, None,
-                        d_k_dim, heads_dim, dropout=0.5,
-                        name=f'{name}_att2_{i}')
-                x = add_norm(x, y, name=f'{name}_att2_{i}_norm')
-                check_distribution(x, {0:'axis0'})
-
-            # Feed forward
-            y = mtf.layers.dense_relu_dense(x, ff_dim, dropout=0.5,
-                    name=f'{name}_ff_{i}')
-            x = add_norm(x, y, name=f'{name}_ff_{i}_norm')
-            check_distribution(x, {0:'axis0'})
-        return x
-
 def add_norm(x, y, name=None):
+    assert x.mesh == y.mesh
     assert (x.shape == y.shape), (x.shape, y.shape)
     name = name or 'add_norm'
     z = mtf.add(x, y, output_shape=x.shape)
@@ -188,8 +164,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
         heads_dim      = mtf.Dimension(RandName(), params.heads)
         ff_dim         = mtf.Dimension(RandName(), params.d_ff)
     elif strategy == 1:
-        src_vocab_dim  = mtf.Dimension('axis0', src_vocab_size)
-        tgt_vocab_dim  = mtf.Dimension('axis0', tgt_vocab_size)
+        src_vocab_dim  = mtf.Dimension('axis1', src_vocab_size)
+        tgt_vocab_dim  = mtf.Dimension('axis1', tgt_vocab_size)
         model_dim      = mtf.Dimension(RandName(), params.d_model)
         d_k_dim        = mtf.Dimension(RandName(), params.d_k)
         heads_dim      = mtf.Dimension('axis1', params.heads)
@@ -207,33 +183,71 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
     assert mtf_src.shape[-1] == mtf_tgt.shape[-1]
 
     if strategy == 1:
-        check_distribution(mtf_src, {1:'axis1'})
-        check_distribution(mtf_tgt, {1:'axis1'})
+        check_distribution(mtf_src, meshes[1], {1:'axis0'})
+        check_distribution(mtf_tgt, meshes[1], {1:'axis0'})
     else:
-        check_distribution(mtf_src, {0:'axis0'})
-        check_distribution(mtf_tgt, {0:'axis0'})
+        check_distribution(mtf_src, meshes[0], {0:'axis0'})
+        check_distribution(mtf_tgt, meshes[0], {0:'axis0'})
+
+    def encoder_decoder(inp, enc_out, vocab_dim, name):
+        with tf.variable_scope(name):
+            # Embedding
+            embed = mtf.layers.embedding(inp, vocab_dim, model_dim,
+                    tf.float32, name=f'{name}_embedding')
+            if strategy == 1:
+                check_distribution(embed, meshes[1], {1:'axis0'})
+                shape = embed.shape.rename_dimension('axis0', RandName())
+                shape = shape.rename_dimension(shape[0].name, 'axis0')
+                embed = mesh_trans.ReplaceMeshWithIndependentAxes(
+                        embed, meshes[0], dim_names=shape.dimension_names)
+            check_distribution(embed, meshes[0], {0:'axis0'})
+
+            # Positional encoding
+            x = positional_encoding(embed)
+            check_distribution(x, meshes[0], {0:'axis0'})
+
+            # Encoder/decoder layers
+            for i in range(params.nx):
+                # Multihead attention
+                y = mtf.layers.multihead_attention(x, None, None, d_k_dim,
+                        heads_dim, dropout=0.5, name=f'{name}_att_{i}')
+                x = add_norm(x, y, name=f'{name}_att_{i}_norm')
+                check_distribution(x, meshes[0], {0:'axis0'})
+
+                if enc_out is not None:
+                    y = mtf.layers.multihead_attention(x, enc_out, None,
+                            d_k_dim, heads_dim, dropout=0.5,
+                            name=f'{name}_att2_{i}')
+                    x = add_norm(x, y, name=f'{name}_att2_{i}_norm')
+                    check_distribution(x, meshes[0], {0:'axis0'})
+
+                # Feed forward
+                y = mtf.layers.dense_relu_dense(x, ff_dim, dropout=0.5,
+                        name=f'{name}_ff_{i}')
+                x = add_norm(x, y, name=f'{name}_ff_{i}_norm')
+                check_distribution(x, meshes[0], {0:'axis0'})
+            return x
 
     # Encoder/Decoder
-    encoder_out = encoder_decoder(mtf_src, None, src_vocab_dim, model_dim,
-            heads_dim, d_k_dim, ff_dim, params.nx, strategy, 'encoder')
-    check_distribution(encoder_out, {0:'axis0'})
-    encoder_out = mt.rename_dimension(encoder_out, encoder_out.shape[1].name,
-            RandName())
-    decoder_out = encoder_decoder(mtf_tgt, encoder_out, tgt_vocab_dim,
-            model_dim, heads_dim, d_k_dim, ff_dim, params.nx, strategy,
-            'decoder')
+    enc_out = encoder_decoder(mtf_src, None, src_vocab_dim, 'encoder')
+    check_distribution(enc_out, meshes[0], {0:'axis0'})
+    enc_out = mt.rename_dimension(enc_out, enc_out.shape[1].name, RandName())
+    dec_out = encoder_decoder(mtf_tgt, enc_out, tgt_vocab_dim, 'decoder')
 
     # Loss function
     with tf.variable_scope('loss'):
-        check_distribution(decoder_out, {0:'axis0'})
+        check_distribution(dec_out, meshes[0], {0:'axis0'})
         if strategy == 1:
-            shape = decoder_out.shape.rename_dimension('axis0',
+            shape = dec_out.shape.rename_dimension('axis0',
                     mtf_tgt.shape[0].name)
-            shape = shape.rename_dimension(shape[1].name, 'axis1')
-            decoder_out = mt.reshape(decoder_out, shape)
+            shape = shape.rename_dimension(shape[1].name, 'axis0')
+            dec_out = mesh_trans.ReplaceMeshWithIndependentAxes(
+                    dec_out, meshes[1], dim_names=shape.dimension_names)
+            check_distribution(dec_out, meshes[1], {1:'axis0'})
 
-        out = mtf.layers.dense(decoder_out, tgt_vocab_dim, use_bias=False,
-                reduced_dims=decoder_out.shape[-1:], name='final_projection')
+        out = mtf.layers.dense(dec_out, tgt_vocab_dim, use_bias=False,
+                reduced_dims=dec_out.shape[-1:], name='final_projection')
+        assert out.mesh == mtf_tgt.mesh
         assert (out.shape.dims == mtf_tgt.shape.dims + [tgt_vocab_dim])
         out = mtf.layers.softmax_cross_entropy_with_logits(out, mtf_tgt,
                 tgt_vocab_dim)
