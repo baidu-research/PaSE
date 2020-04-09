@@ -51,7 +51,8 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
         mesh = mtf.Mesh(graph, f'mesh{mesh_id}')
         meshes.append(mesh)
         mesh_id += 1
-        mesh_to_impl[mesh] = utils.GetMeshImpl(mesh_shape, num_nodes=num_nodes)
+        mesh_to_impl[mesh] = utils.GetMeshImpl(mesh_shape, num_nodes=num_nodes,
+                gpus_per_node=gpus_per_node)
         return mesh
 
     if strategy == 0: # Data-parallel
