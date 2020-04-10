@@ -80,7 +80,10 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
             dim1, dim2 = 8, 1
         elif num_gpus == 16:
             embed_dim1, embed_dim2 = 2, 8
-            dim1, dim2 = 8, 2
+            if params.model_size == 'small':
+                dim1, dim2 = 16, 1
+            else:
+                dim1, dim2 = 8, 2
         elif num_gpus == 32:
             embed_dim1, embed_dim2 = 4, 8
             dim1, dim2 = 16, 2
