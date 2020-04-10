@@ -47,6 +47,9 @@ class Trainer():
         parser.add_argument('--tgt_text', type=str, help="Target text data file.")
         parser.add_argument('--seq_len', type=int, required=False, default=256,
                 help='Maximum sequence length')
+        parser.add_argument('--model_size', type=str, required=False,
+                default='small', choices=['small', 'big'],
+                help='DNN model size to be used.')
         parser.add_argument('--comm_protocol', type=str, required=False,
                 default='verbs', choices=['', 'verbs', 'mpi'],
                 help='Communication protocol for multi-node training.')

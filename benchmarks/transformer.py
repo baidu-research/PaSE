@@ -17,14 +17,23 @@ import mesh_transformations as mesh_trans
 
 
 class Params():
-    def __init__(self, batch_size, max_seq_len):
-        self.batch_size = batch_size
-        self.nx = 6
-        self.max_seq_len = max_seq_len
-        self.d_model = 1024
-        self.heads = 8
-        self.d_ff = 4096 #self.heads * 512
-        self.d_k = 128
+    def __init__(self, batch_size, max_seq_len, model_size):
+        if model_size == 'small':
+            self.batch_size = batch_size
+            self.nx = 6
+            self.max_seq_len = max_seq_len
+            self.d_model = 512
+            self.heads = 8
+            self.d_ff = 2048
+            self.d_k = 64
+        else: # large
+            self.batch_size = batch_size
+            self.nx = 6
+            self.max_seq_len = max_seq_len
+            self.d_model = 1024
+            self.heads = 16
+            self.d_ff = 4096
+            self.d_k = 64
 
 def check_distribution(x, mesh, split_axes):
     assert x.mesh == mesh
@@ -259,7 +268,7 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
 def main():
     trainer = common.Trainer()
     args = trainer.args
-    params = Params(args.batch_size, args.seq_len)
+    params = Params(args.batch_size, args.seq_len, args.model_size)
 
     # Initialize dataset
     dataset = TextDataLoader(args.batch_size, args.src_vocab, args.tgt_vocab,
