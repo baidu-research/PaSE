@@ -11,7 +11,8 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
 
     mesh = mtf.Mesh(graph, 'mesh0')
     meshes.append(mesh)
-    mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus], num_nodes=num_nodes)
+    mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus], 
+            gpus_per_node=num_gpus // num_nodes)
 
     assert len(inputs.shape) == 2
     assert inputs.shape == labels.shape
@@ -113,12 +114,11 @@ class RNNOperation(mtf.Operation):
 '''
 
 def model(params, inputs, labels):
-    num_gpus = len(params.devices)
-
     # Mtf mesh
     assert len(inputs.shape) == 2
     graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels = CreateMeshes(
-            inputs, labels, params.num_nodes, num_gpus, params.batch_size)
+            inputs, labels, params.num_nodes, params.num_gpus,
+            params.batch_size)
 
     # Embedding dimensions
     vocab_dim = mtf.Dimension(utils.RandName(), params.vocab_size)

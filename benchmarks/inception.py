@@ -5,28 +5,17 @@ import mesh_tensorflow as mtf
 import datetime
 import sys, time, os
 import string, random
+import functools
 
-import common
+import trainer
 from dataloader import ImageDataLoader
 import utils
+import mtf_operations as mt
 from mtf_operations import Conv2d, MaxPool, AvgPool
 from mesh_transformations import ReplaceMeshWithIndependentAxes, \
         ReplaceMeshWithConcatSplit
 
 log_distribution = False
-
-
-def GetShape(dims):
-    sh = []
-    for d in dims:
-        try:
-            name, size = d
-        except (TypeError, ValueError):
-            name, size = utils.RandName(), d
-        sh.append(mtf.Dimension(name, size))
-
-    sh = mtf.Shape(sh)
-    return sh
 
 
 def Concat(tsr_lst, name=None):
@@ -36,7 +25,7 @@ def Concat(tsr_lst, name=None):
     concat_tsrs = []
     for t in tsr_lst:
         assert not t.shape[-1].name.startswith('axis')
-        t = mtf.rename_dimension(t, t.shape[-1].name, concat_dim_name)
+        t = mt.rename_dimension(t, t.shape[-1].name, concat_dim_name)
         concat_tsrs.append(t)
 
     return mtf.concat(concat_tsrs, concat_dim_name, name)
@@ -59,19 +48,16 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
         return mesh
     Mesh.idx = 0
 
-    def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
-        assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==
-                (gpus_per_node * node_cnt))
-        return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
-
+    GetMeshImpl = functools.partial(utils.GetMeshImpl,
+            gpus_per_node=gpus_per_node)
     if strategy == 0:
         mesh = Mesh()
         mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
-        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('axis0', batch_size),
-            h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([('axis0',
-            batch_size)]))
+        mtf_img = mtf.import_tf_tensor(mesh, img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(mesh, labels,
+                utils.ConvertToShape([('axis0', batch_size)]))
 
     elif strategy == 1:
         # mesh0
@@ -82,18 +68,20 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
         mesh = Mesh()
         mesh_to_impl[mesh] = GetMeshImpl([num_gpus // 2, 2])
 
-        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-            batch_size), h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(meshes[1], labels, GetShape([batch_size]))
+        mtf_img = mtf.import_tf_tensor(meshes[0], img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
+                utils.ConvertToShape([batch_size]))
 
     elif strategy == 2:
         # mesh0
         mesh = Mesh()
         mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
-        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-            batch_size), h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(meshes[0], labels, GetShape([batch_size]))
+        mtf_img = mtf.import_tf_tensor(meshes[0], img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(meshes[0], labels,
+                utils.ConvertToShape([batch_size]))
 
     elif strategy == 3:
         mesh = mtf.Mesh(graph, 'mesh0')
@@ -104,10 +92,10 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
         meshes.append(mesh)
         mesh_to_impl[mesh] = GetMeshImpl([2, num_gpus // 2])
 
-        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-            batch_size), h, w, ch]))
+        mtf_img = mtf.import_tf_tensor(meshes[0], img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
-                GetShape([('axis0', batch_size)]))
+                utils.ConvertToShape([('axis0', batch_size)]))
 
     else:
         assert False
@@ -129,7 +117,7 @@ def BasicConv(img, fltr, stride=(1,1), padding='VALID', dim_name=None,
         conv = Conv2d(img, filter_shape(dim_names, fltr), stride, padding)
         bn = mtf.layers.layer_norm(conv, conv.shape[0])
         if rename_dim:
-            bn = mtf.rename_dimension(bn, bn.shape[-1].name, in_ch_dim_name)
+            bn = mt.rename_dimension(bn, bn.shape[-1].name, in_ch_dim_name)
 
         def LogDistribution(tsr, end='\n'):
             if log_distribution:
@@ -348,7 +336,7 @@ def Inception(img, labels, num_nodes, num_gpus, args):
 
         elif strategy == 2:
             num_classes = utils.RoundUp(num_classes, num_gpus)
-            mean = mtf.rename_dimension(mean, 'axis0', mtf_labels.shape[0].name)
+            mean = mt.rename_dimension(mean, 'axis0', mtf_labels.shape[0].name)
             dim_name = 'axis0'
 
         elif strategy == 3:
@@ -371,26 +359,12 @@ def Inception(img, labels, num_nodes, num_gpus, args):
                     one_hot_labels, fc.shape[-1])
             loss = mtf.reduce_mean(cross_ent)
 
-        with tf.variable_scope('optimize'):
-            grads = mtf.gradients([loss], [v.outputs[0] for v in
-                graph.trainable_variables])
-            opt = mtf.optimize.SgdOptimizer(0.01)
-            grad_updates = opt.apply_grads(grads, graph.trainable_variables)
-
-        print(f'{datetime.datetime.now()} Beginning to lower mtf graph...',
-                flush=True)
-        lowering = mtf.Lowering(graph, mesh_to_impl)
-        print(f'{datetime.datetime.now()} Finished lowering.', flush=True)
-        tf_loss = lowering.export_to_tf_tensor(loss)
-        tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
-
-        init_op = lowering.copy_masters_to_slices()
-        return init_op, tf_loss, tf_grad_updates
+        return graph, mesh_to_impl, loss
 
 
 def main():
     # Initialize
-    t = common.Trainer()
+    t = trainer.Trainer()
 
     # Setup the data generator
     args = t.args
@@ -404,8 +378,9 @@ def main():
     tf_y.set_shape([args.batch_size])
 
     # Train
-    model = Inception(tf_x, tf_y, t.num_nodes, t.num_gpus, args)
-    t.train(*model, dataset, config=tf.ConfigProto(allow_soft_placement=False))
+    graph, mesh_to_impl, loss = Inception(tf_x, tf_y, t.num_nodes, t.num_gpus,
+            args)
+    t.train_model(graph, mesh_to_impl, loss, dataset)
 
 
 if __name__ == '__main__':

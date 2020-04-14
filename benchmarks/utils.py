@@ -49,21 +49,16 @@ def ConvertToShape(dims):
 def GetDeviceStr(node_id, gpu_id):
     return f'/job:localhost/replica:0/task:{node_id}/device:GPU:{gpu_id}'
 
-def GetDeviceList(gpus, num_nodes=1, gpus_per_node=8):
+def GetDeviceList(gpus, gpus_per_node=8):
     if isinstance(gpus, list):
         assert all(isinstance(g, str) for g in gpus)
         return gpus
 
-    #num_nodes = (num_devs + gpus_per_node - 1) // gpus_per_node
-    assert (((num_nodes-1)*gpus_per_node) < gpus <=
-            (num_nodes*gpus_per_node)), (
-                    f'Mismatch in node count. nodes: {num_nodes}; '
-                    f'gpus_per_node: {gpus_per_node}; '
-                    f'Total gpus: {gpus}.')
-
-    assert gpus % num_nodes == 0
+    num_nodes = (gpus + gpus_per_node - 1) // gpus_per_node
+    num_gpus = min(gpus, gpus_per_node)
+    assert num_gpus % num_nodes == 0
     return [GetDeviceStr(i, j) for i in range(num_nodes) for j in
-            range(gpus_per_node)]
+            range(num_gpus)]
 
 def DeviceIndex(gpu):
     assert gpu
@@ -87,13 +82,8 @@ def RenameDims(shape, axes, names):
         shape = RenameDim(shape, axis, name)
     return shape
 
-def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None, num_nodes=1,
-        gpus_per_node=8):
-    num_devs = Prod(dev_cnts)
-    assert num_devs % num_nodes == 0, (
-            f'Device count is not a multiple of node count. '
-            f'Device count: {num_devs}; node count: {num_nodes}.')
-
+def GetMeshImpl(dev_cnts, devices=None, gpus_per_node=8, axes=None,
+        mesh_impl=None):
     mesh_impl = mesh_impl or mtf.placement_mesh_impl.PlacementMeshImpl
     axes = axes or ['axis%d' % i for i in range(len(dev_cnts))]
     assert len(dev_cnts) == len(axes)
@@ -104,7 +94,7 @@ def GetMeshImpl(dev_cnts, devices=None, axes=None, mesh_impl=None, num_nodes=1,
         mesh_shape.append((axis, d))
         layout_rules.append((axis, axis))
 
-    devices = GetDeviceList(devices or num_devs, num_nodes, gpus_per_node)
+    devices = GetDeviceList(devices or Prod(dev_cnts), gpus_per_node)
     return mesh_impl(mesh_shape, layout_rules, devices)
 
 def Optimize(graph, loss, lr=0.01):

@@ -8,7 +8,7 @@ import sys, time, os
 import string, random
 import argparse
 
-import common
+import trainer
 from dataloader import TextDataLoader
 import utils
 from utils import RandName
@@ -61,7 +61,7 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
         mesh = mtf.Mesh(graph, f'mesh{mesh_id}')
         meshes.append(mesh)
         mesh_id += 1
-        mesh_to_impl[mesh] = utils.GetMeshImpl(mesh_shape, num_nodes=num_nodes,
+        mesh_to_impl[mesh] = utils.GetMeshImpl(mesh_shape,
                 gpus_per_node=gpus_per_node)
         return mesh
 
@@ -265,8 +265,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
     return graph, mesh_to_impl, loss
 
 def main():
-    trainer = common.Trainer()
-    args = trainer.args
+    t = trainer.Trainer()
+    args = t.args
     params = Params(args.batch_size, args.seq_len, args.model_size)
 
     # Initialize dataset
@@ -278,12 +278,12 @@ def main():
     # Model
     graph, mesh_to_impl, mtf_loss = Transformer(enc_inputs, dec_inputs, params,
             dataset.src_vocab_size, dataset.tgt_vocab_size, args.strategy,
-            trainer.num_nodes, trainer.num_gpus)
+            t.num_nodes, t.num_gpus)
  
     # Train
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
     config = tf.ConfigProto(allow_soft_placement=False)
-    trainer.train_model(graph, mesh_to_impl, mtf_loss, dataset, config=config,
+    t.train_model(graph, mesh_to_impl, mtf_loss, dataset, config=config,
             run_options=run_options)
 
 

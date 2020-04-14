@@ -3,6 +3,7 @@ import tensorflow.compat.v1 as tf
 import mesh_tensorflow as mtf
 import utils
 import mesh_transformations as mesh_trans
+import mtf_operations as mt
 from rnnlm import RNNOperation
 from rnnlm_gnmt import ReplaceRNNMesh
 
@@ -10,26 +11,28 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
-    devices = utils.GetDeviceList(num_gpus, num_nodes)
 
     assert num_gpus % num_nodes == 0
     assert num_gpus % 2 == 0
+    gpus_per_node = num_gpus // num_nodes
+    devices = utils.GetDeviceList(num_gpus, gpus_per_node)
 
     mesh = mtf.Mesh(graph, f'mesh0')
     meshes.append(mesh)
     mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus//2],
-            devices=devices[:num_gpus//2])
+            devices=devices[:num_gpus//2], gpus_per_node=gpus_per_node)
 
     mesh = mtf.Mesh(graph, f'mesh1')
     meshes.append(mesh)
     mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus//2],
-            devices=devices[num_gpus//2:])
+            devices=devices[num_gpus//2:], gpus_per_node=gpus_per_node)
 
     mesh = mtf.Mesh(graph, f'mesh2')
     meshes.append(mesh)
     mesh_to_impl[mesh] = utils.GetMeshImpl([num_gpus],
             devices=utils.FlattenList(utils.TransposeLists(
-                    [devices[:num_gpus//2], devices[num_gpus//2:]])))
+                [devices[:num_gpus//2], devices[num_gpus//2:]])),
+            gpus_per_node=gpus_per_node)
 
     assert len(inputs.shape) == 2
     assert inputs.shape == labels.shape
@@ -43,12 +46,11 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 def model(params, inputs, labels):
-    num_gpus = len(params.devices)
-
     # Mtf mesh
     assert len(inputs.shape) == 2
     graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels = CreateMeshes(
-            inputs, labels, params.num_nodes, num_gpus, params.batch_size)
+            inputs, labels, params.num_nodes, params.num_gpus,
+            params.batch_size)
 
     # Embedding dimensions
     vocab_dim = mtf.Dimension(utils.RandName(), params.vocab_size)
@@ -83,7 +85,7 @@ def model(params, inputs, labels):
             states=states0+states1).outputs
     assert y.mesh == meshes[1]
     assert y.shape[0].name == 'axis0'
-    y = mtf.rename_dimension(y, 'axis0', mtf_labels.shape[0].name)
+    y = mt.rename_dimension(y, 'axis0', mtf_labels.shape[0].name)
     y = mesh_trans.ReplaceMeshWithSimpleReplication(y, meshes[2])
 
     vocab_dim = mtf.Dimension('axis0', params.vocab_size)

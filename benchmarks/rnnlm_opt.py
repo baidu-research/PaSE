@@ -11,7 +11,8 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     graph = mtf.Graph()
     meshes = []
     mesh_to_impl = {}
-    devices = utils.GetDeviceList(num_gpus, num_nodes)
+    gpus_per_node = num_gpus // num_nodes
+    devices = utils.GetDeviceList(num_gpus, gpus_per_node)
 
     assert len(inputs.shape) == 2
     assert inputs.shape == labels.shape
@@ -62,15 +63,12 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     half_devices1 = devices[(num_gpus // 2):]
     mesh_devices = [devices, half_devices0, half_devices1,
             half_devices1 + half_devices0]
-    node_counts = [num_nodes, max(1, num_nodes // 2),
-            max(1, num_nodes // 2), num_nodes]
 
-    for i, (mesh_shape, ds, n) in enumerate(
-            zip(mesh_shapes, mesh_devices, node_counts)):
+    for i, (mesh_shape, ds) in enumerate(zip(mesh_shapes, mesh_devices)):
         mesh = mtf.Mesh(graph, 'mesh' + str(i))
         meshes.append(mesh)
         mesh_to_impl[mesh] = utils.GetMeshImpl(mesh_shape, devices=ds,
-                num_nodes=n)
+                gpus_per_node=gpus_per_node)
 
     mtf_shape = utils.ConvertToShape([('axis0', batch_size)] +
         inputs.shape.as_list()[1:])
@@ -79,13 +77,11 @@ def CreateMeshes(inputs, labels, num_nodes, num_gpus, batch_size):
     return graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels
 
 def model(params, inputs, labels):
-    devices = params.devices
-    num_gpus = len(devices)
-
     # MTF mesh
     assert len(inputs.shape) == 2
     graph, meshes, mesh_to_impl, mtf_inputs, mtf_labels = CreateMeshes(
-            inputs, labels, params.num_nodes, num_gpus, params.batch_size)
+            inputs, labels, params.num_nodes, params.num_gpus,
+            params.batch_size)
     embed_mesh, lstm0_mesh, lstm1_mesh, proj_mesh = meshes
     batch_dim_name, n_dim_name, k_dim_name = 'axis0', 'axis1', 'axis2'
 
@@ -122,7 +118,7 @@ def model(params, inputs, labels):
     assert y.shape[-1].name == k_dim_name
     assert mesh_to_impl[proj_mesh].shape[-1] == mtf.Dimension(k_dim_name, 1)
     rand_dim_name = utils.RandName()
-    y = mtf.rename_dimension(y, k_dim_name, rand_dim_name)
+    y = mt.rename_dimension(y, k_dim_name, rand_dim_name)
     shape = y.shape.rename_dimension(rand_dim_name, k_dim_name)
     y = mesh_trans.ReplaceMeshWithIndependentAxes(
             y, proj_mesh, shape.dimension_names)

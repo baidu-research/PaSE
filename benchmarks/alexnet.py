@@ -6,27 +6,14 @@ import sys
 import time
 import os, os.path
 import string, random
+import functools
 
-import common
+import trainer
 from dataloader import ImageDataLoader
 import utils
 from mesh_transformations import ReplaceMeshWithDuplicates, \
         ReplaceMeshWithIndependentAxes, ReplaceMeshWithConcatSplit
-from mtf_operations import Conv2d, MaxPool
-#import dgx_mesh_impl
-
-
-def GetShape(dims):
-    sh = []
-    for d in dims:
-        try:
-            name, size = d
-        except (TypeError, ValueError):
-            name, size = utils.RandName(), d
-        sh.append(mtf.Dimension(name, size))
-
-    sh = mtf.Shape(sh)
-    return sh
+import mtf_operations as mt
 
 def CreateMeshes(img, labels, num_nodes, num_gpus, args):
     h, w, ch = 227, 227, 3
@@ -38,20 +25,17 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
     batch_size = args.batch_size
     gpus_per_node = (num_gpus // num_nodes)
 
-    def GetMeshImpl(dev_cnts, devices=None, node_cnt=num_nodes):
-        assert ((utils.RoundUp(utils.Prod(dev_cnts), gpus_per_node)) ==
-                (gpus_per_node * node_cnt))
-        return utils.GetMeshImpl(dev_cnts, devices=devices, num_nodes=node_cnt)
-
+    GetMeshImpl = functools.partial(utils.GetMeshImpl,
+            gpus_per_node=gpus_per_node)
     if strategy == 0:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
         mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
-        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('axis0', batch_size),
-            h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([('axis0',
-            batch_size)]))
+        mtf_img = mtf.import_tf_tensor(mesh, img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(mesh, labels,
+                utils.ConvertToShape([('axis0', batch_size)]))
 
     elif strategy == 1:
         mesh = mtf.Mesh(graph, 'mesh0')
@@ -74,25 +58,26 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
 
         mesh = mtf.Mesh(graph, 'mesh1')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([dim1, dim2], node_cnt=num_nodes)
+        mesh_to_impl[mesh] = GetMeshImpl([dim1, dim2])
 
         mesh = mtf.Mesh(graph, 'mesh2')
         meshes.append(mesh)
-        mesh_to_impl[mesh] = GetMeshImpl([1, dim2], node_cnt=1)
+        mesh_to_impl[mesh] = GetMeshImpl([1, dim2])
 
-        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-            batch_size), h, w, ch]))
+        mtf_img = mtf.import_tf_tensor(meshes[0], img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[-1], labels,
-                GetShape([batch_size]))
+                utils.ConvertToShape([batch_size]))
 
     elif strategy == 2:
         mesh = mtf.Mesh(graph, 'mesh0')
         meshes.append(mesh)
         mesh_to_impl[mesh] = GetMeshImpl([num_gpus])
 
-        mtf_img = mtf.import_tf_tensor(mesh, img, GetShape([('axis0', batch_size),
-            h, w, ch]))
-        mtf_labels = mtf.import_tf_tensor(mesh, labels, GetShape([batch_size]))
+        mtf_img = mtf.import_tf_tensor(mesh, img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
+        mtf_labels = mtf.import_tf_tensor(mesh, labels,
+                utils.ConvertToShape([batch_size]))
 
     elif strategy == 3:
         mesh = mtf.Mesh(graph, 'mesh0')
@@ -103,10 +88,10 @@ def CreateMeshes(img, labels, num_nodes, num_gpus, args):
         meshes.append(mesh)
         mesh_to_impl[mesh] = GetMeshImpl([2, num_gpus // 2])
 
-        mtf_img = mtf.import_tf_tensor(meshes[0], img, GetShape([('axis0',
-            batch_size), h, w, ch]))
+        mtf_img = mtf.import_tf_tensor(meshes[0], img,
+                utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
         mtf_labels = mtf.import_tf_tensor(meshes[1], labels,
-                GetShape([('axis0', batch_size)]))
+                utils.ConvertToShape([('axis0', batch_size)]))
 
     else:
         assert False
@@ -126,7 +111,7 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
     learning_rate = 0.01
     graph, meshes, mesh_to_impl, mtf_img, mtf_labels = CreateMeshes(img, labels,
             num_nodes, num_gpus, args)
-    RenameFC = lambda x: mtf.rename_dimension(x, x.shape[-1].name, utils.RandName())
+    RenameFC = lambda x: mt.rename_dimension(x, x.shape[-1].name, utils.RandName())
 
     strategy = args.strategy
     if strategy == 0:
@@ -153,27 +138,27 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
 
     with tf.variable_scope('alexnet'):
         # Conv1 + ReLU + maxpool1
-        conv1 = Conv2d(mtf_img, GetFilterShape(mtf_img, (11, 11, 3, 96)),
-                (4, 4), 'VALID', activation=mtf.relu, name='conv1')
-        pool1 = MaxPool(conv1, (3, 3), (2, 2), 'VALID', name='pool1')
+        conv1 = mt.Conv2d(mtf_img, GetFilterShape(mtf_img, (11, 11, 3, 96)), (4,
+            4), 'VALID', activation=mtf.relu, name='conv1')
+        pool1 = mt.MaxPool(conv1, (3, 3), (2, 2), 'VALID', name='pool1')
 
         # Conv2 + ReLU + maxpool2
-        conv2 = Conv2d(pool1, GetFilterShape(pool1, (5, 5, 96, 256)), (1,
-            1), 'SAME', activation=mtf.relu, name='conv2')
-        pool2 = MaxPool(conv2, (3, 3), (2, 2), name='pool2')
+        conv2 = mt.Conv2d(pool1, GetFilterShape(pool1, (5, 5, 96, 256)), (1, 1),
+                'SAME', activation=mtf.relu, name='conv2')
+        pool2 = mt.MaxPool(conv2, (3, 3), (2, 2), name='pool2')
 
         # Conv3 + ReLU
-        conv3 = Conv2d(pool2, GetFilterShape(pool2, (3, 3, 256, 384)),
+        conv3 = mt.Conv2d(pool2, GetFilterShape(pool2, (3, 3, 256, 384)),
                 padding='SAME', activation=mtf.relu, name='conv3')
 
         # Conv4 + ReLU
-        conv4 = Conv2d(conv3, GetFilterShape(conv3, (3, 3, 384, 384)),
+        conv4 = mt.Conv2d(conv3, GetFilterShape(conv3, (3, 3, 384, 384)),
                 padding='SAME', activation=mtf.relu, name='conv4')
 
         # Conv5 + ReLU + maxpool5
-        conv5 = Conv2d(conv4, GetFilterShape(conv4, (3, 3, 384, 256)),
+        conv5 = mt.Conv2d(conv4, GetFilterShape(conv4, (3, 3, 384, 256)),
                 padding='SAME', activation=mtf.relu, name='conv5')
-        pool5 = MaxPool(conv5, (3, 3), (2, 2), name='pool5')
+        pool5 = mt.MaxPool(conv5, (3, 3), (2, 2), name='pool5')
 
         # Rename dims
         if strategy == 1:
@@ -184,7 +169,7 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
                     (utils.RandName(), 'axis0'))
 
         elif strategy == 2:
-            pool5 = mtf.rename_dimension(pool5, pool5.shape[0].name, utils.RandName())
+            pool5 = mt.rename_dimension(pool5, pool5.shape[0].name, utils.RandName())
 
         elif strategy == 3:
             assert pool5.shape[0].name == 'axis0'
@@ -217,31 +202,17 @@ def Alexnet(img, labels, num_nodes, num_gpus, args):
 
     with tf.variable_scope('loss'):
         if fc8.shape[0] != mtf_labels.shape[0]:
-            fc8 = mtf.rename_dimension(fc8, fc8.shape[0].name,
+            fc8 = mt.rename_dimension(fc8, fc8.shape[0].name,
                     mtf_labels.shape[0].name)
         one_hot_labels = mtf.one_hot(mtf_labels, fc8.shape[-1])
         mtf_cross_ent = mtf.layers.softmax_cross_entropy_with_logits(fc8,
                 one_hot_labels, fc8.shape[-1])
         mtf_loss = mtf.reduce_mean(mtf_cross_ent)
 
-    with tf.variable_scope('optimize'):
-        grads = mtf.gradients([mtf_loss], [v.outputs[0] for v in
-            graph.trainable_variables])
-        opt = mtf.optimize.SgdOptimizer(learning_rate)
-        grad_updates = opt.apply_grads(grads, graph.trainable_variables)
-
-    print('Beginning to lower mtf graph...', flush=True)
-    lowering = mtf.Lowering(graph, mesh_to_impl)
-    print('Finished lowering.', flush=True)
-    tf_loss = lowering.export_to_tf_tensor(mtf_loss)
-    tf_grad_updates = [lowering.lowered_operation(op) for op in grad_updates]
-
-    init_op = lowering.copy_masters_to_slices()
-    return init_op, tf_loss, tf_grad_updates
-
+    return graph, mesh_to_impl, mtf_loss
 
 def main():
-    t = common.Trainer()
+    t = trainer.Trainer()
 
     # Initalize the data generator
     args = t.args
@@ -254,9 +225,9 @@ def main():
     tf_x.set_shape([args.batch_size, 227, 227, 3])
     tf_y.set_shape([args.batch_size])
 
-    model = Alexnet(tf_x, tf_y, t.num_nodes, t.num_gpus, args)
-    t.train(*model, dataset, config=tf.ConfigProto(allow_soft_placement=False))
-
+    graph, mesh_to_impl, loss = Alexnet(tf_x, tf_y, t.num_nodes, t.num_gpus,
+            args)
+    t.train_model(graph, mesh_to_impl, loss, dataset)
 
 if __name__ == '__main__':
     main()

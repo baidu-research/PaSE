@@ -2,19 +2,19 @@ import numpy as np
 import tensorflow.compat.v1 as tf
 import mesh_tensorflow as mtf
 
-import common
+import trainer
 import utils
 from dataloader import TextDataLoader
 
 class Params():
-    def __init__(self, batch_size, vocab_size, max_seq_len, num_nodes, devices):
+    def __init__(self, batch_size, vocab_size, max_seq_len, num_nodes, num_gpus):
         self.batch_size = batch_size
         self.num_units = 2048
         self.vocab_size = vocab_size
         self.max_seq_len = max_seq_len
         self.num_layers = 2
         self.num_nodes = num_nodes
-        self.devices = devices
+        self.num_gpus = num_gpus
 
 def assign_device(x, d):
     if x.device != d:
@@ -246,10 +246,9 @@ class RNNOperation(mtf.Operation):
         lowering.set_tensor_lowering(self.outputs[0], laid_out_y)
 
 def main():
-    trainer = common.Trainer()
-    args = trainer.args
+    t = trainer.Trainer()
+    args = t.args
     lr = 0.01
-    devices = utils.GetDeviceList(trainer.num_gpus, trainer.num_nodes)
 
     # Initialize dataset
     dataset = TextDataLoader(args.batch_size, args.src_vocab, None,
@@ -262,10 +261,10 @@ def main():
     inputs = tf.cast(inputs, tf.int32)
     labels = tf.cast(labels, tf.int32)
 
-    vocab_size = utils.RoundUp(dataset.src_vocab_size, trainer.num_gpus)
+    vocab_size = utils.RoundUp(dataset.src_vocab_size, t.num_gpus)
     print("Vocab size: %d" % vocab_size)
     params = Params(args.batch_size, vocab_size, args.seq_len,
-            trainer.num_nodes, devices)
+            t.num_nodes, t.num_gpus)
 
     # Model
     if args.strategy == 0:
@@ -290,7 +289,7 @@ def main():
     run_options = tf.RunOptions(report_tensor_allocations_upon_oom=True)
     config = tf.ConfigProto(allow_soft_placement=soft_placement,
             log_device_placement=True)
-    trainer.train_model(graph, mesh_to_impl, mtf_loss, dataset, config=config,
+    t.train_model(graph, mesh_to_impl, mtf_loss, dataset, config=config,
             run_options=run_options)
 
 
