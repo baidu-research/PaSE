@@ -18,6 +18,7 @@ import mesh_transformations as mesh_trans
 
 class Params():
     def __init__(self, batch_size, max_seq_len, model_size):
+        self.model_size = model_size
         if model_size == 'small':
             self.batch_size = batch_size
             self.nx = 6
@@ -73,33 +74,29 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
 
     elif strategy == 1: # Opt strategy from the tool
         if num_gpus == 4:
-            embed_dim1, embed_dim2 = 2, 2
             dim1, dim2 = 4, 1
         elif num_gpus == 8:
-            embed_dim1, embed_dim2 = 2, 4
             dim1, dim2 = 8, 1
         elif num_gpus == 16:
-            embed_dim1, embed_dim2 = 2, 8
             if params.model_size == 'small':
                 dim1, dim2 = 16, 1
             else:
                 dim1, dim2 = 8, 2
         elif num_gpus == 32:
-            embed_dim1, embed_dim2 = 4, 8
             dim1, dim2 = 16, 2
         elif num_gpus == 64:
-            embed_dim1, embed_dim2 = 4, 16
-            dim1, dim2 = 16, 4
+            if params.model_size == 'small':
+                dim1, dim2 = 32, 2
+            else:
+                dim1, dim2 = 16, 4
         else:
             assert False
-        assert ((embed_dim1 * embed_dim2) == num_gpus)
         assert ((dim1 * dim2) == num_gpus)
 
         mesh0 = CreateMesh([dim1, dim2])
-        mesh1 = CreateMesh([embed_dim1, embed_dim2])
+        mesh1 = CreateMesh([num_gpus])
 
-        shape = utils.ConvertToShape([params.batch_size,
-            ('axis0', params.max_seq_len)])
+        shape = utils.ConvertToShape([params.batch_size, params.max_seq_len])
         mtf_src = mtf.import_tf_tensor(mesh1, src, shape)
         mtf_tgt = mtf.import_tf_tensor(mesh1, tgt, shape)
 
@@ -177,8 +174,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
         heads_dim      = mtf.Dimension(RandName(), params.heads)
         ff_dim         = mtf.Dimension(RandName(), params.d_ff)
     elif strategy == 1:
-        src_vocab_dim  = mtf.Dimension('axis1', src_vocab_size)
-        tgt_vocab_dim  = mtf.Dimension('axis1', tgt_vocab_size)
+        src_vocab_dim  = mtf.Dimension('axis0', src_vocab_size)
+        tgt_vocab_dim  = mtf.Dimension('axis0', tgt_vocab_size)
         model_dim      = mtf.Dimension(RandName(), params.d_model)
         d_k_dim        = mtf.Dimension(RandName(), params.d_k)
         heads_dim      = mtf.Dimension('axis1', params.heads)
@@ -196,8 +193,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
     assert mtf_src.shape[-1] == mtf_tgt.shape[-1]
 
     if strategy == 1:
-        check_distribution(mtf_src, meshes[1], {1:'axis0'})
-        check_distribution(mtf_tgt, meshes[1], {1:'axis0'})
+        check_distribution(mtf_src, meshes[1], {})
+        check_distribution(mtf_tgt, meshes[1], {})
     else:
         check_distribution(mtf_src, meshes[0], {0:'axis0'})
         check_distribution(mtf_tgt, meshes[0], {0:'axis0'})
@@ -208,8 +205,8 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
             embed = mtf.layers.embedding(inp, vocab_dim, model_dim,
                     tf.float32, name=f'{name}_embedding')
             if strategy == 1:
-                check_distribution(embed, meshes[1], {1:'axis0'})
-                shape = embed.shape.rename_dimension('axis0', RandName())
+                check_distribution(embed, meshes[1], {})
+                shape = embed.shape
                 shape = shape.rename_dimension(shape[0].name, 'axis0')
                 embed = mesh_trans.ReplaceMeshWithIndependentAxes(
                         embed, meshes[0], dim_names=shape.dimension_names)
@@ -253,10 +250,9 @@ def Transformer(src, tgt, params, src_vocab_size, tgt_vocab_size, strategy,
         if strategy == 1:
             shape = dec_out.shape.rename_dimension('axis0',
                     mtf_tgt.shape[0].name)
-            shape = shape.rename_dimension(shape[1].name, 'axis0')
             dec_out = mesh_trans.ReplaceMeshWithIndependentAxes(
                     dec_out, meshes[1], dim_names=shape.dimension_names)
-            check_distribution(dec_out, meshes[1], {1:'axis0'})
+            check_distribution(dec_out, meshes[1], {})
 
         out = mtf.layers.dense(dec_out, tgt_vocab_dim, use_bias=False,
                 reduced_dims=dec_out.shape[-1:], name='final_projection')
