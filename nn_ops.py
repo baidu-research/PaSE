@@ -41,8 +41,8 @@ def WordsToFlops(words, arch=0):
         p100_peak_flop = float(10.6 * 1000) # GFLOPs
         #p100_bw = float((36.72 * 2) / 8) # NVLink Unidirectional for 2 sublinks per direction.
         #                                 # GBytes/sec = b/8 GWords/sec
-        #p100_bw = float(13.0 / 8.0) # PCIe bidirectional GWords / sec
-        p100_bw = float(6.25 / 8.0) # Infiniband GWords / sec
+        p100_bw = float(13.0 / 8.0) # PCIe bidirectional GWords / sec
+        #p100_bw = float(6.25 / 8.0) # Infiniband GWords / sec
         
         v100_peak_flop = float(15.7 * 1000) # GFLOPs
         #v100_bw = float(47.99 / 8.0) # Best NVLink unidirectional GWords/sec
@@ -621,11 +621,14 @@ class Einsum(Ops):
             else:
                 dims_to_sizes_map[d] = s
 
-        # First convert to list to preserve ordering. Keep the convention of
-        # (out_dims, reduction_dims) for dom
-        dom_dims, dom_sizes = TransposeLists(dims_to_sizes_map.items())
+        # Keep the convention of (out_dims, reduction_dims) for dom
+        reduction_dims = ''.join(reduction_dims_set)
         dom = tuple(dims_to_sizes_map[d] for d in out_dims) + tuple(
-                dims_to_sizes_map[d] for d in reduction_dims_set)
+                dims_to_sizes_map[d] for d in reduction_dims)
+        dom_dims = out_dims + reduction_dims
+        print(f'Einsum domain: {dom_dims}; '
+                f'in_tsr1: {in1_dims}; in_tsr2: {in2_dims}; '
+                f'out_tsr: {out_dims}.')
         out_tsr = tuple(dims_to_sizes_map[d] for d in out_dims)
 
         # Indices
@@ -633,7 +636,7 @@ class Einsum(Ops):
         self.batch_indices = dims_to_indices(batch_dims_set)
         self.m_indices = dims_to_indices(m_dims_set)
         self.n_indices = dims_to_indices(n_dims_set)
-        self.reduction_indices = dims_to_indices(reduction_dims_set)
+        self.reduction_indices = dims_to_indices(reduction_dims)
         self.in1_tsr_indices = dims_to_indices(in1_dims)
         self.in2_tsr_indices = dims_to_indices(in2_dims)
         self.out_tsr_indices = dims_to_indices(out_dims)
