@@ -114,6 +114,39 @@ class Processor:
                 node_dict[v] = s
                 node_tbl[v, 1] = len(s)
 
+    def SortNodesNaive(self):
+        rset = set()
+        uset = set(self.G.nodes())
+
+        node_dict = dict()
+        for v in self.G.nodes():
+            neighs = set(itertools.chain(self.G.predecessors(v),
+                self.G.successors(v)))
+            node_dict[v] = neighs
+
+        for i in range(self.n_nodes):
+            node_id = None
+            rset_size = None
+            for v in uset:
+                l = len(rset | node_dict[v] | {v})
+                try:
+                    if l < rset_size:
+                        node_id = v
+                        rset_size = l
+                except TypeError:
+                    node_id = v
+                    rset_size = l
+
+            yield node_id
+
+            rset |= node_dict[node_id]
+            rset.discard(node_id)
+            uset.discard(node_id)
+            for v in node_dict[node_id]:
+                node_dict[v].discard(node_id)
+
+            assert rset <= uset
+
     # Convert configuration series to dataframe
     def CfgToDf(self, v):
         return pd.DataFrame().assign(**{str(v) :
