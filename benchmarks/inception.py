@@ -66,7 +66,10 @@ def CreateMeshes(args, img, labels, num_nodes, num_gpus):
 
         # mesh1
         mesh = Mesh()
-        mesh_to_impl[mesh] = GetMeshImpl([num_gpus // 2, 2])
+        if num_gpus == 4:
+            mesh_to_impl[mesh] = GetMeshImpl([4, 1])
+        else:
+            mesh_to_impl[mesh] = GetMeshImpl([num_gpus // 2, 2])
 
         mtf_img = mtf.import_tf_tensor(meshes[0], img,
                 utils.ConvertToShape([('axis0', batch_size), h, w, ch]))
