@@ -102,7 +102,7 @@ def CreateMeshes(strategy, src, tgt, num_nodes, num_gpus, params):
 
     elif strategy == 2: # Strategy from mesh-tensorflow paper
         if num_gpus == 4:
-            dim1, dim2 = 2, 2
+            dim1, dim2 = 4, 1
         elif num_gpus == 8:
             dim1, dim2 = 2, 4
         elif num_gpus == 16:
