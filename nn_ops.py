@@ -1057,7 +1057,6 @@ class LSTM(Ops):
         # Amount of words to be communicated for reshaping the output of each
         # LSTM cell into its input (to be fed to next layer, and next iteration
         # of same layer)
-        # TODO: Should we ignore_area_intersection when pipelining layer?
         lstm_cell_out_configs = self.dom_configs[:, batch_dim:n_dim+1]
         lstm_cell_in_configs = self.dom_configs[:, (batch_dim, k_dim)]
         lstm_cell_out_tsr = ((self.dom[batch_dim], self.dom[n_dim]) /

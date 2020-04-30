@@ -1,5 +1,15 @@
-Python packages:
-numpy
-pandas
-networx
-pydot (Optional. Only needed to dump the graph in dot format.)
+decorator==4.3.2
+networkx==2.2
+numpy==1.16.2
+pandas==0.24.1
+pbr==5.1.1
+pkg-resources==0.0.0
+pydot==1.4.1
+pyparsing==2.3.1
+python-dateutil==2.8.0
+pytz==2018.9
+six==1.12.0
+stevedore==1.30.0
+virtualenv==16.1.0
+virtualenv-clone==0.4.0
+virtualenvwrapper==4.8.2
