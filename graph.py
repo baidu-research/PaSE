@@ -3,9 +3,13 @@ import nn_ops
 
 
 def AlexNet(b):
+    # 4D input image tensor with dimensions bx3x227x227
     img = nn_ops.InputTensor((b, 3, 227, 227))
 
     # Conv1 + relu + maxpool
+    # Conv input parameters: image, filter dimensions, stride, padding,
+    # no. of pointwise operations that follow the convolution.
+    # Pooling input parameters: image, filter dimensions, stride, padding
     conv1 = nn_ops.Conv(img, (96, 3, 11, 11), stride=4, pw_op_cnt=1)
     pool1 = nn_ops.Pooling(conv1.GetOutTensor(0), (3, 3), stride=2)
 
@@ -53,6 +57,7 @@ def ResNet101(b):
     expansion = 4
     inplanes = 64
 
+    # Bottleneck connections architecture
     def Bottleneck(img, inplanes, planes, stride=1, downsample=None):
         identity = img
 

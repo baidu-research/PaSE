@@ -8,32 +8,40 @@ import operator as op
 import string
 
 
+# Returns product of all the element in a list/tuple
 def Prod(v):
     return reduce(op.mul, v, 1)
 
-
+# Transposes a list of lists
 def TransposeLists(l):
     return [list(x) for x in zip(*l)]
 
-
+# Converts negative axis to positive
 def AdjustAxis(tsr, axis):
     if axis < 0:
         axis = len(tsr) + axis
     assert axis >=0 and axis < len(tsr)
     return axis
 
-
+# A tensor object is a list of tuples containing the dimensions of the tensor.
+# The flag 'is_input' is set for input tensors.
 class Tensor(tuple):
     def SetAsInput(self):
         self.is_input = True
 
-
+# Function to create an input tensor
 def InputTensor(x):
     t = Tensor(x)
     t.SetAsInput()
     return t
 
-
+# Normalizes the cost of communicating 'words' no. of words in terms of the
+# computation cost.
+# 'WordsToFlops.bw_to_flops' is the ratio of an architecture's peak flop to peak
+# inter-network bandwidth. It specifies the amount of computation that can be
+# performed in the same time a word of data is transferred.
+# We multiple 'words' with this parameter to obtain flops count equivalent to
+# communication 'words' amount of data.
 def WordsToFlops(words, arch=0):
     try:
         return WordsToFlops.bw_to_flops * words
@@ -60,13 +68,11 @@ def WordsToFlops(words, arch=0):
         WordsToFlops.bw_to_flops = float(peak_flop / bw)
         return WordsToFlops.bw_to_flops * words
 
-
-# Returns a list of factors of a number 'n'
+# Returns a list of all factors of a number 'n'
 def factors(n):
     assert(n > 0)
     return set(reduce(list.__add__, ([i, n//i] for i in range(
         1, int(n**0.5) + 1) if n % i == 0)))
-
 
 # Converts 'v' into a tuple (v, v) if 'v' is a scalar
 def MakePair(v):
@@ -76,9 +82,9 @@ def MakePair(v):
     else:
         return (v, v)
 
-
-# Generates list of configurations for an operation
-# cutoff - Minimum domain size to reduce search space
+# Generates a list of configurations for an operation.
+# We can set a 'cutoff' to ignore configurations that end up splitting the 'dom'
+# too small.
 def GetConfigs(dom, n_procs, cutoff):
     dim = len(dom)
 
@@ -93,28 +99,34 @@ def GetConfigs(dom, n_procs, cutoff):
     configs = [c for c in itertools.product(*proc_set) if Prod(c) <= n_procs]
     return configs
 
-
+# Cost of performing all-reduce communication of 'words' words among 'procs'
+# processors
 def GetAllReduceCost(words, procs):
     # All-reduce cost = 2*((n*k)/P)*(P-1)
     chunks = words / procs # The elements are split into 'procs' chunks
     steps = 2.0 * (procs - 1)
     return WordsToFlops(chunks * steps) # When procs = 1, the cost is 0
 
-
+# 'dom_per_proc' is a list of configurations that specify different ways to
+# parallelize a GEMM computation. This function calculates the computation cost
+# (per processor) for each of these configurations.
 def GetGemmCompCosts(dom_per_proc, pw_op_cnt):
     m_idx, n_idx, k_idx = 0, 1, 2
 
     # 1 GEMM in fwd phase, 2 GEMMs in bwd phase
     costs = np.prod(dom_per_proc, axis=1) * 3.0
 
-    # pw_op_cnt includes 1 fwd differentiation, 1 bwd differentiation, and 1
-    # hadamard product (from chain rule) per pw_op
+    # For pointwise ops, we have 1 fwd differentiation, 1 bwd differentiation,
+    # and 1 hadamard product (from chain rule) per pw_op
     if pw_op_cnt > 0:
         costs += ((3 * pw_op_cnt) * np.prod(dom_per_proc[:, m_idx:n_idx+1],
             axis=1))
 
     return costs
 
+# 'dom_per_proc' is a list of configurations that specify different ways to
+# parallelize a GEMM computation. This function calculates the intra-layer
+# communication cost for each of these configurations.
 def GetGemmCommCosts(dom_per_proc, dom_configs):
     m_idx, n_idx, k_idx = 0, 1, 2
 
@@ -134,6 +146,9 @@ def GetGemmCommCosts(dom_per_proc, dom_configs):
 
     return costs
 
+# 'dom_per_proc' is a list of configurations that specify different ways to
+# parallelize a GEMM computation. This function calculates the intra-layer
+# computation + communication cost for each of these configurations.
 def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
     assert len(dom) == dom_configs.shape[-1] >= 3
     assert len(dom_configs.shape) == 2 and len(dom) == dom_configs.shape[-1]
@@ -145,8 +160,7 @@ def ComputeGemmCosts(dom, dom_configs, pw_op_cnt):
     return (batches_per_proc *  (GetGemmCompCosts(gemm_per_proc, pw_op_cnt) +
         GetGemmCommCosts(gemm_per_proc, dom_configs[:,-3:])))
 
-
-# Ghost communication costs for convolution, pooling
+# Ghost/Halo communication costs for convolution, pooling
 def ComputeGhostCommCosts(tsr, configs, r, s):
     assert len(tsr) == configs.shape[1] == 4
     b_idx, c_idx, h_idx, w_idx = range(4)
@@ -172,7 +186,9 @@ def ComputeGhostCommCosts(tsr, configs, r, s):
 
     return WordsToFlops(ghost_elems)
 
-
+# 'arr1' and 'arr2' are 2D arrays. This function replicates the rows of arr1 and
+# arr2, so that all combinations (cross-product) of rows in arr1 and arr2 are
+# formed.
 def RowCartesianProd(arr1, arr2):
     shape1 = arr1.shape[0]
     shape2 = arr2.shape[0]
@@ -182,7 +198,9 @@ def RowCartesianProd(arr1, arr2):
     arr2 = np.tile(arr2, tile_shape)
     return arr1, arr2
 
-
+# Returns the volume of tensor data to be communicated b/w two neighboring
+# layors 'src' and 'tgt' for different parallelization configurations. This
+# volume is used later to calculate inter-layer communication costs.
 def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs,
         ignore_area_intersection=False):
     if len(src_procs.shape) > 1:
@@ -204,10 +222,9 @@ def GetAreaNeeded(src_data_sizes, tgt_data_sizes, src_procs, tgt_procs,
     # Area that needs to be communicated
     return (tgt_area - area_intersection).clip(min=0)
 
-
-# Returns edge costs for different configs. Edge cost is computed using the
-# difference b/w tensor volume needed per proc by the target vertex and the tensor
-# volume held per proc by the source vertex.
+# Returns edge costs (inter-layer communicatoin costs) for different configs.
+# Edge cost is computed using the difference b/w tensor volume needed per proc
+# by the target vertex and the tensor volume held per proc by the source vertex.
 def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True):
     # Calculate the domains per processor
     src_tsr_per_proc = tsr / src_cfgs
@@ -229,7 +246,8 @@ def GetEdgeCosts(tsr, src_cfgs, tgt_cfgs, cross_prod=True):
             tgt_procs) * 2.0
     return WordsToFlops(area_needed)
 
-
+# Returns the output tensor height and width after applying convolution/pooling
+# with 'stride' and 'pad' padding.
 def GetConvolutedSize(h, w, r, s, stride, pad):
     stride_r, stride_s = MakePair(stride)
     pad_r, pad_s = MakePair(pad)
@@ -375,7 +393,6 @@ class Ops():
     def __call__(self, idx=None):
         return self.GetOutTensors() if idx is None else self.GetOutTensor(idx)
 
-
 class Variable(Ops):
     def __init__(self, tsr, n_procs=None):
         super().__init__(tuple(tsr), tsr, tsr, n_procs)
@@ -384,7 +401,6 @@ class Variable(Ops):
         super().ComputeCosts()
         self.in_tsr_configs = self.dom_configs
         self.out_tsr_configs = self.dom_configs
-
 
 # Elementwise ops such as add, mul, etc.,
 class Elementwise(Ops):
@@ -404,7 +420,6 @@ class Elementwise(Ops):
 
         dom_per_proc = np.prod(self.dom / self.dom_configs, axis=1)
         self.costs = (1 + self.pw_op_cnt) * dom_per_proc
-
 
 # Get communication cost of converting a multi-dimensional 'tsr1' to a 1D 'tsr2'
 def GetFlatteningCost(tsr1, tsr2, tsr1_configs, tsr2_configs):
@@ -429,7 +444,6 @@ def GetFlatteningCost(tsr1, tsr2, tsr1_configs, tsr2_configs):
             tgt_procs) * 2.0
 
     return WordsToFlops(words)
-
 
 def ConfigureReshape(op):
     def is_contiguous(cfg):
@@ -467,7 +481,6 @@ def ConfigureReshape(op):
         op.out_tsr_configs = op.dom_configs
         op.in_tsr_configs = np.prod(op.dom_configs, axis=1, keepdims=True)
 
-
 class Ravel(Ops):
     def __init__(self, tsr, n_procs=None):
         out_tsr = Tensor((Prod(tsr),))
@@ -476,7 +489,6 @@ class Ravel(Ops):
     def ComputeCosts(self):
         ConfigureReshape(self)
         self.costs = 0
-
 
 class Unravel(Ops):
     def __init__(self, tsr, shape, n_procs=None):
@@ -488,12 +500,10 @@ class Unravel(Ops):
         ConfigureReshape(self)
         self.costs = 0
 
-
 def Reshape(tsr, shape, n_procs=None):
     ravel = Ravel(tsr, n_procs)
     unravel = Unravel(ravel.GetOutTensor(0), shape, n_procs)
     return unravel
-
 
 class Transpose(Ops):
     def __init__(self, in_tsr, perm, n_procs=None):
@@ -508,7 +518,6 @@ class Transpose(Ops):
         self.in_tsr_configs = self.dom_configs
         self.out_tsr_configs = self.dom_configs[:, tuple(p for p in self.perm)]
         self.costs = 0
-
 
 class Stack(Ops):
     def __init__(self, in_tsrs, axis=0, n_procs=None):
@@ -530,7 +539,6 @@ class Stack(Ops):
         self.out_tsr_configs = self.dom_configs
         self.costs = 0
 
-
 class Unstack(Ops):
     def __init__(self, in_tsr, axis=0, n_procs=None):
         axis = self.axis = AdjustAxis(in_tsr, axis)
@@ -548,7 +556,6 @@ class Unstack(Ops):
         self.out_tsr_configs = (np.delete(
             self.dom_configs, self.axis, axis=1),) * self.num
         self.costs = 0
-
 
 # Fully connected layer
 class FC(Ops):
@@ -576,7 +583,6 @@ class FC(Ops):
             np.prod(self.dom_configs[:,:-2], axis=1, keepdims=True),
             self.dom_configs[:,-2:]), axis=1)
         self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
-
 
 class Einsum(Ops):
     def __init__(self, eq, tsr1, tsr2, n_procs=None, pw_op_cnt=0):
@@ -663,7 +669,6 @@ class Einsum(Ops):
         self.out_tsr_configs = self.dom_configs[:,self.out_tsr_indices]
         self.costs = ComputeGemmCosts(gemm_dom, gemm_configs, self.pw_op_cnt)
 
-
 # Batched matmul
 def MatMul(tsr1, tsr2, n_procs=None, pw_op_cnt=0):
     # Both tensors should be of same rank and >=2, inner most two dimensions
@@ -677,7 +682,6 @@ def MatMul(tsr1, tsr2, n_procs=None, pw_op_cnt=0):
     m, n, k = dims[-3:]
     eq = f'{batch_dims}{m}{k},{batch_dims}{k}{n}->{batch_dims}{m}{n}'
     return Einsum(eq, tsr1, tsr2, n_procs, pw_op_cnt)
-
 
 # Convolution
 class Conv(Ops):
@@ -736,7 +740,6 @@ class Conv(Ops):
             self.costs += ComputeGhostCommCosts(self.GetInTensor(0),
                     self.in_tsr_configs, self.dom[r_idx], self.dom[s_idx])
 
-
 # Pooling - Maxpool, Avgpool
 class Pooling(Ops):
     def __init__(self, img, fltr, stride=1, pad=0, n_procs=None):
@@ -761,7 +764,6 @@ class Pooling(Ops):
         # Add costs for ghost communications
         self.costs += ComputeGhostCommCosts(self.GetInTensor(0),
                 self.in_tsr_configs, self.r, self.s)
-
 
 class Concat(Ops):
     def __init__(self, in_tsrs, axis, n_procs=None):
@@ -790,7 +792,6 @@ class Concat(Ops):
         self.out_tsr_configs = self.dom_configs
         self.costs = 0
 
-
 class Split(Ops):
     def __init__(self, in_tsr, num_splits, axis, n_procs=None):
         axis = AdjustAxis(in_tsr, axis)
@@ -810,7 +811,6 @@ class Split(Ops):
         self.out_tsr_configs = (self.dom_configs,) * self.num_splits
         self.costs = 0
 
-
 class Norm(Ops):
     def __init__(self, in_tsr, axis=-1, n_procs=None):
         assert len(in_tsr) > 1
@@ -829,7 +829,7 @@ class Norm(Ops):
         self.costs = (2 * 8.0) * elems
 
         # Communication cost for fwd phase: Reduction and broadcast of mean and
-        # variance. 2 reductions for fwd phase, and 4 for bwd phase.
+        # variance. 2 reductions for fwd phase, and 2 for bwd phase.
         self.costs += 4.0 * GetAllReduceCost(elems / dom_per_proc[:, self.axis],
                 self.dom_configs[:, self.axis])
 
@@ -838,10 +838,8 @@ class Norm(Ops):
         procs = np.prod(np.delete(self.dom_configs, self.axis, axis=1), axis=1)
         self.costs += 4.0 * GetAllReduceCost(dom_per_proc[:, self.axis], procs)
 
-
 def BatchNorm(in_tsr, n_procs=None):
     return Norm(in_tsr, 0, n_procs)
-
 
 class ReduceMean(Ops):
     def __init__(self, in_tsr, axis=None, keepdims=False, n_procs=None):
@@ -891,7 +889,6 @@ class ReduceMean(Ops):
         procs = np.prod(self.dom_configs[:, self.axis], axis=1)
         self.costs = GetAllReduceCost(words, procs)
 
-
 class Softmax(Ops):
     def __init__(self, in_tsr, axis=1, n_procs=None):
         assert axis < len(in_tsr)
@@ -919,7 +916,6 @@ class Softmax(Ops):
         self.costs += GetAllReduceCost(elems * self.dom[self.axis],
                 self.dom_configs[:, self.axis])
         self.costs += GetAllReduceCost(elems, self.dom_configs[:, self.axis])
-
 
 class SoftmaxCrossEntropy(Ops):
     # TODO: Currently softmax axis is -1 by default. Add an axis parameter to
@@ -956,7 +952,6 @@ class SoftmaxCrossEntropy(Ops):
         comm_cost = WordsToFlops(2.0 * batch_size)
         np.add(self.costs, comm_cost, where=(self.dom_configs[:, -1] > 1),
                 out=self.costs)
-
 
 '''
 class Embedding(Ops):
@@ -1002,7 +997,6 @@ def Embedding(in_tsr, vocab_size, embedding_dim, n_procs=None):
     w = InputTensor((vocab_size, embedding_dim))
     return Einsum(eq, in_tsr, w, n_procs=n_procs)
 
-
 # An RNN op with LSTM cells
 class LSTM(Ops):
     def __init__(self, in_tsr, num_units, num_layers, n_procs=None):
@@ -1011,14 +1005,22 @@ class LSTM(Ops):
         self.num_layers = num_layers
         self.num_units = num_units
 
-        # LSTM cell concats 4 weight matrices along n-dimension, and the output
-        # is split into 4 tensors along axis -1, and elementwise mul and add are
-        # performed. We create 'dom' corresponding just 1 GEMM, so that the 4
-        # parts are equally distributed, thus eliminating any comm cost before
-        # elementwise ops. Cost is corrected later to account for 4 GEMMs. In
-        # the actual implementation, this is achieved by permuting the weight
-        # matrix corresponding to the distribution, so that no real comm cost is
-        # necessary for elementwise ops.
+	# An LSTM cell performs 4 similar GEMMs to generate 4 outputs 'i, f, g,
+	# o'. This is performed by computing a single fused GEMM by concatenating
+	# 4 weight matrices along n-dimension (axis=-1), and the output is split
+	# into 4 tensors at the end.
+	# After the output is split, the following elementwise operations are
+	# performed: 'c = (f * c) + (i * g); h = o * tf.tanh(c)'. In order to
+	# prevent any communication during this elementwise op, we create 'dom'
+	# and its configuration corresponding to just 1 GEMM. (Cost is corrected
+	# later to account for 4 GEMMs.) This same configuration is replicated 4
+	# times.
+	# For eg, when num_gpus=2, rather than the n-dimension of the output
+	# tensor being 'i|f||g|o', and  distributed among 2 gpus, this
+	# modification causes the output tensor to be arranged and distributed
+	# as 'i1|f1|g1|o1||i2|f2|g2|o2', so the corresponding columns of i,f,g,o
+	# are owned by the same gpu without shuffling. In actual implementation,
+	# this is achieved by permuting the columns of weight matrix.
         # Further we stack different layers and sequences along the
         # most-significant axis. A config that splits these axes provides
         # pipelined parallelism across layers/sequences.
