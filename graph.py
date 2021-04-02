@@ -397,9 +397,9 @@ def Transformer(b):
     return nn_ops.Ops.G
 
 # Creates the graph for the model
-def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs, arch):
+def CreateGraph(graph_type, batch_size, hidden_dim_size, n_procs, flops, bw):
     nn_ops.Ops.default_procs = n_procs
-    nn_ops.Ops.SetDefaultArch(arch)
+    nn_ops.Ops.SetDefaultArch(flops, bw)
 
     if graph_type == 'alexnet':
         G = AlexNet(batch_size)

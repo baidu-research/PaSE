@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 import itertools
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 import graph, nn_ops
 
@@ -296,19 +296,21 @@ class Processor:
         return tbl
 
 def main():
-    parser = ArgumentParser()
+    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument("-p", "--procs", type=int, required=False, default=8,
-            help="No. of processors. (Default: 32)")
+            help="No. of processors.")
     parser.add_argument("-b", "--batch", type=int, required=False, default=128,
-            help="Batch size. (Default: 128)")
+            help="Batch size.")
     parser.add_argument("-m", "--model", type=int, required=False, default=128,
-            help="Model size. (Default: 128)")
+            help="Model size.")
     parser.add_argument("-g", "--graph", type=str, required=False,
             choices=['alexnet', 'resnet101', 'inception3', 'rnnlm',
                 'transformer'],
-            default='alexnet', help="Neural net graph. (Default: 'alexnet')")
-    parser.add_argument('-a', '--arch', type=int, required=False, default=0,
-            choices=[0, 1], help='Architecture. 0: P100, 1: DGX')
+            default='alexnet', help="Neural net graph.")
+    parser.add_argument('--flops', type=float, required=False, default=10.0,
+            help='Peak FLOPS of each device in TFLOPS.')
+    parser.add_argument('--bw', type=float, required=False, default=16.0,
+            help='Peak inter-connection bandwidth in GBytes/sec')
     parser.add_argument("--profile", dest="profile", action='store_true',
             help="Turn on/off profiling.")
     parser.add_argument("--measure", dest="measure", action='store_true',
@@ -331,7 +333,7 @@ def main():
 
     # Create input graph
     G = graph.CreateGraph(args['graph'], batch_size, hidden_dim_size, n_procs,
-            args['arch'])
+            args['flops'], args['bw'])
     print("")
 
     if args['dump_graph']:

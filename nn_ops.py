@@ -42,29 +42,13 @@ def InputTensor(x):
 # performed in the same time a word of data is transferred.
 # We multiple 'words' with this parameter to obtain flops count equivalent to
 # communication 'words' amount of data.
-def WordsToFlops(words, arch=0):
+def WordsToFlops(words, flops=None, bw=None):
     try:
         return WordsToFlops.bw_to_flops * words
     except AttributeError:
-        p100_peak_flop = float(10.6 * 1000) # GFLOPs
-        #p100_bw = float((36.72 * 2) / 8) # NVLink Unidirectional for 2 sublinks per direction.
-        #                                 # GBytes/sec = b/8 GWords/sec
-        p100_bw = float(13.0 / 8.0) # PCIe bidirectional GWords / sec
-        #p100_bw = float(6.25 / 8.0) # Infiniband GWords / sec
-        
-        v100_peak_flop = float(15.7 * 1000) # GFLOPs
-        #v100_bw = float(47.99 / 8.0) # Best NVLink unidirectional GWords/sec
-        v100_bw = float(10.4 / 8.0) # Worst NVLink unidirectional GWords/sec
-
-        if arch == 0:
-            peak_flop = p100_peak_flop
-            bw = p100_bw
-        elif arch == 1:
-            peak_flop = v100_peak_flop
-            bw = v100_bw
-        else:
-            assert False
-
+        assert (flops is not None) and (bw is not None)
+        peak_flop = flops * 1000.0 # GFLOPS
+        bw = bw / 8.0 # GWords/sec
         WordsToFlops.bw_to_flops = float(peak_flop / bw)
         return WordsToFlops.bw_to_flops * words
 
@@ -263,13 +247,11 @@ class Ops():
     # Static variables
     G = None # Default graph
     default_procs = 0 # Can be set once and reused for the entire graph.
-    default_arch = 0
     tsr_to_node_id = {}
     cutoff = 4 # Cutoff for getconfigs()
 
-    def SetDefaultArch(arch):
-        Ops.default_arch = arch
-        WordsToFlops(1, arch)
+    def SetDefaultArch(flops, bw):
+        WordsToFlops(1, flops, bw)
 
     def SetCutoff(cutoff):
         Ops.cutoff = cutoff
