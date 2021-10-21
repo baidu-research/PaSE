@@ -1,5 +1,18 @@
 # PaSE: Parallelization Strategies for Efficient DNN Training
-PaSE is a tool that automatically computes efficient parallelization strategies for training DNNs in a multi-node/multi-GPU environment. There are several choices to parallelize each layer in a DNN. Exhaustively searching this space to find an optimal parallelization strategy is time consuming and impractical. PaSE uses a dynamic programming based approach to find an efficient strategy within a reasonable time.
+PaSE is a tool that automatically computes efficient parallelization strategies for training DNNs in a multi-node/multi-GPU environment. There are several choices to parallelize each layer in a DNN. Exhaustively searching this space to find an optimal parallelization strategy is time consuming and impractical. PaSE uses a dynamic programming based approach to find an efficient strategy within a reasonable time. Please refer to our [paper](https://github.com/baidu-research/PaSE/raw/master/docs/PaSE_ipdps2021.pdf) for more details. (Published version of the paper can also be found on the IEEE website [here](https://ieeexplore.ieee.org/document/9460527).)
+
+BibTeX:
+```
+@INPROCEEDINGS{9460527,
+  author={Elango, Venmugil},
+  booktitle={2021 IEEE International Parallel and Distributed Processing Symposium (IPDPS)}, 
+  title={Pase: Parallelization Strategies for Efficient DNN Training}, 
+  year={2021},
+  volume={},
+  number={},
+  pages={1025-1034},
+  doi={10.1109/IPDPS49936.2021.00111}}
+```
 
 ## Getting started
 Packages required to run the tool can be installed as follows:
